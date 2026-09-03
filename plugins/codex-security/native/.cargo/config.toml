@@ -1,0 +1,3 @@
+[env]
+# Python enables SQLite URI filenames only for uri=True.
+LIBSQLITE3_FLAGS = { value = "-USQLITE_USE_URI -DSQLITE_USE_URI=0", force = true }

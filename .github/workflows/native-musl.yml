@@ -94,6 +94,7 @@ jobs:
                 test -z "$(command -v python || true)"
                 test -z "$(command -v python3 || true)"
                 PATH= /usr/local/bin/node proof.mjs
+                PATH= /usr/local/bin/node proof-sqlite.mjs
               '
           done
       - name: Upload verified native artifact

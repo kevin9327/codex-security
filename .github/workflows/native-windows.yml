@@ -45,6 +45,11 @@ jobs:
           pnpm --dir sdk/typescript install --frozen-lockfile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm --dir sdk/typescript run build:ci
+      - name: Set up temporary Python filename oracle
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12.10"
+          architecture: ${{ matrix.arch }}
       - name: Set up Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy --target ${{ matrix.target }}
       - name: Check Rust source
@@ -56,6 +61,8 @@ jobs:
         run: |
           node build.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node proof-sqlite.mjs windows-oracle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node proof-policy-windows.mjs build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node check.mjs
@@ -65,6 +72,8 @@ jobs:
           $nativeNode = (Get-Command node).Source
           $env:PATH = ""
           & $nativeNode --expose-gc proof-windows.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $nativeNode proof-sqlite.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $nativeNode proof-policy-windows.mjs
       - name: Compare the existing Python completion lock
@@ -85,6 +94,8 @@ jobs:
           $nativeNode = (Get-Command node).Source
           $env:PATH = ""
           & $nativeNode --expose-gc proof-windows.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $nativeNode proof-sqlite.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $nativeNode proof-policy-windows.mjs
       - name: Upload verified native artifact

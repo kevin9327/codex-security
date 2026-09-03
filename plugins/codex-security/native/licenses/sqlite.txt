@@ -1,0 +1,13 @@
+SQLite 3.53.2
+Source ID: 2026-06-03 19:12:13 d6e03d8c777cfa2d35e3b60d8ec3e0187f3e9f99d8e2ee9cac695fd6fcdf1a24
+https://www.sqlite.org/copyright.html
+
+SQLite's deliverable source code is dedicated to the public domain.
+The bundled amalgamation carries the following dedication:
+
+The author disclaims copyright to this source code. In place of
+a legal notice, here is a blessing:
+
+May you do good and not evil.
+May you find forgiveness for yourself and forgive others.
+May you share freely, never taking more than you give.

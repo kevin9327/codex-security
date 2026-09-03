@@ -74,3 +74,11 @@ gh run download <run-id> --name native-universal-<commit> --dir plugins/codex-se
 ```
 
 The ignored `prebuilt` directory must contain all eight platform directories and the shared notices. Refresh it after changing the native source or build toolchain. Missing payloads fail the build, including on hosts that only load one of them. Installed-package checks load the matching artifact with an empty `PATH`.
+
+## SQLite foundation
+
+`sqlite.mts` accepts the native binding and provides unused internal connection, statement, row, transaction, scalar-function, and online-backup primitives. SQLite INTEGER values remain bigint and REAL values remain number, including integral REAL values; callers choose any domain conversion explicitly. Transactions require synchronous callbacks. Queries, migrations, and command routing remain in TypeScript when they are migrated.
+
+The addon bundles `libsqlite3-sys` 0.38.2 and SQLite 3.53.2 using the locked C compiler dependencies. Native builds need a C compiler but no Python, node-gyp, bindgen, or system SQLite. `.cargo/config.toml` fixes SQLite URI parsing to opt-in, matching Python's `uri=False`. The existing eight-artifact distribution and notices include the engine.
+
+`proof-sqlite.mts` runs on Node 20/22 with an empty PATH and covers typed values, transactions, statement/callback lifetime, foreign keys, busy contention, and live WAL online backups that replace destinations and preserve rowids. Windows CI temporarily prepares synthetic filename expectations using Python 3.12.10, then both Node proofs consume only that data. Replace this migration-only preparation with reviewed recorded expectations after actual Windows parity is established; final Python retirement must remove the preparation and its setup step.

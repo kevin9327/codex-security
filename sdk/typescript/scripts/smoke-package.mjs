@@ -417,6 +417,15 @@ try {
 const native = require(process.argv[1]);
 if (process.platform !== "win32") {
   assert.deepEqual(native.directoryEntries(Buffer.from(process.argv[2]), false), { value: [], errno: 2 });
+}
+const database = new native.SqliteConnection(Buffer.from(":memory:"), false, false);
+const statement = database.prepare("SELECT ?");
+try {
+  statement.bind([9223372036854775807n]);
+  assert.deepEqual(statement.step(), [9223372036854775807n]);
+} finally {
+  statement.finalize();
+  database.close();
 }`,
       nativeLibrary,
       join(consumer, "missing-native-file"),

@@ -63,6 +63,10 @@ for (const entry of packages) {
   );
 }
 
+notices.push(
+  `SQLite 3.53.2\n\n${await readFile(join(root, "licenses", "sqlite.txt"), "utf8")}`,
+);
+
 const destination = join(root, "dist");
 await mkdir(join(destination, "licenses"), { recursive: true });
 await writeFile(
