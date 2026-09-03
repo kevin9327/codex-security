@@ -112,6 +112,24 @@ pub fn windows_environment(name: Buffer) -> napi::Result<Option<Buffer>> {
     Ok(std::env::var_os(os_string(name)?).map(|value| wide_bytes(value.encode_wide())))
 }
 
+// CPython chmod changes only the readonly attribute on Windows.
+#[napi]
+pub fn set_windows_writable(path: Buffer, writable: bool) -> napi::Result<u32> {
+    let path = wide_path(path)?;
+    let attributes = unsafe { GetFileAttributesW(path.as_ptr()) };
+    if attributes == INVALID_FILE_ATTRIBUTES {
+        return Ok(unsafe { GetLastError() });
+    }
+    let attributes = if writable {
+        attributes & !FILE_ATTRIBUTE_READONLY
+    } else {
+        attributes | FILE_ATTRIBUTE_READONLY
+    };
+    Ok(status(unsafe {
+        SetFileAttributesW(path.as_ptr(), attributes)
+    }))
+}
+
 #[napi]
 pub fn windows_absolute_path(path: Buffer) -> napi::Result<BufferResult> {
     let path = os_string(path)?;

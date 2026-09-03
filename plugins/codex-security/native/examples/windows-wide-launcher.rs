@@ -671,9 +671,28 @@ fn main() -> std::io::Result<()> {
     let mut args = env::args_os().skip(1);
     let node = args.next().expect("Node executable path");
     let script = args.next().expect("Windows wide proof script");
-    let root = PathBuf::from(args.next().expect("Proof fixture directory")).join("wide-İprocess");
+    let fixture = PathBuf::from(args.next().expect("Proof fixture directory"));
+    let mode = args.next();
+    if mode.as_ref().is_some_and(|argument| argument == "command") {
+        let bytes = fs::read(fixture)?;
+        let units = bytes
+            .chunks_exact(2)
+            .map(|part| u16::from_le_bytes([part[0], part[1]]))
+            .collect::<Vec<_>>();
+        let arguments = units.split(|unit| *unit == 0).collect::<Vec<_>>();
+        let status = Command::new(node)
+            .arg(script)
+            .args(
+                arguments[..arguments.len() - 1]
+                    .iter()
+                    .map(|value| OsString::from_wide(value)),
+            )
+            .status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    let root = fixture.join("wide-İprocess");
     fs::create_dir(&root)?;
-    let result = if args.next().is_some_and(|argument| argument == "policy") {
+    let result = if mode.is_some_and(|argument| argument == "policy") {
         policy_proof(node, script, &root)
     } else {
         run(node, script, &root)

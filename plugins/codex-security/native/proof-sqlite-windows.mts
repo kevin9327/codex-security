@@ -8,6 +8,7 @@ import { output } from "./binding.mjs";
 import { Connection, type SqliteBinding } from "./sqlite.mjs";
 import { loadWindowsBinding } from "./windows-binding.mjs";
 import { pathText, widePath, windowsFileSystem } from "./windows-files.mjs";
+import { prepareSnapshotOracle } from "./proof-snapshot-windows.mjs";
 
 const cases = [
   { name: "ordinary", relative: "data.sqlite3" },
@@ -68,6 +69,7 @@ print(json.dumps(dict(python=sys.version.split()[0], sqlite=sqlite3.sqlite_versi
   );
   writeFileSync(oraclePath, oracle);
   console.log(oracle.trim());
+  prepareSnapshotOracle();
 }
 
 export function windowsSqliteProof(native: SqliteBinding): number {

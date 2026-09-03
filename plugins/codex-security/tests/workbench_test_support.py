@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "workbench_db.py"
-SNAPSHOT_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "snapshot_sqlite.py"
 PLUGIN_MANIFEST = Path(__file__).resolve().parents[1] / ".codex-plugin" / "plugin.json"
 
 

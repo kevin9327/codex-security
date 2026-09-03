@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import type { SqliteBinding } from "../../native/sqlite.mjs";
 import type { UnixBinding } from "../../native/binding.mjs";
 import type { WindowsBinding } from "../../native/windows-binding.mjs";
 import { nativeTarget } from "../../native/platform.mjs";
@@ -13,4 +14,10 @@ export function windowsBinding(): WindowsBinding {
   return createRequire(import.meta.url)(
     `./native/${nativeTarget}/windows.node`,
   ) as WindowsBinding;
+}
+
+export function sqliteBinding(): SqliteBinding {
+  return createRequire(import.meta.url)(
+    `./native/${nativeTarget}/${process.platform === "win32" ? "windows" : "unix"}.node`,
+  ) as SqliteBinding;
 }

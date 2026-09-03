@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -53,4 +54,10 @@ export function writeFile(path: string, chunks: Iterable<Buffer>): void {
   } finally {
     closeSync(descriptor);
   }
+}
+
+export function chmod(path: string, mode: number): void {
+  if (process.platform === "win32")
+    windowsFileSystem(windowsBinding()).chmod(widePath(path), mode);
+  else chmodSync(encodePosixPath(path), mode);
 }

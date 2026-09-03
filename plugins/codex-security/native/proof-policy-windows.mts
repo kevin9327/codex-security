@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { binaryPath, output, root } from "./binding.mjs";
 import { nativeTarget } from "./platform.mjs";
+import { snapshotWindowsProof } from "./proof-snapshot-windows.mjs";
 
 const testDirectory = join(output, "policy-proof");
 const helper = join(testDirectory, "helpers.cjs");
@@ -26,6 +27,7 @@ if (process.argv[2] === "build") {
   mkdirSync(nativeDirectory, { recursive: true });
   copyFileSync(binaryPath, join(nativeDirectory, "windows.node"));
 } else {
+  snapshotWindowsProof(helper);
   const fixture = mkdtempSync(join(tmpdir(), "codex-security-policy-proof-"));
   try {
     const proof: unknown = JSON.parse(

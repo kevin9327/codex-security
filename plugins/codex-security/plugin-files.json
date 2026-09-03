@@ -68,7 +68,6 @@
     "scripts/launch_codex_security_mcp.cmd",
     "scripts/rank_preview.py",
     "scripts/report_projection.py",
-    "scripts/snapshot_sqlite.py",
     "scripts/validate_scan_contract.py",
     "scripts/validate_tracking_source.py",
     "scripts/windows_scan_local_files.py",

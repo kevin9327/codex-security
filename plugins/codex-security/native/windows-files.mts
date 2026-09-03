@@ -347,7 +347,12 @@ export function windowsFileSystem(native: WindowsBinding) {
     }
   }
 
+  function chmod(path: Buffer, mode: number): void {
+    check(native.setWindowsWritable(path, (mode & 0o200) !== 0), path);
+  }
+
   return {
+    chmod,
     absolute,
     realpath,
     stat,

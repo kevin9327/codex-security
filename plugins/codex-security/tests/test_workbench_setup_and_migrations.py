@@ -16,7 +16,6 @@ from unittest import mock
 import pytest
 from workbench_test_support import (
     SCRIPT,
-    SNAPSHOT_SCRIPT,
     configure_git_command,
     create_saved_git_workspace,
     create_saved_workspace,
@@ -25,23 +24,6 @@ from workbench_test_support import (
     start_delivered_scan,
     write_completed_contract,
 )
-
-
-def test_sqlite_snapshot_includes_uncheckpointed_wal_rows(tmp_path: Path) -> None:
-    source = tmp_path / "source.sqlite3"
-    snapshot = tmp_path / "snapshot.sqlite3"
-    with sqlite3.connect(source) as connection:
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA wal_autocheckpoint = 0")
-        connection.execute("CREATE TABLE records (value TEXT NOT NULL)")
-        connection.execute("INSERT INTO records VALUES ('sealed')")
-        connection.commit()
-        subprocess.run(
-            [sys.executable, str(SNAPSHOT_SCRIPT), str(source), str(snapshot)],
-            check=True,
-        )
-    with sqlite3.connect(snapshot) as connection:
-        assert connection.execute("SELECT value FROM records").fetchone() == ("sealed",)
 
 
 def test_windows_completion_lock_retries_and_unlocks(tmp_path: Path) -> None:
