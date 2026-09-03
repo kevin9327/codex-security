@@ -415,6 +415,17 @@ try {
       "--eval",
       `const assert = require("node:assert/strict");
 const native = require(process.argv[1]);
+const encode = (value) => Buffer.from(value, process.platform === "win32" ? "utf16le" : "utf8");
+const input = Buffer.from([0, 255, 128]);
+const child = native.rawProcess({
+  program: encode(process.execPath),
+  args: [encode("--eval"), encode("process.stdin.pipe(process.stdout); process.stderr.write('native process');")],
+  input,
+});
+assert.equal(child.error, 0);
+assert.equal(child.returnCode, 0);
+assert.deepEqual(child.stdout, input);
+assert.equal(child.stderr.toString(), "native process");
 if (process.platform !== "win32") {
   assert.deepEqual(native.directoryEntries(Buffer.from(process.argv[2]), false), { value: [], errno: 2 });
 }

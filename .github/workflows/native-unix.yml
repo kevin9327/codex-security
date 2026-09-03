@@ -64,7 +64,7 @@ jobs:
       - name: Check Rust source and fetch locked dependencies
         run: |
           cargo fmt --check
-          cargo clippy --locked -- -D warnings
+          cargo clippy --locked --lib --example process-fixture -- -D warnings
           cargo fetch --locked
       - name: Prepare shared native notices
         if: matrix.platform == 'linux' && matrix.arch == 'x64'

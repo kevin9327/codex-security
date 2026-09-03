@@ -1,3 +1,4 @@
+import { rawProcessProof } from "./proof-process.mjs";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
@@ -628,6 +629,7 @@ if (process.argv[2] === "lock-worker") {
           platform: process.platform,
           architecture: process.arch,
           nodeApi: 8,
+          rawProcess: rawProcessProof(root),
           descriptors,
           accounts,
           directories,

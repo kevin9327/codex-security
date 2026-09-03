@@ -1,3 +1,4 @@
+import { rawProcessProof } from "./proof-process.mjs";
 import assert from "node:assert/strict";
 import { fork, spawn, type ChildProcess } from "node:child_process";
 import {
@@ -678,6 +679,7 @@ if (process.argv[2] === "worker") {
           platform: process.platform,
           architecture: process.arch,
           nodeApi: 8,
+          rawProcess: rawProcessProof(root),
           handles: handleProof(root),
           wideProcessAndPaths: wideProcessProof(root),
           garbageCollectionClosesHandle: await ownershipProof(root),

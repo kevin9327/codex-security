@@ -39,15 +39,16 @@ const flags = [
   `--remap-path-prefix=${sysroot}=rust-toolchain`,
 ];
 const target = resolve(root, process.env["CARGO_TARGET_DIR"] ?? "target");
-const args = ["build", "--release", "--locked"];
+const args = [
+  "build",
+  "--release",
+  "--locked",
+  "--lib",
+  "--example",
+  "process-fixture",
+];
 if (windowsTarget !== undefined)
-  args.push(
-    "--target",
-    windowsTarget,
-    "--lib",
-    "--example",
-    "windows-wide-launcher",
-  );
+  args.push("--target", windowsTarget, "--example", "windows-wide-launcher");
 execFileSync("cargo", args, {
   cwd: root,
   stdio: "inherit",
@@ -81,4 +82,14 @@ if (windowsTarget !== undefined)
     ),
     join(output, "windows-wide-launcher.exe"),
   );
+copyFileSync(
+  join(
+    target,
+    ...(windowsTarget === undefined ? [] : [windowsTarget]),
+    "release",
+    "examples",
+    `process-fixture${process.platform === "win32" ? ".exe" : ""}`,
+  ),
+  join(output, `process-fixture${process.platform === "win32" ? ".exe" : ""}`),
+);
 console.log(`Built ${nativeTarget} Node-API 8 primitives.`);

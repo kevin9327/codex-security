@@ -1,3 +1,4 @@
+mod process;
 mod sqlite;
 #[cfg(unix)]
 mod unix;
