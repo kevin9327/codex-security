@@ -5387,6 +5387,9 @@ async function publishPatchBranch(
             gitlabHost.includes("://") ? gitlabHost : `https://${gitlabHost}`,
           ));
     const command = gitlab ? "glab" : "gh";
+    const gitlabRepository = remote.includes("://")
+      ? remote
+      : `ssh://${remote.replace(":", "/")}`;
     const existing = await run(
       command,
       gitlab
@@ -5399,7 +5402,7 @@ async function publishPatchBranch(
             "--output",
             "json",
             "--repo",
-            remote,
+            gitlabRepository,
           ]
         : [
             "pr",
@@ -5434,7 +5437,7 @@ async function publishPatchBranch(
               "create",
               "--draft",
               "--head",
-              remote,
+              gitlabRepository,
               "--source-branch",
               branch,
               "--title",
@@ -5443,7 +5446,7 @@ async function publishPatchBranch(
               body,
               "--yes",
               "--repo",
-              remote,
+              gitlabRepository,
             ]
           : [
               "pr",

@@ -1421,34 +1421,67 @@ describe("scan and patch workflow", () => {
       "https://github.example.test/example/repository.git",
       { GITLAB_HOST: "gitlab.com" },
       "gh",
+      undefined,
     ],
-    ["https://gitlab.com/example/subgroup/repository.git", {}, "glab"],
-    ["git@gitlab.com:example/subgroup/repository.git", {}, "glab"],
-    ["ssh://git@gitlab.com:2222/example/subgroup/repository.git", {}, "glab"],
+    [
+      "https://gitlab.com/example/subgroup/repository.git",
+      {},
+      "glab",
+      undefined,
+    ],
+    [
+      "git@gitlab.com:example/subgroup/repository.git",
+      {},
+      "glab",
+      "ssh://git@gitlab.com/example/subgroup/repository.git",
+    ],
+    [
+      "gitlab.com:example/subgroup/repository.git",
+      {},
+      "glab",
+      "ssh://gitlab.com/example/subgroup/repository.git",
+    ],
+    [
+      "gitlab@gitlab.example.test:example/subgroup/repository.git",
+      { GITLAB_HOST: "gitlab.example.test" },
+      "glab",
+      "ssh://gitlab@gitlab.example.test/example/subgroup/repository.git",
+    ],
+    [
+      "ssh://git@gitlab.com:2222/example/subgroup/repository.git",
+      {},
+      "glab",
+      undefined,
+    ],
     [
       "git@gitlab.example.test:example/subgroup/repository.git",
       { GITLAB_HOST: "gitlab.example.test" },
       "glab",
+      "ssh://git@gitlab.example.test/example/subgroup/repository.git",
     ],
     [
       "https://gitlab.example.test/example/repository.git",
       { GITLAB_HOST: "https://gitlab.example.test" },
       "glab",
+      undefined,
     ],
     [
       "https://gitlab.example.test/example/repository.git",
       { GITLAB_URI: "https://gitlab.example.test" },
       "glab",
+      undefined,
     ],
     [
       "https://gitlab.example.test/example/repository.git",
       { GL_HOST: "gitlab.example.test" },
       "glab",
+      undefined,
     ],
-    ["https://gitlab.example.test/example/repository.git", {}, "gh"],
+    ["https://gitlab.example.test/example/repository.git", {}, "gh", undefined],
   ] as const)(
     "publishes saved-finding patches for origin %s with environment %j using %s",
-    async (origin, environment, client) => {
+    async (origin, environment, client, expectedSelector) => {
+      const selector = expectedSelector ?? origin;
       const result = resultWithFindings(["high"]);
       const url =
         client === "glab"
@@ -1492,14 +1525,14 @@ describe("scan and patch workflow", () => {
             "--output",
             "json",
             "--repo",
-            origin,
+            selector,
           ],
           [
             "mr",
             "create",
             "--draft",
             "--head",
-            origin,
+            selector,
             "--source-branch",
             "codex-security/patch-scan-1",
             "--title",
@@ -1508,7 +1541,7 @@ describe("scan and patch workflow", () => {
             "Applies verified security fixes from a completed scan.",
             "--yes",
             "--repo",
-            origin,
+            selector,
           ],
         ]);
       }
