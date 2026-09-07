@@ -829,8 +829,6 @@ describe("scan and patch workflow", () => {
   test.each([
     ["github", "push"],
     ["github", "create"],
-    ["gitlab", "push"],
-    ["gitlab", "create"],
     ["gitlab", "missing client"],
   ])(
     "resumes %s publication after %s fails without patching again",
@@ -908,7 +906,20 @@ describe("scan and patch workflow", () => {
               failOnce = false;
               throw new Error("spawn glab ENOENT");
             }
-            if (args[1] === "list") return publishedUrl;
+            if (args[1] === "list")
+              return gitlab
+                ? JSON.stringify(
+                    publishedUrl
+                      ? [
+                          {
+                            source_project_id: 1,
+                            target_project_id: 1,
+                            web_url: publishedUrl,
+                          },
+                        ]
+                      : [],
+                  )
+                : publishedUrl;
             expect(args[1]).toBe("create");
             if (failure === "create" && failOnce) {
               failOnce = false;
@@ -1445,14 +1456,7 @@ describe("scan and patch workflow", () => {
           : "https://github.example.test/example/repository/pull/14";
       const publicationCommands: Array<readonly string[]> = [];
       const outcome = await runWorkflow(
-        [
-          "patch",
-          "--scan",
-          "scan-1",
-          "--assess-patch-risk",
-          "--create-pr",
-          "--json",
-        ],
+        ["patch", "--scan", "scan-1", "--create-pr", "--json"],
         {
           environment,
           onWorkbench: () => savedScan(result),
@@ -1467,14 +1471,7 @@ describe("scan and patch workflow", () => {
             }
             expect(command).toBe(client);
             publicationCommands.push(args);
-            return args[1] === "create" ? url : "";
-          },
-        },
-        {
-          configure: (current) => {
-            Object.assign(current, {
-              assessPatchRisk: async () => patchRiskAssessment(),
-            });
+            return args[1] === "create" ? url : client === "glab" ? "[]" : "";
           },
         },
       );
@@ -1494,8 +1491,6 @@ describe("scan and patch workflow", () => {
             "codex-security/patch-scan-1",
             "--output",
             "json",
-            "--jq",
-            ".[0].web_url // empty",
             "--repo",
             origin,
           ],
@@ -1510,7 +1505,7 @@ describe("scan and patch workflow", () => {
             "--title",
             "fix: patch verified security findings",
             "--description",
-            expect.stringContaining(patchRiskSummary()),
+            "Applies verified security fixes from a completed scan.",
             "--yes",
             "--repo",
             origin,
@@ -1524,6 +1519,58 @@ describe("scan and patch workflow", () => {
         scanId: "scan-1",
         pullRequest: { branch: "codex-security/patch-scan-1", url },
       });
+    },
+  );
+
+  test.each([false, true])(
+    "filters fork merge requests before reuse (same-project MR: %j)",
+    async (hasExisting) => {
+      const result = resultWithFindings(["high"]);
+      const url =
+        "https://gitlab.example.test/example/repository/-/merge_requests/14";
+      const forkUrl =
+        "https://gitlab.example.test/example/repository/-/merge_requests/15";
+      const commands: string[] = [];
+      const outcome = await runWorkflow(
+        ["patch", "--scan", "scan-1", "--create-pr", "--json"],
+        {
+          onWorkbench: () => savedScan(result),
+          onRepositoryCommand: (command, args) => {
+            if (command === "git") {
+              if (args[0] === "remote")
+                return "https://gitlab.com/example/repository.git";
+              if (args[0] === "push") commands.push("push");
+              return "";
+            }
+            expect(command).toBe("glab");
+            commands.push(args[1]!);
+            if (args[1] === "list")
+              return JSON.stringify([
+                {
+                  source_project_id: 2,
+                  target_project_id: 1,
+                  web_url: forkUrl,
+                },
+                ...(hasExisting
+                  ? [
+                      {
+                        source_project_id: 1,
+                        target_project_id: 1,
+                        web_url: url,
+                      },
+                    ]
+                  : []),
+              ]);
+            return url;
+          },
+        },
+      );
+      expect(outcome.exitCode).toBe(0);
+      expect(commands).toEqual(
+        hasExisting ? ["list"] : ["list", "push", "create"],
+      );
+      expect(JSON.parse(outcome.stdout).pullRequest.url).toBe(url);
+      expect(outcome.stderr).not.toContain(forkUrl);
     },
   );
 

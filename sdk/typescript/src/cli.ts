@@ -5387,7 +5387,7 @@ async function publishPatchBranch(
             gitlabHost.includes("://") ? gitlabHost : `https://${gitlabHost}`,
           ));
     const command = gitlab ? "glab" : "gh";
-    let url = await run(
+    const existing = await run(
       command,
       gitlab
         ? [
@@ -5398,8 +5398,6 @@ async function publishPatchBranch(
             branch,
             "--output",
             "json",
-            "--jq",
-            ".[0].web_url // empty",
             "--repo",
             remote,
           ]
@@ -5416,6 +5414,16 @@ async function publishPatchBranch(
             ".[0].url // empty",
           ],
     );
+    let url = gitlab
+      ? (
+          JSON.parse(existing) as {
+            source_project_id: number;
+            target_project_id: number;
+            web_url: string;
+          }[]
+        ).find((mr) => mr.source_project_id === mr.target_project_id)
+          ?.web_url ?? ""
+      : existing;
     if (!url) {
       await run("git", ["push", "--set-upstream", "origin", branch]);
       url = await run(
