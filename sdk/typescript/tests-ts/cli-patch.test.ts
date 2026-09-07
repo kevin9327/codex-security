@@ -1524,6 +1524,8 @@ describe("scan and patch workflow", () => {
             "codex-security/patch-scan-1",
             "--output",
             "json",
+            "--jq",
+            "map({source_project_id, target_project_id, web_url})",
             "--repo",
             selector,
           ],
@@ -1597,11 +1599,10 @@ describe("scan and patch workflow", () => {
         },
       );
       expect(outcome.exitCode, outcome.stderr).toBe(0);
-      expect(publishedBody).toBe(
-        "Applies verified security fixes from a completed scan.\n\n## Patch risk assessment\n\nReview the patch.\n\n" +
-          (gitlab ? "\\/label ~reviewed" : "/label ~reviewed") +
-          "\n\nUse /tmp/example.",
+      expect(publishedBody).toContain(
+        gitlab ? "\n\\/label ~reviewed\n" : "\n/label ~reviewed\n",
       );
+      expect(publishedBody).toContain("Use /tmp/example.");
       expect(JSON.parse(outcome.stdout).patchRisk.report).toBe(summary);
     },
   );

@@ -5401,6 +5401,8 @@ async function publishPatchBranch(
             branch,
             "--output",
             "json",
+            "--jq",
+            "map({source_project_id, target_project_id, web_url})",
             "--repo",
             gitlabRepository,
           ]
