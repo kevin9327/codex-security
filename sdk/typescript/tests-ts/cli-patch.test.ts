@@ -1555,6 +1555,57 @@ describe("scan and patch workflow", () => {
     },
   );
 
+  test.each(["github", "gitlab"] as const)(
+    "keeps quick-action text in generated %s descriptions advisory",
+    async (provider) => {
+      const gitlab = provider === "gitlab";
+      const result = resultWithFindings(["high"]);
+      const summary =
+        "Review the patch.\n\n/label ~reviewed\n\nUse /tmp/example.";
+      let publishedBody = "";
+      const outcome = await runWorkflow(
+        [
+          "patch",
+          "--scan",
+          "scan-1",
+          "--assess-patch-risk",
+          "--create-pr",
+          "--json",
+        ],
+        {
+          onWorkbench: () => savedScan(result),
+          onRepositoryCommand: (command, args) => {
+            if (command === "git")
+              return args[0] === "remote"
+                ? `https://${provider}.com/example/repository.git`
+                : "";
+            expect(command).toBe(gitlab ? "glab" : "gh");
+            if (args[1] === "list") return gitlab ? "[]" : "";
+            publishedBody =
+              args[args.indexOf(gitlab ? "--description" : "--body") + 1]!;
+            return "https://example.test/review/1";
+          },
+        },
+        {
+          configure: (current) => {
+            Object.assign(current, {
+              assessPatchRisk: async () => ({
+                report: `<!-- codex-security:patch-risk-summary:start -->\n${summary}\n<!-- codex-security:patch-risk-summary:end -->`,
+              }),
+            });
+          },
+        },
+      );
+      expect(outcome.exitCode, outcome.stderr).toBe(0);
+      expect(publishedBody).toBe(
+        "Applies verified security fixes from a completed scan.\n\n## Patch risk assessment\n\nReview the patch.\n\n" +
+          (gitlab ? "\\/label ~reviewed" : "/label ~reviewed") +
+          "\n\nUse /tmp/example.",
+      );
+      expect(JSON.parse(outcome.stdout).patchRisk.report).toBe(summary);
+    },
+  );
+
   test.each([false, true])(
     "filters fork merge requests before reuse (same-project MR: %j)",
     async (hasExisting) => {

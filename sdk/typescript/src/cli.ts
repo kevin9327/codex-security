@@ -5443,7 +5443,7 @@ async function publishPatchBranch(
               "--title",
               PATCH_PR_TITLE,
               "--description",
-              body,
+              body.replace(/^\//gmu, "\\/"),
               "--yes",
               "--repo",
               gitlabRepository,
