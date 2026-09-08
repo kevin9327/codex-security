@@ -65,3 +65,99 @@ for (const [input, absolute] of [
     );
   });
 }
+
+for (const target of ["missing.", "missing "]) {
+  for (const siblingExists of [true, false]) {
+    test(`dangling link target ${JSON.stringify(target)} with ordinary sibling present=${siblingExists}`, () => {
+      const native = {
+        windowsAbsolutePath(path: Buffer) {
+          const text = pathText(path);
+          return {
+            error: 0,
+            value: widePath(
+              text.startsWith("\\\\?\\") ? text : text.replace(/[. ]+$/u, ""),
+            ),
+          };
+        },
+        windowsReadLink(path: Buffer) {
+          return pathText(path) === "\\\\?\\C:\\links\\link"
+            ? { error: 0, value: widePath(target) }
+            : { error: 4390, value: Buffer.alloc(0) };
+        },
+        openWindowsFile(path: Buffer) {
+          if (
+            ![
+              "\\\\?\\C:\\links",
+              ...(siblingExists ? ["\\\\?\\C:\\links\\missing"] : []),
+            ].includes(pathText(path))
+          )
+            return { error: 2, handle: null };
+          return {
+            error: 0,
+            handle: {
+              finalPath: () => ({ error: 0, path }),
+              close: () => 0,
+            },
+          };
+        },
+      } as unknown as WindowsBinding;
+      assert.equal(
+        pathText(
+          windowsFileSystem(native).realpath(
+            widePath("C:\\links\\link"),
+            false,
+          ),
+        ),
+        `\\\\?\\C:\\links\\${target}`,
+      );
+    });
+  }
+}
+
+for (const parent of ["C:\\dir", "\\\\server\\share\\dir"]) {
+  for (const namespaced of [false, true]) {
+    const input = `${namespaced ? win32.toNamespacedPath(parent) : parent}\\a:stream`;
+    test(`non-strict resolution preserves the stream parent: ${JSON.stringify(input)}`, () => {
+      const native = {
+        windowsAbsolutePath: (path: Buffer) => ({ error: 0, value: path }),
+        windowsReadLink: () => ({ error: 2, value: Buffer.alloc(0) }),
+        openWindowsFile(path: Buffer) {
+          return pathText(path) === win32.toNamespacedPath(parent)
+            ? {
+                error: 0,
+                handle: {
+                  finalPath: () => ({ error: 0, path }),
+                  close: () => 0,
+                },
+              }
+            : { error: 2, handle: null };
+        },
+      } as unknown as WindowsBinding;
+      assert.equal(
+        pathText(windowsFileSystem(native).realpath(widePath(input), false)),
+        input,
+      );
+    });
+  }
+}
+
+test("non-strict resolution handles deeply nested missing paths", () => {
+  const root = "\\\\?\\C:\\";
+  const input = root + "a\\".repeat(8_000) + "missing";
+  const native = {
+    windowsAbsolutePath: (path: Buffer) => ({ error: 0, value: path }),
+    windowsReadLink: () => ({ error: 3, value: Buffer.alloc(0) }),
+    openWindowsFile(path: Buffer) {
+      return pathText(path) === root
+        ? {
+            error: 0,
+            handle: { finalPath: () => ({ error: 0, path }), close: () => 0 },
+          }
+        : { error: 3, handle: null };
+    },
+  } as unknown as WindowsBinding;
+  assert.equal(
+    pathText(windowsFileSystem(native).realpath(widePath(input), false)),
+    input,
+  );
+});
