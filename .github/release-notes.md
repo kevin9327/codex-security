@@ -4,6 +4,7 @@
 ## Highlights
 
 - port source and test report checks to TypeScript ([#768](https://github.com/openai/codex-security/pull/768))
+- port custom validation to TypeScript ([#792](https://github.com/openai/codex-security/pull/792))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
