@@ -138,6 +138,7 @@ from workbench_validation import (
     optional_text,
     parse_scan_cost,
     path_within_scope,
+    reject_non_finite_json,
     require_close_note,
     require_occurrence,
     require_uuid,
@@ -1869,17 +1870,6 @@ def parse_scan_recipe(value: str, repository: Path) -> dict[str, Any]:
     return recipe
 
 
-def get_scan_recipe(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
-    scan = require_scan(connection, args.scan_id)
-    if scan["recipe_json"] is None:
-        raise SystemExit("This scan does not have a saved launch recipe.")
-    return {
-        "parentScanId": scan["parent_scan_id"],
-        "recipe": json.loads(scan["recipe_json"], parse_constant=reject_non_finite_json),
-        "scanId": scan["id"],
-    }
-
-
 _WORKBENCH_DB_CONTEXT: saved_results.WorkbenchDbContext
 
 
@@ -3376,10 +3366,6 @@ def read_json_object(path: Path) -> dict[str, Any]:
     return payload
 
 
-def reject_non_finite_json(value: str) -> None:
-    raise ValueError(f"non-finite JSON number {value!r} is not supported")
-
-
 _WORKBENCH_PUBLICATION_CONTEXT = publication.WorkbenchPublicationContext(
     ARTIFACTS=ARTIFACTS,
     artifact_path=artifact_path,
@@ -3518,7 +3504,22 @@ def main() -> None:
         elif args.command == "set-scan-cost-limit":
             result = set_scan_cost_limit(connection, args)
         elif args.command == "get-scan-recipe":
-            result = get_scan_recipe(connection, args)
+            result = scan_history.scan_recipe(require_scan(connection, args.scan_id))
+        elif args.command == "get-cli-scan-resume":
+            scan = require_scan(connection, args.scan_id)
+            try:
+                result = scan_history.cli_scan_resume(
+                    connection,
+                    scan,
+                    require_workspace(connection, scan["workspace_id"]),
+                    parse_scan_recipe=parse_scan_recipe,
+                    scan_contract=scan_contract,
+                    require_scan_directory=require_canonical_scan_directory,
+                )
+            except SystemExit as exc:
+                if not args.allow_unavailable:
+                    raise
+                result = {"unavailable": str(exc)}
         elif args.command == "compare-scans":
             result = scan_history.compare_scans(
                 connection,
