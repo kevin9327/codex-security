@@ -1,0 +1,14 @@
+{
+  "baseVersion": "0.1.26",
+  "baseCommit": "2536d104deef9bca8ced84c6f6263b915418253b",
+  "sections": {
+    "highlights": {
+      "generatedHash": "fc736e4faf04ca076b463784e134f079684f11135f0ad788ac97d076b39dd7e2",
+      "humanOwned": false
+    },
+    "upgrades": {
+      "generatedHash": "68d4c3318e7ef9c9bc7e5f85be654e3c5ffc027eed6f48b6e3607d091bdbbfb4",
+      "humanOwned": false
+    }
+  }
+}
