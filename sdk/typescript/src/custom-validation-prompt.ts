@@ -11,7 +11,7 @@ const SOURCES = {
   "references/core-scan.md":
     "4a96c8685d30a0441510a289effb41172fa685cc3441686a2eddd4041938e171",
   "skills/security-scan/SKILL.md":
-    "5b8f5d7debeca14c6b37e8e7ba737671362b8eb4b7f49e693c99c6bd04bc8fa0",
+    "6578741eb81731b5cd2882d9e38541ff2d40efbf024d0a30cff9500a483301d1",
   "skills/security-diff-scan/SKILL.md":
     "0a4c519ad713585876ea7eb0a8af4b59892c86746f4c69851db9ab347b7fad2f",
 } as const;
