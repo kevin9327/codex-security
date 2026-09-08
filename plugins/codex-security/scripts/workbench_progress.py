@@ -28,6 +28,9 @@ def require_closed_standard_review_receipts(
 ) -> tuple[int, int]:
     if scan["mode"] != "standard":
         return (0, 0)
+    # Explicit mock launches perform no reviews; do not fabricate closed receipts.
+    if scan["recipe_json"] is not None and json.loads(scan["recipe_json"]).get("mock") is True:
+        return (0, 0)
     rows = connection.execute(
         """
         SELECT relative_path, closed_at

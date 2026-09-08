@@ -95,6 +95,49 @@ def register_cli_scan(
     )
 
 
+@pytest.mark.parametrize("mock", [False, True])
+def test_standard_mock_completion_requires_a_mock_launch_recipe(tmp_path: Path, mock: bool) -> None:
+    state_dir = tmp_path / "state"
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "example.py").write_text("example = 1\n")
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir(mode=0o700)
+    registered = run_workbench(
+        state_dir,
+        "register-cli-scan",
+        "--repository",
+        str(target),
+        "--scan-dir",
+        str(scan_dir),
+        "--recipe-json",
+        json.dumps(
+            {
+                "config": {},
+                "mode": "standard",
+                "repository": str(target),
+                "target": {"kind": "repository", "paths": []},
+                "mock": mock,
+            }
+        ),
+    )
+    scan_id = str(registered["scanId"])
+    write_completed_contract(scan_dir, scan_id, target)
+    manifest_path = scan_dir / "scan-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["scan"]["extensions"] = {"mock": True}
+    manifest_path.write_text(json.dumps(manifest))
+
+    result = run_workbench(state_dir, "complete-scan", "--scan-id", scan_id, check=mock)
+    if mock:
+        assert result["scan"]["progress"]["status"] == "complete"
+        assert result["scan"]["progress"]["coverage"]["closedRows"] == 0
+    else:
+        assert result["returncode"] != 0
+        assert "per-file review receipts are incomplete" in str(result["stderr"])
+        assert "sealedAt" not in json.loads(manifest_path.read_text())["scan"]
+
+
 @pytest.mark.parametrize("completion_command", ["complete-scan", "prepare-scan-completion"])
 def test_standard_completion_rejects_open_review_receipts_before_sealing(
     tmp_path: Path,
