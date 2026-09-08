@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { binaryPath, output, root } from "./binding.mjs";
 import { checkPrivatePaths } from "./check.mjs";
+import { libc, nativeTarget } from "./platform.mjs";
 
 let windowsTarget: string | undefined;
 if (process.platform === "win32") {
@@ -32,13 +33,21 @@ const inheritedFlags =
 const flags = [
   ...inheritedFlags,
   ...(windowsTarget === undefined ? [] : ["-C", "target-feature=+crt-static"]),
+  ...(libc === "musl" ? ["-C", "target-feature=-crt-static"] : []),
   `--remap-path-prefix=${root}=codex-security-native`,
   `--remap-path-prefix=${cargoHome}=cargo`,
   `--remap-path-prefix=${sysroot}=rust-toolchain`,
 ];
 const target = resolve(root, process.env["CARGO_TARGET_DIR"] ?? "target");
 const args = ["build", "--release", "--locked"];
-if (windowsTarget !== undefined) args.push("--target", windowsTarget);
+if (windowsTarget !== undefined)
+  args.push(
+    "--target",
+    windowsTarget,
+    "--lib",
+    "--example",
+    "windows-wide-launcher",
+  );
 execFileSync("cargo", args, {
   cwd: root,
   stdio: "inherit",
@@ -61,4 +70,15 @@ const library = join(
 checkPrivatePaths(readFileSync(library), [root, cargoHome, sysroot, target]);
 mkdirSync(output, { recursive: true });
 copyFileSync(library, binaryPath);
-console.log(`Built ${process.platform}-${process.arch} Node-API 8 primitives.`);
+if (windowsTarget !== undefined)
+  copyFileSync(
+    join(
+      target,
+      windowsTarget,
+      "release",
+      "examples",
+      "windows-wide-launcher.exe",
+    ),
+    join(output, "windows-wide-launcher.exe"),
+  );
+console.log(`Built ${nativeTarget} Node-API 8 primitives.`);

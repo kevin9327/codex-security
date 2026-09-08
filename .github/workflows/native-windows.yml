@@ -1,17 +1,10 @@
 name: native-windows
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, reopened, synchronize]
+  workflow_call:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   primitives:
@@ -58,16 +51,22 @@ jobs:
         run: |
           cargo fmt --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo clippy --locked --target ${{ matrix.target }} -- -D warnings
+          cargo clippy --locked --target ${{ matrix.target }} --lib --example windows-wide-launcher -- -D warnings
       - name: Build and verify with Node.js 22
         run: |
           node build.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node proof-policy-windows.mjs build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node check.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test windows-files.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $nativeNode = (Get-Command node).Source
           $env:PATH = ""
           & $nativeNode --expose-gc proof-windows.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $nativeNode proof-policy-windows.mjs
       - name: Compare the existing Python completion lock
         run: |
           $python = (Get-Command python -ErrorAction Stop).Source
@@ -81,13 +80,18 @@ jobs:
         run: |
           node check.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test windows-files.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $nativeNode = (Get-Command node).Source
           $env:PATH = ""
           & $nativeNode --expose-gc proof-windows.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $nativeNode proof-policy-windows.mjs
       - name: Upload verified native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-win32-${{ matrix.arch }}-${{ github.sha }}
-          path: plugins/codex-security/native/dist/win32-${{ matrix.arch }}/windows.node
+          name: native-platform-win32-${{ matrix.arch }}-${{ github.sha }}
+          path: plugins/codex-security/native/dist/*/*.node
           if-no-files-found: error
+          overwrite: true
           retention-days: 7

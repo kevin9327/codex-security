@@ -7,6 +7,12 @@
 - port custom validation to TypeScript ([#792](https://github.com/openai/codex-security/pull/792))
 - add Python-free Unix OS primitives ([#794](https://github.com/openai/codex-security/pull/794))
 - add Python-free Windows OS primitives ([#795](https://github.com/openai/codex-security/pull/795))
+- add Python-free musl native artifacts ([#796](https://github.com/openai/codex-security/pull/796))
+- bundle verified native runtime artifacts ([#797](https://github.com/openai/codex-security/pull/797))
+- preserve Windows filenames in native helpers ([#798](https://github.com/openai/codex-security/pull/798))
+- port security policy resolution to TypeScript ([#799](https://github.com/openai/codex-security/pull/799))
+- budget package installation and verification ([#834](https://github.com/openai/codex-security/pull/834))
+- open ready pull requests ([#833](https://github.com/openai/codex-security/pull/833))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->

@@ -28,6 +28,14 @@ export interface WindowsHandle {
 
 /** Paths are UTF-16LE code units without a terminator, including lone surrogates. */
 export interface WindowsBinding {
+  windowsArguments(): Buffer[];
+  windowsEnvironment(name: Buffer): Buffer | null;
+  windowsAbsolutePath(path: Buffer): WindowsResult<Buffer>;
+  windowsDirectoryEntries(
+    path: Buffer,
+  ): WindowsResult<
+    { name: Buffer; isDirectory: boolean; isSymbolicLink: boolean }[]
+  >;
   openWindowsFile(
     path: Buffer,
     access: number,
@@ -36,30 +44,10 @@ export interface WindowsBinding {
     flags: number,
   ): { error: number; handle?: WindowsHandle | null };
   createWindowsDirectory(path: Buffer): number;
+  createWindowsDirectories(path: Buffer): number;
 }
 
-export const windowsFlags = {
-  DELETE: 0x00010000,
-  FILE_READ_ATTRIBUTES: 0x00000080,
-  GENERIC_READ: 0x80000000,
-  GENERIC_WRITE: 0x40000000,
-  FILE_SHARE_READ: 1,
-  FILE_SHARE_WRITE: 2,
-  FILE_SHARE_DELETE: 4,
-  CREATE_NEW: 1,
-  OPEN_EXISTING: 3,
-  OPEN_ALWAYS: 4,
-  FILE_ATTRIBUTE_DIRECTORY: 0x00000010,
-  FILE_ATTRIBUTE_NORMAL: 0x00000080,
-  FILE_ATTRIBUTE_REPARSE_POINT: 0x00000400,
-  FILE_FLAG_BACKUP_SEMANTICS: 0x02000000,
-  FILE_FLAG_OPEN_REPARSE_POINT: 0x00200000,
-  FILE_FLAG_OVERLAPPED: 0x40000000,
-  FILE_NAME_OPENED: 8,
-  FILE_BEGIN: 0,
-  FILE_CURRENT: 1,
-  FILE_END: 2,
-} as const;
+export { windowsFlags } from "./windows-flags.mjs";
 
 export function loadWindowsBinding(): WindowsBinding {
   return createRequire(import.meta.url)(binaryPath) as WindowsBinding;
