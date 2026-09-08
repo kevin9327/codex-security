@@ -6,6 +6,7 @@
 - port source and test report checks to TypeScript ([#768](https://github.com/openai/codex-security/pull/768))
 - port custom validation to TypeScript ([#792](https://github.com/openai/codex-security/pull/792))
 - add Python-free Unix OS primitives ([#794](https://github.com/openai/codex-security/pull/794))
+- add Python-free Windows OS primitives ([#795](https://github.com/openai/codex-security/pull/795))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
