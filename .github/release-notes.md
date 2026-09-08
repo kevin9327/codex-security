@@ -1,9 +1,9 @@
-<!-- release-version: 0.1.26 -->
+<!-- release-version: 0.1.27 -->
 
 <!-- release-section: highlights:start -->
 ## Highlights
 
-No release highlights have been drafted yet.
+- port source and test report checks to TypeScript ([#768](https://github.com/openai/codex-security/pull/768))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
