@@ -30,6 +30,8 @@ import {
   windowsFileSystem,
 } from "../../../native/windows-files.mjs";
 
+import { object, parseJson } from "./python-json";
+
 const trim = (value: string) =>
   value.replace(
     /^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu,
@@ -76,85 +78,6 @@ function compare(left: string, right: string): number {
     if (a[index] !== b[index]) return a[index]! - b[index]!;
   }
   return a.length - b.length;
-}
-
-// JSON's numeric spelling matters: Python accepts 1 but rejects 1.0 as a line.
-class JsonFloat {
-  constructor(readonly source: string) {}
-}
-function parseJson(source: string): unknown {
-  const tokens =
-    source.match(
-      /"(?:\\[\s\S]|[^"\\])*"|[{}\[\]:,]|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|-?Infinity|NaN|[^ \t\r\n]/gu,
-    ) ?? [];
-  let index = 0;
-  const take = () => tokens[index++];
-  function expect(token: string): void {
-    if (take() !== token) throw new Error(`expected ${token} in JSON`);
-  }
-  function value(): unknown {
-    const token = take();
-    if (token === "{") {
-      const row: Row = Object.create(null) as Row;
-      if (tokens[index] === "}") {
-        index++;
-        return row;
-      }
-      while (true) {
-        const key = take();
-        if (!key?.startsWith('"'))
-          throw new Error("expected a JSON property name");
-        expect(":");
-        row[JSON.parse(key) as string] = value();
-        if (tokens[index] === "}") {
-          index++;
-          return row;
-        }
-        expect(",");
-      }
-    }
-    if (token === "[") {
-      const values: unknown[] = [];
-      if (tokens[index] === "]") {
-        index++;
-        return values;
-      }
-      while (true) {
-        values.push(value());
-        if (tokens[index] === "]") {
-          index++;
-          return values;
-        }
-        expect(",");
-      }
-    }
-    if (token?.startsWith('"')) return JSON.parse(token) as string;
-    if (token === "true") return true;
-    if (token === "false") return false;
-    if (token === "null") return null;
-    if (token !== undefined && /^-?[0-9]+$/u.test(token)) return BigInt(token);
-    if (
-      token !== undefined &&
-      (/^-?(?:[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|Infinity)$/u.test(
-        token,
-      ) ||
-        token === "NaN")
-    )
-      return new JsonFloat(token);
-    throw new Error("expected a JSON value");
-  }
-  const result = value();
-  if (index !== tokens.length) throw new Error("extra data after JSON value");
-  return result;
-}
-
-function object(value: unknown): value is Row {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    !(value instanceof JsonFloat)
-  );
 }
 
 function stableJson(value: unknown): string {
