@@ -245,7 +245,6 @@ describe("TypeScript package skeleton", () => {
       "Upload test reports",
       "Upload Windows test reports",
       "Upload MCP test reports",
-      "Upload Python test reports",
     ]) {
       expect(steps.find((step) => step.name === name)).toMatchObject({
         if: "always()",
@@ -254,10 +253,10 @@ describe("TypeScript package skeleton", () => {
     }
     expect(
       jobs["plugin-source"]!.steps!.find(
-        ({ name }) => name === "Test Python source contracts",
+        ({ name }) => name === "Test source compatibility checker",
       )?.run,
-    ).toContain(
-      "-n 4 --dist worksteal --max-worker-restart 0 --durations=30 --junitxml=reports/python.xml",
+    ).toBe(
+      "node --test .github/scripts/test_check_plugin_source_compatibility.mjs",
     );
   });
 

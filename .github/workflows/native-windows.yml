@@ -82,10 +82,6 @@ jobs:
           & $nativeNode proof-policy-windows.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $nativeNode proof-regex.mjs
-      - name: Compare the existing Python completion lock
-        run: |
-          $python = (Get-Command python -ErrorAction Stop).Source
-          node --expose-gc proof-windows.mjs $python ../scripts
       - name: Set up Node.js 20
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:

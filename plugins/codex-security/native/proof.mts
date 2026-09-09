@@ -576,33 +576,6 @@ async function nativeLockWorker(path: string): Promise<void> {
   }
 }
 
-// Temporary interoperability oracle: import the actual current Python functions.
-// This protocol scaffold is never a migrated implementation or shipped artifact.
-const pythonOracle = String.raw`
-import json, os, sys
-sys.path.insert(0, sys.argv[1])
-from workbench_db import acquire_completion_file_lock, release_completion_file_lock, posix_file_lock
-fd = os.open(sys.argv[2], os.O_RDWR | os.O_CREAT, 0o600)
-try:
-    if sys.argv[3] == "try":
-        try:
-            posix_file_lock.flock(fd, posix_file_lock.LOCK_EX | posix_file_lock.LOCK_NB)
-        except OSError as error:
-            print(json.dumps({"acquired": False, "errno": error.errno}), flush=True)
-        else:
-            release_completion_file_lock(fd)
-            print(json.dumps({"acquired": True}), flush=True)
-    else:
-        print("waiting", flush=True)
-        acquire_completion_file_lock(fd)
-        print("acquired", flush=True)
-        sys.stdin.buffer.readline()
-        release_completion_file_lock(fd)
-        print("released", flush=True)
-finally:
-    os.close(fd)
-`;
-
 type Worker = {
   child: ChildProcessWithoutNullStreams;
   lines: AsyncIterableIterator<string>;
@@ -668,13 +641,11 @@ async function kill(child: Worker): Promise<void> {
   assert.equal((await child.exit).signal, "SIGKILL");
 }
 
-async function lockProof(root: string, python?: string, scripts?: string) {
+async function lockProof(root: string) {
   const path = join(root, "completion.lock");
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600);
   const peerWorker = (mode = "hold") =>
-    python !== undefined && scripts !== undefined
-      ? worker(python, ["-c", pythonOracle, scripts, path, mode])
-      : worker(process.execPath, [self, "lock-worker", path, mode]);
+    worker(process.execPath, [self, "lock-worker", path, mode]);
   const nativeWorker = () =>
     worker(process.execPath, [self, "lock-worker", path]);
   try {
@@ -718,7 +689,7 @@ async function lockProof(root: string, python?: string, scripts?: string) {
     fileLock(fd, false, true);
     fileLock(fd, true);
     return {
-      peerRuntime: python === undefined ? "node" : "python",
+      peerRuntime: "node",
       peerContentionErrno: contention.errno,
       nativeContentionErrno: nativeContention,
       bidirectionalBlockingHandoff: true,
@@ -734,13 +705,6 @@ async function lockProof(root: string, python?: string, scripts?: string) {
 if (process.argv[2] === "lock-worker") {
   await nativeLockWorker(process.argv[3]!);
 } else {
-  const python = process.argv[2];
-  const scripts = process.argv[3];
-  assert.equal(
-    Boolean(python),
-    Boolean(scripts),
-    "Pass both the optional Python interpreter and legacy scripts directory",
-  );
   const root = mkdtempSync(join(tmpdir(), "codex-security-native-"));
   try {
     assert.equal(
@@ -755,8 +719,6 @@ if (process.argv[2] === "lock-worker") {
     const accounts = accountProof();
     const directories = directoryProof(root);
     const locks = await lockProof(root);
-    const pythonCompatibility =
-      python && scripts ? await lockProof(root, python, scripts) : undefined;
     console.log(
       JSON.stringify(
         {
@@ -771,7 +733,6 @@ if (process.argv[2] === "lock-worker") {
           accounts,
           directories,
           locks,
-          pythonCompatibility,
           fixture: basename(root),
         },
         null,

@@ -10,8 +10,7 @@
     "ghcr.io/devcontainers/features/node:2": {
       "version": "22",
       "pnpmVersion": "none"
-    },
-    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
+    }
   },
   "onCreateCommand": "sh .devcontainer/install.sh"
 }

@@ -2,10 +2,6 @@
 
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS package
 
-RUN apt-get update \
-    && apt-get install --no-install-recommends --yes python3 \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /build/sdk/typescript
 
 COPY package.json /build/package.json
@@ -35,7 +31,6 @@ RUN apt-get update \
         ca-certificates \
         git \
         openssh-client \
-        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=package /build/package/ /tmp/codex-security-package/
@@ -58,8 +53,7 @@ RUN groupadd --gid 10001 codex-security \
 ENV CODEX_HOME=/state \
     CODEX_SECURITY_STATE_DIR=/output/.codex-security-state \
     GIT_TERMINAL_PROMPT=0 \
-    HOME=/state \
-    PYTHON=/usr/bin/python3
+    HOME=/state
 
 USER 10001:10001
 WORKDIR /state

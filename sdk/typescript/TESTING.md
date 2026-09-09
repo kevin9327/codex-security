@@ -42,7 +42,7 @@ The local test commands pass a 30-second per-test timeout explicitly. Windows
 CI and the Windows runner experiment allow 120 seconds for slower native
 credential and document checks. `test:ci` writes `reports/junit.xml` and
 `coverage/lcov.info`. Coverage measures loaded
-JavaScript and TypeScript, not the Python helpers or child processes. It is
+JavaScript and TypeScript, excluding native code and child processes. It is
 diagnostic for now. Use several successful CI runs to establish a baseline
 before proposing a coverage floor.
 
@@ -59,13 +59,11 @@ before proposing a coverage floor.
 - Test workflow retry, resume, and checkpoint permutations with the existing
   injected workbench dependency. `scriptedWorkbench` rejects unexpected
   requests; `checkpointWorkbench` stores review results without reproducing the
-  Python workflow engine. Keep real workbench calls in the focused workflow
+  workbench workflow engine. Keep real workbench calls in the focused workflow
   integration file for process termination, migration, and source snapshots.
-- Test Python database behavior by calling the production functions in pytest.
-  The `workbench_db` fixture copies a migrated, empty schema into a fresh
-  in-memory SQLite database for each test, with foreign keys enabled. Use
-  file-backed databases for migrations, reopening, locking, and crash recovery;
-  an in-memory database cannot exercise those boundaries.
+- Test database behavior through production functions with
+  `withWorkbenchDatabase` and real temporary SQLite files. Exercise migrations,
+  reopening, locking, and crash recovery against the native SQLite adapter.
 - Restore spies, timers, and environment changes. Tests that change the process
   cwd or install persistent ESM module mocks use `runTestInSubprocess`.
   Per-file Bun isolation does not isolate process-wide state inside one file.
@@ -99,9 +97,8 @@ validation still finish before the test jobs start.
 
 The full Bun suite runs once per OS under Node 22: three file shards on Linux
 and macOS, and seven on Windows. The other Node versions run the installed
-package checks instead of repeating the same Bun suite. MCP and Python tests
-run in separate required jobs. Python uses four isolated pytest-xdist workers
-with work stealing; worker crashes fail the run without automatic restarts.
+package checks instead of repeating the same Bun suite. MCP tests and portable source
+checks run in separate required jobs.
 
 `scripts/run-ci-tests.mjs` assigns the longest measured files first. Its
 `ci-test-durations.json` records per-file seconds from CI reports.
@@ -111,11 +108,11 @@ expensive files; estimates affect scheduling, never whether a test runs.
 To reproduce one Windows shard locally after building the plugin, run
 `node scripts/run-ci-tests.mjs 3/7 --seed=12345`.
 
-Every Bun lane uploads JUnit; Linux lanes also upload LCOV per shard. Python
-reports include case durations, and the MCP runner can upload its JUnit report.
+Every Bun lane uploads JUnit; Linux lanes also upload LCOV per shard. The MCP
+runner can upload its JUnit report.
 Coverage is diagnostic and split across shards, not a combined percentage.
 Failed tests and missing package artifacts block CI; failed diagnostic uploads
-do not. Use `python -m pytest -n 0` to reproduce Python failures serially.
+do not.
 
 The separate `test-quality` workflow runs weekly, can be dispatched manually,
 and runs on pull requests that change its workflow file. It compares Bun's
@@ -136,7 +133,7 @@ Keep the measured file-balanced runner until the native runner has
 matching inventories and acceptable Windows timings. Before promotion, compare
 native and file-balanced shards using the same commit and Bun version.
 Keep the machine-policy test serial. Do not replace the full required suite
-with `--changed`: Python files, schemas, fixtures, and workflows loaded at
+with `--changed`: schemas, fixtures, and workflows loaded at
 runtime are not necessarily part of Bun's import graph.
 
 ## Mutation testing

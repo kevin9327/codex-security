@@ -20,7 +20,6 @@ tasks:
     command: |
       pnpm --dir sdk/typescript run test
       pnpm --dir sdk/typescript run test:mcp
-      python -m pytest plugins/codex-security/tests -q
     dependsOn:
       - build
     triggeredBy:

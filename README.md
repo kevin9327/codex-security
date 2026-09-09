@@ -10,7 +10,7 @@ Trusted Access for Cyber. To join the program, visit
 
 ## Quick start
 
-Requires Node.js 22.13.0 or later and Python 3.10 or later.
+Requires Node.js 22.13.0 or later.
 
 ```bash
 npm install @openai/codex-security

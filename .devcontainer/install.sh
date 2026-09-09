@@ -2,7 +2,7 @@
 
 set -eu
 
-# Install the development dependencies for the Node.js and Python workflows.
+# Install the development dependencies for the Node.js workflows.
 # Shared by .devcontainer/devcontainer.json and .ona/automations.yml so editors
 # and Ona environments install the same toolchain.
 
@@ -29,4 +29,3 @@ fi
 
 pnpm --dir sdk/typescript install --frozen-lockfile
 pnpm --dir plugins/codex-security/mcp-app install --frozen-lockfile
-python -m pip install --disable-pip-version-check --no-input -e 'plugins/codex-security[test]'
