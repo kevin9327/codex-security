@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { encodeUtf8 } from "./utf8.mjs";
 
 /** INTEGER remains bigint; REAL remains number, including integral REAL values. */
 export type SqlValue = null | bigint | number | string | Buffer;
@@ -70,8 +71,7 @@ export function completeStatement(native: SqliteBinding, sql: string): boolean {
   return native.completeStatement(text(sql));
 }
 function text(value: string): string {
-  if (Buffer.from(value, "utf8").toString("utf8") !== value)
-    throw new TypeError("SQLite strings must be valid UTF-8");
+  encodeUtf8(value);
   return value;
 }
 function parameter(value: Parameter): SqlValue {
