@@ -765,11 +765,11 @@ def merge_saved_results(
     ]
     parent_drafts = [(None, parent)] if parent else []
     worker_drafts = list(current_sources.values())
-    # Explicit legacy recovery reads newer worker decisions alongside a sealed
-    # historical projection, which must not override those decisions.
+    # Explicit legacy recovery reads newer worker decisions alongside a stopped,
+    # sealed projection. A current parent still owns its validation decisions.
     current_drafts += (
         worker_drafts + parent_drafts
-        if allow_frozen_legacy_parent
+        if allow_frozen_legacy_parent and stopped_parent_seal
         else parent_drafts + worker_drafts
     )
     latest_decisions: dict[tuple[str | None, str], str] = {}

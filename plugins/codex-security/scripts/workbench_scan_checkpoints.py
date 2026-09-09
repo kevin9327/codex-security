@@ -29,21 +29,32 @@ from workbench_validation import path_within_scope
 
 def review_file_inventory(repository: Path, scopes: list[str]) -> list[tuple[str, str]]:
     """Read source bytes before a scan acquires the shared database write lock."""
-    paths: set[Path] = set()
+    paths: dict[str, Path] = {}
     for scope in scopes or ["."]:
         selected = repository / scope
         metadata = selected.lstat()
         if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0) & 0x20000000:
             continue
-        paths.update(
-            repo_scope_paths(repository, selected, allow_unfiltered_fallback=selected == repository)
-        )
+        for path in repo_scope_paths(
+            repository, selected, allow_unfiltered_fallback=selected == repository
+        ):
+            paths[str(path)] = path
     inventory = []
-    for path in sorted(paths):
+    for name in sorted(paths):
+        path = paths[name]
         if not stat.S_ISREG(path.lstat().st_mode) or not path.resolve().is_relative_to(repository):
             continue
         inventory.append((path.relative_to(repository).as_posix(), file_digest(path)))
     return inventory
+
+
+def review_path_value(path: str) -> str | bytes:
+    """Keep ordinary names as TEXT and losslessly store POSIX filesystem bytes."""
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        return os.fsencode(path)
+    return path
 
 
 def freeze_review_files(
@@ -51,7 +62,7 @@ def freeze_review_files(
 ) -> None:
     connection.executemany(
         "INSERT INTO scan_review_files (scan_id, relative_path, content_sha256) VALUES (?, ?, ?)",
-        ((scan_id, path, digest) for path, digest in inventory),
+        ((scan_id, review_path_value(path), digest) for path, digest in inventory),
     )
 
 
@@ -148,7 +159,7 @@ def record_checkpoint(
     for path in reviewed:
         row = connection.execute(
             "SELECT content_sha256 FROM scan_review_files WHERE scan_id = ? AND relative_path = ?",
-            (scan["id"], path),
+            (scan["id"], review_path_value(path)),
         ).fetchone()
         target = Path(scan["target_path"]) / path
         if (
@@ -187,7 +198,7 @@ def record_checkpoint(
             connection.execute(
                 "UPDATE scan_review_files SET reviewed_at = COALESCE(reviewed_at, ?) "
                 "WHERE scan_id = ? AND relative_path = ?",
-                (timestamp, scan["id"], path),
+                (timestamp, scan["id"], review_path_value(path)),
             )
         connection.execute(
             "INSERT INTO scan_checkpoints (scan_id, source_path, checkpoint_path, content_sha256, "
@@ -249,8 +260,12 @@ def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, 
         "status": "provisional",
         "savedAt": max(row["recorded_at"] for row in rows),
         "sources": sources,
-        "reviewedFiles": [row["relative_path"] for row in reviewed if row["reviewed_at"]],
-        "remainingFiles": [row["relative_path"] for row in reviewed if not row["reviewed_at"]],
+        "reviewedFiles": [
+            os.fsdecode(row["relative_path"]) for row in reviewed if row["reviewed_at"]
+        ],
+        "remainingFiles": [
+            os.fsdecode(row["relative_path"]) for row in reviewed if not row["reviewed_at"]
+        ],
     }
 
 
@@ -476,6 +491,7 @@ def copy_checkpoint_writeups(
     """Copy a source's reports and PoCs while preserving valid scan-local report paths."""
     result = json.loads(json.dumps(value))
     paths: dict[tuple[str, str], str] = {}
+    writeups: list[tuple[dict[str, Any], tuple[str, str]]] = []
     locations = locations or [parent_root / source]
     sealed_artifacts = sealed_artifacts or {}
 
@@ -520,7 +536,7 @@ def copy_checkpoint_writeups(
                     slug = hashlib.sha256(f"{origin}\0{report}".encode()).hexdigest()
                     destination = f"findings/{slug}/{slug}.md"
                 paths[(origin, report)] = destination
-                writeup["reportPath"] = destination
+                writeups.append((writeup, (origin, report)))
             for key, child in item.items():
                 child_owner = owner
                 if key == "finding" and isinstance(item.get("id"), str) and worker_sources:
@@ -529,36 +545,33 @@ def copy_checkpoint_writeups(
 
     references(result, source)
 
-    def copy_file(path: Path, destination: str, *, optional: bool = False) -> bool:
-        relative = path.relative_to(parent_root).as_posix()
+    def read_file(
+        root: Path, path: Path, *, optional: bool = False, verify_seal: bool = False
+    ) -> bytes | None:
+        relative = path.relative_to(root).as_posix()
+        sealed = sealed_artifacts.get(relative) if verify_seal else None
         try:
-            descriptor = open_scan_local_file_descriptor(parent_root, relative, "Saved writeup")
+            descriptor = open_scan_local_file_descriptor(root, relative, "Saved writeup")
         except ContractError as exc:
-            if (
-                optional
-                and relative not in sealed_artifacts
-                and isinstance(exc.__cause__, FileNotFoundError)
-            ):
-                return False
+            if optional and sealed is None and isinstance(exc.__cause__, FileNotFoundError):
+                return None
             raise
         with os.fdopen(descriptor, "rb") as handle:
             contents = handle.read()
-        if (
-            relative in sealed_artifacts
-            and hashlib.sha256(contents).hexdigest() != sealed_artifacts[relative]
-        ):
+        if sealed is not None and hashlib.sha256(contents).hexdigest() != sealed:
             raise ContractError(f"{relative}: sealed artifact changed after completion")
-        if path != child_root / destination:
-            write_scan_local_bytes(child_root, destination, contents)
-        return True
+        return contents
 
-    missing = False
-    for (origin, report), destination in paths.items():
-        origins = locations if origin == source else [parent_root / origin]
-        if not any(
-            copy_file(location / report, destination, optional=True) for location in origins
-        ):
-            missing = True
+    def bundle(
+        root: Path, origins: list[Path], report: str, *, verify_seals: bool = False
+    ) -> dict[str, tuple[Path, str]]:
+        files = {}
+        for location in origins:
+            path = location / report
+            contents = read_file(root, path, optional=True, verify_seal=verify_seals)
+            if contents is not None:
+                files[""] = (path, hashlib.sha256(contents).hexdigest())
+                break
         for location in reversed(origins):
             poc = location / Path(report).parent / "poc"
             if not poc.exists() and not poc.is_symlink():
@@ -568,8 +581,37 @@ def copy_checkpoint_writeups(
                     _require_scan_directory(path)
                 for filename in filenames:
                     path = Path(directory) / filename
-                    target = Path(destination).parent / "poc" / path.relative_to(poc)
-                    copy_file(path, target.as_posix())
+                    contents = read_file(root, path, verify_seal=verify_seals)
+                    files[(Path("poc") / path.relative_to(poc)).as_posix()] = (
+                        path,
+                        hashlib.sha256(contents).hexdigest(),
+                    )
+        return files
+
+    missing = False
+    for (origin, report), destination in paths.items():
+        origins = locations if origin == source else [parent_root / origin]
+        files = bundle(parent_root, origins, report, verify_seals=True)
+        missing |= "" not in files
+        hashes = {name: digest for name, (_, digest) in files.items()}
+        version = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+        existing = bundle(child_root, [child_root], destination)
+        # Canonical reports can be edited after a worker checkpoint. Keep each
+        # report and its exact PoC set together instead of overwriting that version.
+        while existing and {name: digest for name, (_, digest) in existing.items()} != hashes:
+            slug = hashlib.sha256(f"{destination}\0{version}".encode()).hexdigest()
+            destination = f"findings/{slug}/{slug}.md"
+            existing = bundle(child_root, [child_root], destination)
+        paths[(origin, report)] = destination
+        if not existing:
+            for name, (path, digest) in files.items():
+                contents = read_file(parent_root, path, verify_seal=True)
+                if hashlib.sha256(contents).hexdigest() != digest:
+                    raise ContractError("Saved writeup changed while copying its report and PoCs")
+                target = Path(destination).parent / name if name else Path(destination)
+                write_scan_local_bytes(child_root, target.as_posix(), contents)
+    for writeup, key in writeups:
+        writeup["reportPath"] = paths[key]
     return result, {destination: report for (_, report), destination in paths.items()}, missing
 
 

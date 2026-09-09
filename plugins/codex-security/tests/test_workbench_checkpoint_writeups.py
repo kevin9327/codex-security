@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import shutil
 import sqlite3
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 from test_workbench_checkpoint_attachments import continue_scan
@@ -311,3 +312,188 @@ def test_worker_writeups_keep_local_and_aggregate_ownership_after_continuation(
     assert f"{worker_id}:1" in retained_sources
     assert reducer_result.read_bytes() == original_reduction
     assert not (reducer_output / "findings").exists()
+
+
+@pytest.mark.parametrize(
+    ("changed_owner", "changed_artifact"),
+    [
+        ("canonical", "report"),
+        ("canonical", "poc"),
+        ("canonical", "extra-poc"),
+        ("worker", "report"),
+        ("worker", "poc"),
+        ("worker", "removed-poc"),
+    ],
+)
+def test_finalization_preserves_distinct_canonical_and_worker_writeups(
+    tmp_path: Path, changed_owner: str, changed_artifact: str
+):
+    state, repository, parent, parent_id = scan_fixture(tmp_path, "deep")
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    write_completed_contract(contract, parent_id, repository, relative_path="clean.ts")
+    finding = json.loads((contract / "findings.json").read_text())["findings"][0]
+    report = "findings/shared/shared.md"
+    finding["writeup"] = {"reportPath": report}
+    finding["extensions"] = {"candidateId": "inherited-candidate"}
+    worker_id = str(uuid.uuid4())
+    finding["provenance"]["workerId"] = worker_id
+    source = "artifacts/deep_discovery/workers/discovery-0001/output"
+    output = parent / source
+    output.mkdir(parents=True)
+    prompt = output.parent / "prompt.md"
+    prompt.write_text("Synthetic independent review\n")
+    original_report = b"# Original report\n\n[Proof](poc/input.bin)\n"
+    original_poc = b"\x00original proof\xff"
+    (output / report).parent.mkdir(parents=True)
+    (output / report).write_bytes(original_report)
+    (output / Path(report).parent / "poc").mkdir()
+    (output / Path(report).parent / "poc/input.bin").write_bytes(original_poc)
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.execute(
+            "INSERT INTO deep_scan_runs (scan_id, schema_version, workflow_version, status, phase, "
+            "workers, subagents, stop_after_no_new, max_discovery_runs, discovery_runs_dispatched, "
+            "created_at, updated_at) VALUES (?, 1, 'deep-security-scan/v1', 'failed', 'terminal', "
+            "1, 0, 2, 2, 1, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')",
+            (parent_id,),
+        )
+        connection.execute(
+            "INSERT INTO deep_scan_workers (id, scan_id, kind, status, prompt_path, artifact_dir, "
+            "attempt, created_at, updated_at) VALUES (?, ?, 'discovery', 'failed', ?, ?, 1, "
+            "'2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')",
+            (worker_id, parent_id, str(prompt), str(output)),
+        )
+    partial = semantic(parent_id, ["clean.ts"])
+    partial["findings"] = [finding]
+    partial["coverage"]["deferred"] = []
+    save(state, parent_id, write_checkpoint(output / "checkpoints", partial))
+    child = tmp_path / "child"
+    child_id = continue_scan(state, repository, parent_id, child)
+    worker_id = str(uuid.uuid5(uuid.UUID(child_id), worker_id))
+    output = child / source
+    canonical_findings = json.loads((child / "findings.json").read_text())
+    canonical_coverage = json.loads((child / "coverage.json").read_text())
+    canonical_report = canonical_findings["findings"][0]["writeup"]["reportPath"]
+    write_completed_contract(child, child_id, repository, relative_path="clean.ts")
+    (child / "findings.json").write_text(json.dumps(canonical_findings))
+    (child / "coverage.json").write_text(json.dumps(canonical_coverage))
+    worker_finding = copy.deepcopy(finding)
+    worker_finding["provenance"]["workerId"] = worker_id
+    if changed_owner == "worker":
+        worker_finding["identity"]["anchor"] = "new-worker-candidate"
+        worker_finding["title"] = "New independent finding"
+        worker_finding["extensions"]["candidateId"] = "new-worker-candidate"
+    changed_root = child if changed_owner == "canonical" else output
+    changed_report = canonical_report if changed_owner == "canonical" else report
+    updated_report = b"# Updated report\n\n[Proof](poc/input.bin)\n"
+    updated_poc = b"\x00updated proof\xff"
+    changed_path = changed_root / (
+        changed_report
+        if changed_artifact == "report"
+        else Path(changed_report).parent / "poc/input.bin"
+    )
+    if changed_artifact == "removed-poc":
+        changed_path.unlink()
+    elif changed_artifact == "extra-poc":
+        changed_path.with_name("extra.bin").write_bytes(updated_poc)
+    else:
+        changed_path.write_bytes(updated_report if changed_artifact == "report" else updated_poc)
+    result = semantic(child_id, ["clean.ts"])
+    result.update(complete=True, findings=[worker_finding])
+    result["coverage"].update(completeness="complete", deferred=[])
+    result_path = output / "result.json"
+    result_path.write_text(json.dumps(result))
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.execute(
+            "UPDATE deep_scan_workers SET status = 'succeeded', result_manifest_path = ? WHERE id = ?",
+            (str(result_path), worker_id),
+        )
+        connection.execute(
+            "UPDATE deep_scan_runs SET status = 'succeeded', phase = 'terminal', manifest_path = ? WHERE scan_id = ?",
+            (str(child / "scan-manifest.json"), child_id),
+        )
+
+    run_workbench(state, "prepare-scan-completion", "--scan-id", child_id)
+    final_findings = json.loads((child / "findings.json").read_text())["findings"]
+    inherited = next(item for item in final_findings if item["title"] == finding["title"])
+    assert inherited["writeup"]["reportPath"] == canonical_report
+    assert (child / canonical_report).read_bytes() == (
+        updated_report
+        if (changed_owner, changed_artifact) == ("canonical", "report")
+        else original_report
+    )
+    assert (child / Path(canonical_report).parent / "poc/input.bin").read_bytes() == (
+        updated_poc if (changed_owner, changed_artifact) == ("canonical", "poc") else original_poc
+    )
+    if changed_owner == "worker":
+        current = next(
+            item for item in final_findings if item["title"] == "New independent finding"
+        )
+        current_report = current["writeup"]["reportPath"]
+        assert current_report != canonical_report
+        assert (child / current_report).read_bytes() == (
+            updated_report if changed_artifact == "report" else original_report
+        )
+        current_poc = child / Path(current_report).parent / "poc/input.bin"
+        if changed_artifact == "removed-poc":
+            assert not current_poc.exists()
+        else:
+            assert current_poc.read_bytes() == (
+                updated_poc if changed_artifact == "poc" else original_poc
+            )
+    else:
+        historical = next(
+            item
+            for item in inherited["provenance"]["previousFindings"]
+            if item.get("writeup", {}).get("reportPath") != canonical_report
+        )
+        historical_report = historical["writeup"]["reportPath"]
+        assert (child / historical_report).read_bytes() == original_report
+        assert (
+            child / Path(historical_report).parent / "poc/input.bin"
+        ).read_bytes() == original_poc
+        assert not (child / Path(historical_report).parent / "poc/extra.bin").exists()
+        if changed_artifact == "extra-poc":
+            assert (
+                child / Path(canonical_report).parent / "poc/extra.bin"
+            ).read_bytes() == updated_poc
+    retained = {
+        path: path.read_bytes() for path in (child / "findings").rglob("*") if path.is_file()
+    }
+    run_workbench(state, "prepare-scan-completion", "--scan-id", child_id)
+    assert retained == {path: path.read_bytes() for path in retained}
+
+
+def test_sealed_writeup_copy_distinguishes_case_sensitive_windows_directories(
+    tmp_path: Path, workbench_api
+):
+    parent = tmp_path / "scan"
+    child = tmp_path / "SCAN"
+    parent.mkdir()
+    if child.exists():
+        pytest.skip("The fixture filesystem does not support case-distinct directories")
+    child.mkdir()
+    report = "findings/shared/shared.md"
+    contents = b"# Retained report\n"
+    (parent / report).parent.mkdir(parents=True)
+    (parent / report).write_bytes(contents)
+
+    class WindowsEqualityPath(type(Path())):
+        def __hash__(self):
+            return hash(PureWindowsPath(str(self)))
+
+        def __eq__(self, other):
+            return PureWindowsPath(str(self)) == PureWindowsPath(str(other))
+
+    assert WindowsEqualityPath(parent) == WindowsEqualityPath(child)
+    assert not parent.samefile(child)
+    result, _, missing = workbench_api["scan_checkpoints"].copy_checkpoint_writeups(
+        WindowsEqualityPath(parent),
+        WindowsEqualityPath(child),
+        {"findings": [{"writeup": {"reportPath": report}}]},
+        ".",
+        sealed_artifacts={report: hashlib.sha256(contents).hexdigest()},
+    )
+    assert result["findings"][0]["writeup"]["reportPath"] == report
+    assert not missing
+    assert (child / report).read_bytes() == (parent / report).read_bytes() == contents

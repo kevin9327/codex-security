@@ -68,6 +68,7 @@ def decision(scan_id: str, worker_id: str, finding: dict, outcome: str):
                 "label": "Saved candidate validation",
                 "candidateId": "candidate-1",
                 "disposition": outcome,
+                **({"pattern": "clean.ts"} if outcome == "not_applicable" else {}),
                 "reason": "The existing control prevents the candidate.",
                 "receiptRefs": [],
                 "provenance": {"workerId": worker_id},
