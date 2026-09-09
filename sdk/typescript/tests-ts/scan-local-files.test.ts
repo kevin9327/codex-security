@@ -36,6 +36,7 @@ beforeAll(() =>
 );
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
 function request(input: Request, cwd?: string): unknown[] {
+  const startedAt = process.hrtime.bigint();
   const child = spawnSync(node, [fixture], {
     input: JSON.stringify(input),
     encoding: "utf8",
@@ -47,6 +48,7 @@ function request(input: Request, cwd?: string): unknown[] {
   expect(
     child.status,
     JSON.stringify({
+      elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
       error: child.error?.message,
       signal: child.signal,
       stderr: child.stderr,

@@ -20,6 +20,7 @@ export function buildReportFixture(
     platform: "node",
     format: "cjs",
   });
+  const startedAt = process.hrtime.bigint();
   const child = spawnSync(
     node,
     [
@@ -34,7 +35,18 @@ export function buildReportFixture(
     ],
     { input: JSON.stringify(options), encoding: "utf8", timeout: 30_000 },
   );
-  if (child.error) throw child.error;
+  if (child.error) {
+    console.error(
+      "Report fixture process diagnostic",
+      JSON.stringify({
+        elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
+        error: child.error.message,
+        signal: child.signal,
+        stderr: child.stderr,
+      }),
+    );
+    throw child.error;
+  }
   if (child.status !== 0)
     throw new Error(`Report fixture build failed: ${child.stderr}`);
 }
