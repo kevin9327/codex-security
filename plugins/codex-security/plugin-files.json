@@ -7,6 +7,7 @@
     ".app.json",
     ".mcp.json",
     "assets/logo.png",
+    "data/workbench-migrations.json",
     "examples/completed-scan/coverage.json",
     "examples/completed-scan/findings.json",
     "examples/completed-scan/report.md",
