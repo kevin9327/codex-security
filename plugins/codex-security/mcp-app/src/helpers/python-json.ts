@@ -21,7 +21,9 @@ export function object(value: unknown): value is Row {
 }
 export function objectEntries(value: Row): [string, unknown][] {
   const keys = new Set([...(keyOrder.get(value) ?? []), ...Object.keys(value)]);
-  return [...keys].map((key) => [key, value[key]]);
+  return [...keys]
+    .filter((key) => Object.hasOwn(value, key))
+    .map((key) => [key, value[key]]);
 }
 
 export function objectFromEntries(

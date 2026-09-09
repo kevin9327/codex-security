@@ -1,6 +1,7 @@
 import decimalDigit from "@unicode/unicode-15.0.0/General_Category/Decimal_Number/regex.js";
 import { hasText, mergedRootCause } from "./finding-root-cause";
 import { JsonFloat, object, pythonRepr } from "./python-json";
+import { encodeUtf8 } from "./utf8";
 
 type Table = Record<string, unknown>;
 export interface ReportFinding extends Table {
@@ -940,22 +941,5 @@ export function generateReportMarkdown(
   findings: { findings: ReportFinding[] },
   coverage: ReportCoverage,
 ): Buffer {
-  const markdown = buildReportMarkdown(manifest, findings, coverage);
-  const surrogate = /[\ud800-\udfff]/u;
-  if (surrogate.test(markdown)) {
-    const characters = Array.from(markdown);
-    const start = characters.findIndex((character) =>
-      surrogate.test(character),
-    );
-    let end = start + 1;
-    while (end < characters.length && surrogate.test(characters[end]!)) end++;
-    const detail =
-      end === start + 1
-        ? `character ${pythonRepr(characters[start])} in position ${start}`
-        : `characters in position ${start}-${end - 1}`;
-    throw new Error(
-      `'utf-8' codec can't encode ${detail}: surrogates not allowed`,
-    );
-  }
-  return Buffer.from(markdown);
+  return encodeUtf8(buildReportMarkdown(manifest, findings, coverage));
 }
