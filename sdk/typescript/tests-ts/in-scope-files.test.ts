@@ -244,9 +244,14 @@ test("rejects a scope symlink outside the repository and an output symlink", () 
 });
 test("preserves output when ripgrep is unavailable", () => {
   const f = fixture();
+  const pathVariable =
+    process.platform === "win32"
+      ? Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ??
+        "PATH"
+      : "PATH";
   preserved(
     f,
-    run(f, ".", [], { PATH: join(f.root, "missing-tools") }),
+    run(f, ".", [], { [pathVariable]: join(f.root, "missing-tools") }),
     "could not run ripgrep",
   );
 });

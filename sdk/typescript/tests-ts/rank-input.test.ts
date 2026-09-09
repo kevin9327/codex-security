@@ -17,6 +17,11 @@ import { afterEach, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 
 const node = Bun.which("node")!;
+const pathVariable =
+  process.platform === "win32"
+    ? Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ??
+      "PATH"
+    : "PATH";
 const helper = join(PLUGIN_ROOT, "mcp", "helpers.mjs");
 const roots: string[] = [];
 afterEach(() => {
@@ -115,7 +120,7 @@ test.each([
   (command) => {
     const help = spawnSync(node, [helper, command, "--help"], {
       encoding: "utf8",
-      env: { ...process.env, PATH: "" },
+      env: { ...process.env, [pathVariable]: "" },
     });
     succeeds(help);
     expect(help.stdout).toContain("Codex Security scan worklist helper");
@@ -142,7 +147,7 @@ test("keeps the golden repository worklist and excludes generated or binary nois
       path.includes("binary") ? "value\0binary" : "ignored",
     );
   const result = run(f, "make-repo-rank-input", ["--scope", "src"], {
-    PATH: "",
+    [pathVariable]: "",
   });
   succeeds(result);
   expect(readFileSync(f.output, "utf8").replaceAll("\r\n", "\n")).toBe(
@@ -371,7 +376,9 @@ test("plain-directory scope enumeration honors nested ignore rules and hides Git
 test("missing tools allow plain enumeration only when no ignore rules apply", () => {
   const f = fixture();
   write(f.repository, "src/handler.py");
-  succeeds(run(f, "make-repo-scope-input", scopes(f, ["src"]), { PATH: "" }));
+  succeeds(
+    run(f, "make-repo-scope-input", scopes(f, ["src"]), { [pathVariable]: "" }),
+  );
   expect(rows(f)).toEqual([{ path: "src/handler.py" }]);
   for (const rule of [
     ".gitignore",
@@ -383,7 +390,9 @@ test("missing tools allow plain enumeration only when no ignore rules apply", ()
     const path = write(f.repository, rule, "secret\n");
     preserves(
       f,
-      run(f, "make-repo-scope-input", scopes(f, ["src"]), { PATH: "" }),
+      run(f, "make-repo-scope-input", scopes(f, ["src"]), {
+        [pathVariable]: "",
+      }),
       "without Git or ripgrep",
     );
     rmSync(path);

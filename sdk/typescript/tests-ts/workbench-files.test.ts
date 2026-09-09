@@ -228,7 +228,9 @@ test("invalid path values retain workbench error categories and directory JSON e
   );
   expect(json!.error).toBe(invalid + ": invalid JSON: embedded null byte");
   expect(json!.systemExit).toBe(true);
-  expect(directory!.error).toContain(scan);
+  expect(directory!.error).toContain(
+    process.platform === "win32" ? scan.replaceAll("\\", "\\\\") : scan,
+  );
   const [missingParent, notDirectory] = run(
     {
       operation: "artifact",
