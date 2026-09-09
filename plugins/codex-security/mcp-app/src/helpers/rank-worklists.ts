@@ -78,12 +78,13 @@ export function loadRankRows(
         );
     }
     if (selection) {
-      if (typeof row.score !== "bigint")
+      if (typeof row["score"] !== "bigint")
         fail("score must be an integer from 1 through 10");
-      if ((row.score as bigint) < 1n || (row.score as bigint) > 10n)
+      if ((row["score"] as bigint) < 1n || (row["score"] as bigint) > 10n)
         fail("score must be from 1 through 10");
-      if (typeof row.include !== "boolean") fail("include must be a boolean");
-      if (typeof row.reason !== "string" || trim(row.reason) === "")
+      if (typeof row["include"] !== "boolean")
+        fail("include must be a boolean");
+      if (typeof row["reason"] !== "string" || trim(row["reason"]) === "")
         fail("reason must be a non-empty string");
     }
     return row as unknown as RankRow;

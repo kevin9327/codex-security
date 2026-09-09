@@ -247,6 +247,12 @@ export function windowsFileSystem(native: WindowsBinding) {
     }
   }
 
+  function sameFile(left: Buffer, right: Buffer): boolean {
+    const first = identity(left);
+    const second = identity(right);
+    return first.volume === second.volume && first.fileId.equals(second.fileId);
+  }
+
   function entriesWithTypes(path: Buffer) {
     const result = native.windowsDirectoryEntries(operationPath(path));
     check(result.error, path);
@@ -357,6 +363,7 @@ export function windowsFileSystem(native: WindowsBinding) {
     realpath,
     stat,
     identity,
+    sameFile,
     entriesWithTypes,
     mkdir,
     readlink,

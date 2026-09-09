@@ -168,6 +168,14 @@ function handleProof(root: string) {
     linkSync(path, link);
     const second = keep(open(link));
     assert.deepEqual(checked(second.identity()), identity);
+    assert.equal(
+      windowsFileSystem(native).sameFile(pathBytes(path), pathBytes(link)),
+      true,
+    );
+    assert.equal(
+      windowsFileSystem(native).sameFile(pathBytes(path), pathBytes(root)),
+      false,
+    );
     close(second);
     assert.equal(
       native.openWindowsFile(

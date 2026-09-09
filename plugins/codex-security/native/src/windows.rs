@@ -362,6 +362,19 @@ impl WindowsHandle {
                 size_of::<FILE_ID_INFO>() as u32,
             )
         });
+        if error != 0 {
+            // Like Python stat, retain the legacy ID on filesystems without FileIdInfo.
+            let mut legacy = BY_HANDLE_FILE_INFORMATION::default();
+            let error = status(unsafe { GetFileInformationByHandle(self.raw(), &mut legacy) });
+            let mut file_id = vec![0; 16];
+            let index = (u64::from(legacy.nFileIndexHigh) << 32) | u64::from(legacy.nFileIndexLow);
+            file_id[..8].copy_from_slice(&index.to_le_bytes());
+            return IdentityResult {
+                error,
+                volume: legacy.dwVolumeSerialNumber.to_string(),
+                file_id: file_id.into(),
+            };
+        }
         IdentityResult {
             error,
             volume: info.VolumeSerialNumber.to_string(),

@@ -382,7 +382,7 @@ function resolveSecurityMd(
 
 export function resolveSecurityMdCommand(
   args: string[],
-  posixHome = process.env.HOME,
+  posixHome = process.env["HOME"],
 ): number {
   try {
     const options = {

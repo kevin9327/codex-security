@@ -186,7 +186,7 @@ function encodeFilename(value: string): Buffer {
   );
 }
 
-function decodeFilename(bytes: Buffer): string {
+export function decodeFilename(bytes: Buffer): string {
   if (!windows) return decodePosixBytes(bytes);
   const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   let value = "";
