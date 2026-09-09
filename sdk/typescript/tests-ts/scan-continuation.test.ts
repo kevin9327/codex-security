@@ -533,6 +533,7 @@ test.each(["initialize", "start-thread", "run-streamed"] as const)(
     expect(saved["cost"] ?? null).toEqual(
       phase === "run-streamed" ? null : previousCost,
     );
+    expect(saved["inferenceStarted"]).toBe(phase === "run-streamed");
 
     modelCalls = 0;
     const retried = await resume({ ...f, scanId: childId }, (options) => ({
@@ -563,6 +564,42 @@ test.each(["initialize", "start-thread", "run-streamed"] as const)(
     }
   },
 );
+
+test("continuation stops before dispatch when its inference marker cannot be saved", async () => {
+  const f = await savedScan({ maxCostUsd: 100 });
+  let childId = "";
+  let modelCalls = 0;
+  const outcome = await resume(
+    f,
+    () => ({
+      startThread() {
+        return {
+          id: randomUUID(),
+          async runStreamed() {
+            modelCalls++;
+            throw new Error(
+              "Inference must not start without its durable marker",
+            );
+          },
+        };
+      },
+    }),
+    {
+      beforeWorkbench: async (args) => {
+        if (args[0] === "start-scan-inference") {
+          childId = args[2]!;
+          throw new Error("Synthetic inference marker write failure");
+        }
+      },
+    },
+  );
+  expect(outcome.code).not.toBe(0);
+  expect(outcome.stderr).toContain("Synthetic inference marker write failure");
+  expect(modelCalls).toBe(0);
+  const saved = await f.command(["get-cli-scan-resume", "--scan-id", childId]);
+  expect(saved["inferenceStarted"]).toBe(false);
+  expect(saved["cost"]).toEqual(previousCost);
+});
 
 test.each([
   "changed source",
@@ -713,6 +750,7 @@ test.each([true, false])(
       "--cost-json",
       JSON.stringify(previousCost),
     ]);
+    await f.command(["start-scan-inference", "--scan-id", childId]);
     const threadId = randomUUID();
     if (persistedThread)
       await f.command([
@@ -884,6 +922,64 @@ test.each(["available", "exhausted", "unknown"] as const)(
     }
   },
 );
+
+test("a hard-killed checkpoint-only continuation retains its inherited cost", async () => {
+  const f = await savedScan({ running: true, maxCostUsd: 10 });
+  await saveCompleteCheckpoint(f);
+  await f.command([
+    "fail-scan",
+    "--scan-id",
+    f.scanId,
+    "--message",
+    "Synthetic export failure after completed analysis",
+    "--cost-json",
+    JSON.stringify(previousCost),
+  ]);
+  const child = join(f.root, "interrupted-export");
+  await mkdir(child, { mode: 0o700 });
+  const registration = await f.command([
+    "register-cli-scan",
+    "--repository",
+    f.repository,
+    "--scan-dir",
+    child,
+    "--parent-scan-id",
+    f.scanId,
+    "--recipe-json",
+    JSON.stringify(f.recipe),
+  ]);
+  const childId = registration["scanId"] as string;
+  await f.command([
+    "continue-scan-checkpoint",
+    "--scan-id",
+    childId,
+    "--parent-scan-id",
+    f.scanId,
+    "--cost-json",
+    JSON.stringify(previousCost),
+  ]);
+  // A hard kill leaves the seeded transaction but runs no completion or failure handler.
+  const saved = await f.command(["get-cli-scan-resume", "--scan-id", childId]);
+  expect(saved["completionReady"]).toBe(true);
+  expect(saved["previousCost"]).toEqual(previousCost);
+  expect(saved["inferenceStarted"]).toBe(false);
+  expect(saved["cost"]).toBeUndefined();
+  expect(saved["threadId"]).toBeNull();
+  let modelCalls = 0;
+  const outcome = await resume({ ...f, scanId: childId }, () => {
+    modelCalls++;
+    throw new Error("Saved source work needs no model call");
+  });
+  expect(outcome.code, outcome.stderr).toBe(0);
+  expect(modelCalls).toBe(0);
+  const result = JSON.parse(outcome.stdout);
+  expect(result.cost).toEqual(previousCost);
+  expect(
+    (await f.command(["get-scan", "--scan-id", result.manifest.scan.id]))[
+      "scan"
+    ],
+  ).toMatchObject({ cost: previousCost });
+});
 
 test("a complete Standard checkpoint retries final export without another model call or cost", async () => {
   const f = await savedScan({ running: true, maxCostUsd: 10 });

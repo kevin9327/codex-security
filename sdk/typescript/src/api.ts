@@ -1013,7 +1013,9 @@ export class CodexSecurity {
           previousCost = savedScanCost(resumeContext["cost"]);
           if (previousCost === null) {
             const inheritedCost = savedScanCost(resumeContext["previousCost"]);
-            if (
+            if (resumeContext["inferenceStarted"] === false) {
+              previousCost = inheritedCost;
+            } else if (
               savedSession?.workingDirectory === resumeContext["scanDir"] &&
               typeof savedThreadId === "string"
             ) {
@@ -1782,6 +1784,14 @@ export class CodexSecurity {
         await chmod(targetPathsFile, 0o400);
       }
       checkOpen();
+      if (options.continuationScanId !== undefined) {
+        await workbench(workbenchOptions, [
+          "start-scan-inference",
+          "--scan-id",
+          scanId,
+        ]);
+        checkOpen();
+      }
       const postScanPrompt = options.postScanPrompt;
       if (postScanPrompt?.trim()) {
         runPostScan = () => thread.runStreamed(postScanPrompt, { signal });

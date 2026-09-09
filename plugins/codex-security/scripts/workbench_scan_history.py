@@ -108,6 +108,9 @@ def cli_scan_resume(
         "previousCost": json.loads(scan["continuation_cost_json"])
         if scan["continuation_cost_json"]
         else None,
+        "inferenceStarted": None
+        if scan["inference_started"] is None
+        else bool(scan["inference_started"]),
         **stored_scan_cost_fields(scan["cost_json"]),
         "scanDir": str(scan_dir),
         "scanId": scan["id"],

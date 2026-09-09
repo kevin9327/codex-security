@@ -772,6 +772,12 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         checkpoint = checkpoint_state(connection, parent["id"])
         if checkpoint is None:
             raise SystemExit("The parent scan has no saved semantic checkpoint to continue.")
+        first_seed = (
+            connection.execute(
+                "SELECT 1 FROM scan_checkpoints WHERE scan_id = ? LIMIT 1", (child["id"],)
+            ).fetchone()
+            is None
+        )
         completion_ready = checkpoint_completion_ready(checkpoint, parent["mode"])
         worker_ids = db.deep_scan.restore_checkpoint_workers(connection, parent, child, db.now())
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
@@ -991,11 +997,14 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         )
         connection.execute(
             "UPDATE scans SET continuation_cost_json = ?, continuation_checkpoint_path = ?, "
-            "continuation_checkpoint_acceptance_id = ? WHERE id = ?",
+            "continuation_checkpoint_acceptance_id = ?, inference_started = "
+            "CASE WHEN ? AND inference_started IS NULL THEN 0 ELSE inference_started END "
+            "WHERE id = ?",
             (
                 db.parse_scan_cost(args.cost_json),
                 path.relative_to(root).as_posix() if child["mode"] == "deep" else None,
                 receipt["acceptanceId"] if child["mode"] == "deep" else None,
+                first_seed,
                 child["id"],
             ),
         )

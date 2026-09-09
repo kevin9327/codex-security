@@ -160,6 +160,9 @@ def parse_args(description: str) -> argparse.Namespace:
     set_scan_thread.add_argument("--scan-id", required=True)
     set_scan_thread.add_argument("--thread-id", required=True)
 
+    start_scan_inference = subparsers.add_parser("start-scan-inference")
+    start_scan_inference.add_argument("--scan-id", required=True)
+
     set_scan_cost_limit = subparsers.add_parser("set-scan-cost-limit")
     set_scan_cost_limit.add_argument("--scan-id", required=True)
     set_scan_cost_limit.add_argument("--max-cost-usd", required=True, type=float)
