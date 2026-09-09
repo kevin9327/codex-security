@@ -11,6 +11,13 @@ import {
 } from "./workbench-git-snapshot";
 import { requireScan, requireWorkspace } from "./workbench-records";
 import { findingRelations } from "./workbench-finding-links";
+import { backfillLegacyFindingDetails } from "./workbench-legacy-findings";
+import { availableArtifactPath } from "./workbench-files";
+import {
+  findingResult,
+  remediationAvailability,
+} from "./workbench-finding-results";
+import { scanResultsRecoveryNeeded } from "./workbench-saved-result-sources";
 import { storedDiffTarget } from "./workbench-scan-start";
 import {
   findingOccurrenceConditions,
@@ -43,6 +50,13 @@ export interface ResultCallbacks {
   remediationAvailability(scan: Row): [boolean, string | null];
   scanResultsRecoveryNeeded(connection: Connection, scan: Row): boolean;
 }
+export const resultCallbacks: ResultCallbacks = {
+  backfillFindingDetails: backfillLegacyFindingDetails,
+  availableArtifactPath,
+  findingResult,
+  remediationAvailability,
+  scanResultsRecoveryNeeded,
+};
 const validationError = (error: unknown) =>
   error instanceof WorkbenchValidationError ||
   error instanceof TargetInspectionError;

@@ -13,7 +13,7 @@ if (process.platform !== "win32") {
 
 async function testWorkbenchStateFallback() {
   const mcpAppRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const pluginRoot = path.resolve(mcpAppRoot, "..");
+  const pluginRoot = path.resolve(mcpAppRoot, "../../../sdk/typescript/_bundled_plugin");
   const fixtureRoot = await mkdtemp(path.join(tmpdir(), "codex-security-state-fallback-"));
   const targetPath = path.join(fixtureRoot, "target");
   const fakePythonPath = path.join(fixtureRoot, "fake-python.mjs");
@@ -95,7 +95,9 @@ async function testWorkbenchStateFallback() {
     }));
     try {
       await initialize(explicitServer, 10);
-      assertToolError(await inspectTarget(explicitServer, 11, targetPath), /unable to open database file/);
+      assertNoError(await inspectTarget(explicitServer, 11, targetPath));
+      assert.deepEqual(await readJsonLines(invocationLog), []);
+      assertToolError(await openWorkspace(explicitServer, 12, targetPath), /unable to open database file/);
       assert.deepEqual((await readJsonLines(invocationLog)).map((entry) => entry.stateDir), [explicitStateDir]);
       assert.equal(explicitServer.stderrEvents().some((event) => event.event === "state_fallback_pinned"), false);
     } finally {
@@ -113,19 +115,20 @@ async function testWorkbenchStateFallback() {
       FAKE_PYTHON_ALWAYS_FAIL: undefined,
       FAKE_PYTHON_FAILURE: "sqlite3.OperationalError: unable to open database file",
       FAKE_PYTHON_LOG: invocationLog,
-      FAKE_PYTHON_PERSISTENT_SUCCESSES: "1",
+      FAKE_PYTHON_PERSISTENT_SUCCESSES: undefined,
       FAKE_REAL_PYTHON: realPython,
       PYTHON: fakePythonPath
     }));
     try {
       await initialize(inspectionFirstServer, 15);
       assertNoError(await inspectTarget(inspectionFirstServer, 16, targetPath));
+      assert.deepEqual(await readJsonLines(invocationLog), []);
       assertNoError(await openWorkspace(inspectionFirstServer, 17, targetPath));
       const fallbackStateDir = path.join(inspectionFirstScanRoot, "workbench-state");
       const invocationStateDirs = (await readJsonLines(invocationLog)).map((entry) => entry.stateDir);
-      assert.deepEqual(invocationStateDirs.slice(0, 2), [null, null]);
-      assert.equal(invocationStateDirs.slice(2).every((stateDir) => stateDir === fallbackStateDir), true);
-      assert.ok(invocationStateDirs.length > 2);
+      assert.equal(invocationStateDirs[0], null);
+      assert.equal(invocationStateDirs.slice(1).every((stateDir) => stateDir === fallbackStateDir), true);
+      assert.ok(invocationStateDirs.length > 1);
       const fallbackEvents = inspectionFirstServer.stderrEvents()
         .filter((event) => event.event === "state_fallback_pinned");
       assert.equal(fallbackEvents.length, 1);
@@ -176,7 +179,9 @@ async function testWorkbenchStateFallback() {
     }));
     try {
       await initialize(genericServer, 20);
-      assertToolError(await inspectTarget(genericServer, 21, targetPath), /database disk image is malformed/);
+      assertNoError(await inspectTarget(genericServer, 21, targetPath));
+      assert.deepEqual(await readJsonLines(invocationLog), []);
+      assertToolError(await openWorkspace(genericServer, 22, targetPath), /database disk image is malformed/);
       assert.deepEqual((await readJsonLines(invocationLog)).map((entry) => entry.stateDir), [null]);
       assert.equal(genericServer.stderrEvents().some((event) => event.event === "state_fallback_pinned"), false);
     } finally {

@@ -1523,6 +1523,11 @@ export async function runWorkbench(
       "list-repositories",
       "list-scans",
       "get-scan-feedback",
+      "inspect-target",
+      "inspect-setup",
+      "get-workspace",
+      "get-scan",
+      "list-findings",
     ].includes(args[0] ?? "");
     const command = node
       ? process.execPath

@@ -11,6 +11,7 @@ import { bindRepoScopesCommand } from "./src/helpers/bind-repo-scopes";
 import { snapshotSqliteCommand } from "./src/helpers/snapshot-sqlite";
 import { generateInScopeFilesCommand } from "./src/helpers/generate-in-scope-files";
 import { workbenchCommand } from "./src/helpers/workbench-command";
+import { workbenchResultsCommand } from "./src/helpers/workbench-results-command";
 import { generateRankInputCommand } from "./src/helpers/generate-rank-input";
 import { configPreflightCommand } from "./src/helpers/config-preflight-command";
 import { scanArtifactRestorerCommand } from "./src/helpers/scan-artifact-restorer";
@@ -78,6 +79,16 @@ if (command === "resolve-security-md") {
   });
 } else if (command === "generate-in-scope-files") {
   process.exitCode = generateInScopeFilesCommand(args, posixHome);
+} else if (
+  command === "inspect-target" ||
+  command === "inspect-setup" ||
+  command === "get-workspace" ||
+  command === "get-scan" ||
+  command === "list-findings"
+) {
+  void workbenchResultsCommand(command, args).then((status) => {
+    process.exitCode = status;
+  });
 } else if (
   command === "dashboard" ||
   command === "database-info" ||
