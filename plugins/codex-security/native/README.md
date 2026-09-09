@@ -57,6 +57,8 @@ Five additional operations preserve Windows strings at the Node boundary. `windo
 
 `windows-files.mts` leaves ordinary absolute-path resolution and canonicalization to `GetFullPathNameW` and `GetFinalPathNameByHandleW`, trimming trailing separators below the root. Its small verbatim-path normalizer preserves drive and UNC share roots when resolving dot segments, including literal trailing dots and spaces. Non-strict `realpath` can retain unresolved components; callers must check containment independently. It also supports missing output paths. `stat(path, false)` retains exact symbolic-link and reparse-point metadata so callers can reject junction traversal independently of the enumerator's link label. The SDK's public runtime floor remains Node 22.13.0. Node 20.0.0 is an additional native-foundation compatibility proof; it does not change the SDK engine requirement.
 
+`createWindowsSymlink` passes raw UTF-16LE target and destination paths and caller-supplied flags to `CreateSymbolicLinkW`, returning its numeric Windows error. The caller owns directory-target inference and retry decisions. `copyFileCrt` copies binary bytes through `_wopen`, `_read`, and `_write` with a 1 MiB buffer and non-inheritable descriptors. It opens the source before truncating the destination, closes destination then source, and returns CRT `errno`. Open errors include the failing path; read, write, and close errors return a null path. A close error replaces an earlier error, matching nested FileIO context managers. Same-file checks, metadata, and `CopyFile2` fallback decisions remain with the typed copy owner.
+
 Build on Windows after compiling the TypeScript tools, then run:
 
 ```sh

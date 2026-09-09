@@ -63,6 +63,17 @@ export interface WindowsBinding {
   ): { error: number; path: Buffer | null };
   /** Returns the Win32 error derived from CopyFile2's HRESULT, or zero. */
   copyFile2(source: Buffer, destination: Buffer, flags: number): number;
+  /** Passes flags directly to CreateSymbolicLinkW; no target inference or retry. */
+  createWindowsSymlink(
+    target: Buffer,
+    destination: Buffer,
+    flags: number,
+  ): number;
+  /** Copies binary bytes through the CRT; only open failures include a path. */
+  copyFileCrt(
+    source: Buffer,
+    destination: Buffer,
+  ): { errno: number; path: Buffer | null };
 }
 
 export { windowsFlags } from "./windows-flags.mjs";

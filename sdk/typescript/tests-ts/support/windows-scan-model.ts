@@ -288,6 +288,8 @@ export class WindowsScanModel {
     readCopyStat: unavailable,
     setWindowsTimes: unavailable,
     copyFile2: unavailable,
+    createWindowsSymlink: unavailable,
+    copyFileCrt: unavailable,
   };
   contents(path: string): string | null {
     return this.entries.get(key(path))?.bytes.toString("base64") ?? null;

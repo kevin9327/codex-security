@@ -7,6 +7,8 @@ mod sqlite;
 mod unix;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_copy;
 
 #[napi_derive::napi]
 pub fn wall_clock_microseconds() -> napi::bindgen_prelude::BigInt {

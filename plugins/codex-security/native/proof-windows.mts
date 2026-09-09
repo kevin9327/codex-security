@@ -172,6 +172,129 @@ function copyMetadataProof(root: string) {
   }
 }
 
+function copyPrimitivesProof(root: string) {
+  const files = windowsFileSystem(native);
+  const source = join(root, "copy-stream-\ud800.bin");
+  const replacement = join(root, "copy-stream-\ufffd.bin");
+  const destination = join(root, "copy-stream-destination-\udfff.bin");
+  const link = join(root, "copy-link-\udfff");
+  const dangling = join(root, "copy-dangling-\ud800");
+  const directory = join(root, "copy-link-directory");
+  const directoryLink = join(root, "copy-directory-link");
+  const payload = Buffer.alloc(2 * 1024 * 1024 + 37);
+  for (let index = 0; index < payload.length; index++)
+    payload[index] = index % 256;
+  const sourceBytes = pathBytes(source),
+    destinationBytes = pathBytes(destination);
+  const copy = () => native.copyFileCrt(sourceBytes, destinationBytes);
+  try {
+    files.writeFile(sourceBytes, payload);
+    files.writeFile(
+      pathBytes(replacement),
+      Buffer.from("distinct replacement name"),
+    );
+    files.writeFile(
+      destinationBytes,
+      Buffer.alloc(payload.length + 1024, 0xff),
+    );
+    success(native.setWindowsWritable(sourceBytes, false));
+    assert.deepEqual(copy(), { errno: 0, path: null });
+    assert.deepEqual(native.windowsReadFileCrt(destinationBytes), {
+      errno: 0,
+      value: payload,
+    });
+    assert.equal(
+      files.readFile(pathBytes(replacement)).toString(),
+      "distinct replacement name",
+    );
+
+    success(native.setWindowsWritable(destinationBytes, false));
+    assert.deepEqual(copy(), { errno: 13, path: destinationBytes });
+    success(native.setWindowsWritable(destinationBytes, true));
+    const missing = pathBytes(join(root, "copy-stream-missing"));
+    assert.deepEqual(native.copyFileCrt(missing, destinationBytes), {
+      errno: 2,
+      path: missing,
+    });
+    assert.deepEqual(files.readFile(destinationBytes), payload);
+    const missingParent = pathBytes(join(root, "copy-missing-parent", "file"));
+    assert.deepEqual(native.copyFileCrt(sourceBytes, missingParent), {
+      errno: 2,
+      path: missingParent,
+    });
+    assert.deepEqual(native.copyFileCrt(sourceBytes, pathBytes(root)), {
+      errno: 13,
+      path: pathBytes(root),
+    });
+    assert.deepEqual(native.copyFileCrt(pathBytes(root), destinationBytes), {
+      errno: 13,
+      path: pathBytes(root),
+    });
+
+    const relative = Buffer.from(basename(source), "utf16le");
+    success(
+      native.createWindowsSymlink(
+        relative,
+        pathBytes(link),
+        flags.SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE,
+      ),
+    );
+    assert.deepEqual(
+      checked(native.windowsReadLink(pathBytes(link))).value,
+      relative,
+    );
+    assert.deepEqual(files.readFile(pathBytes(link)), payload);
+    assert.equal(
+      native.createWindowsSymlink(
+        relative,
+        pathBytes(link),
+        flags.SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE,
+      ),
+      183,
+    );
+    const absent = Buffer.from("copy-missing-\ud800", "utf16le");
+    success(
+      native.createWindowsSymlink(
+        absent,
+        pathBytes(dangling),
+        flags.SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE,
+      ),
+    );
+    assert.deepEqual(
+      checked(native.windowsReadLink(pathBytes(dangling))).value,
+      absent,
+    );
+    mkdirSync(directory);
+    success(
+      native.createWindowsSymlink(
+        Buffer.from(basename(directory), "utf16le"),
+        pathBytes(directoryLink),
+        flags.SYMBOLIC_LINK_FLAG_DIRECTORY |
+          flags.SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE,
+      ),
+    );
+    assert(files.stat(pathBytes(directoryLink)).isDirectory());
+    assert(files.stat(pathBytes(directoryLink), false).isSymbolicLink());
+    return {
+      rawSymlinkTargets: true,
+      binaryStreamingAndTruncation: true,
+      crtOpenErrorsAndPaths: true,
+    };
+  } finally {
+    for (const path of [source, destination])
+      native.setWindowsWritable(pathBytes(path), true);
+    for (const path of [
+      link,
+      dangling,
+      directoryLink,
+      source,
+      destination,
+      replacement,
+    ])
+      remove(path);
+  }
+}
+
 function handleProof(root: string) {
   const held = new Set<WindowsHandle>();
   const rawPaths: string[] = [];
@@ -794,6 +917,7 @@ if (process.argv[2] === "worker") {
           nodeApi: 8,
           rawProcess: rawProcessProof(root),
           copyMetadata: copyMetadataProof(root),
+          copyPrimitives: copyPrimitivesProof(root),
           handles: handleProof(root),
           wideProcessAndPaths: wideProcessProof(root),
           garbageCollectionClosesHandle: await ownershipProof(root),
