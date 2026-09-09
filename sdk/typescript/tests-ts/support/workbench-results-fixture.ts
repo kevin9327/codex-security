@@ -10,12 +10,17 @@ import {
 } from "../../../../plugins/codex-security/mcp-app/src/native";
 import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workbench-migrations";
 import * as results from "../../../../plugins/codex-security/mcp-app/src/workbench-results";
+import * as findingResults from "../../../../plugins/codex-security/mcp-app/src/workbench-finding-results";
+import { scanTargetIdentity } from "../../../../plugins/codex-security/mcp-app/src/workbench-target";
 import {
   findingOccurrenceConditions,
   findingOccurrenceRows,
 } from "../../../../plugins/codex-security/mcp-app/src/workbench-scan-history";
 import { requireScan } from "../../../../plugins/codex-security/mcp-app/src/workbench-records";
-import { WorkbenchValidationError } from "../../../../plugins/codex-security/mcp-app/src/workbench-validation";
+import {
+  requireOccurrence,
+  WorkbenchValidationError,
+} from "../../../../plugins/codex-security/mcp-app/src/workbench-validation";
 import { TargetInspectionError } from "../../../../plugins/codex-security/mcp-app/src/workbench-git-snapshot";
 import { filesystemErrorMessage } from "../../../../plugins/codex-security/mcp-app/src/helpers/file-errors";
 import {
@@ -47,6 +52,10 @@ export interface Action {
     | "coverage"
     | "triage"
     | "updated"
+    | "finding"
+    | "remediation"
+    | "availability"
+    | "details"
     | "sql"
     | "query"
     | "commit"
@@ -72,8 +81,12 @@ export interface Action {
   remediation?: [boolean, string | null];
   recovery?: boolean;
   git?: { stdout?: string; stderr?: string; status?: number }[];
+  value?: unknown;
+  valueBytes?: string;
+  related?: Record<string, unknown>[];
 }
 export interface Request {
+  targetIdentityPath?: string;
   workspace?: Record<string, Parameter>;
   scan?: Record<string, Parameter>;
   progress?: Record<string, Parameter> | null;
@@ -154,6 +167,12 @@ function execute(request: Request): Response {
       user_context: "workspace context",
       ...request.workspace,
     });
+    const identity =
+      request.targetIdentityPath === undefined
+        ? undefined
+        : scanTargetIdentity(request.targetIdentityPath, {
+            headRevision: "revision",
+          });
     insert("scans", {
       id: scanId,
       workspace_id: workspaceId,
@@ -168,6 +187,13 @@ function execute(request: Request): Response {
       created_at: "created",
       updated_at: "scan-updated",
       user_context: "scan context",
+      ...(identity === undefined
+        ? {}
+        : {
+            target_path: request.targetIdentityPath,
+            target_device: identity[2],
+            target_inode: identity[3],
+          }),
       ...request.scan,
     });
     if (request.progress !== null)
@@ -263,6 +289,30 @@ function execute(request: Request): Response {
       try {
         let result: unknown = null;
         switch (action.operation) {
+          case "details":
+            result = findingResults.readFindingDetails(
+              action.valueBytes === undefined
+                ? action.value
+                : Buffer.from(action.valueBytes, "base64"),
+            );
+            break;
+          case "availability":
+            result = findingResults.remediationAvailability(scan());
+            break;
+          case "remediation":
+            result = findingResults.findingRemediationResult(
+              connection,
+              action.occurrenceId ?? "unknown",
+            );
+            break;
+          case "finding":
+            result = findingResults.findingResult(
+              connection,
+              scan(),
+              requireOccurrence(connection, action.occurrenceId ?? "unknown"),
+              action.related ?? [],
+            );
+            break;
           case "sql":
             connection.prepare(action.sql!).run(action.parameters);
             break;
