@@ -128,7 +128,10 @@ export async function workbenchResultsCommand(
       return 0;
     }
     const connection = await connect(sqliteBinding(), () =>
-      timestamp(processBinding().wallClockMicroseconds()),
+      timestamp(processBinding().wallClockMicroseconds()).replace(
+        "+00:00",
+        "Z",
+      ),
     );
     try {
       if (command === "get-workspace") {

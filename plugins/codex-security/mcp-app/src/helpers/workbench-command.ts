@@ -146,7 +146,8 @@ export async function workbenchCommand(
       return 2;
     }
   }
-  const now = () => timestamp(processBinding().wallClockMicroseconds());
+  const now = () =>
+    timestamp(processBinding().wallClockMicroseconds()).replace("+00:00", "Z");
   const connection = await connect(sqliteBinding(), now);
   try {
     const input = () =>

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { stringifyJson } from "../../../plugins/codex-security/mcp-app/src/helpers/python-json";
 import type { Operation, Request } from "./support/navigation-fixture";
 import { PLUGIN_ROOT } from "./plugin-root";
@@ -139,6 +140,47 @@ function result(args: string[], state: string): Record<string, unknown> {
   expect(child.stderr).toBe("");
   return JSON.parse(child.stdout) as Record<string, unknown>;
 }
+
+test.each(["database-info", "get-workspace"])(
+  "%s initializes history with the established UTC timestamp format",
+  (command) => {
+    const state = mkdtempSync(join(root, "clock-"));
+    const args =
+      command === "database-info"
+        ? [command]
+        : [command, "--workspace-id", workspace];
+    const before = Date.now();
+    const response = helper(args, state);
+    const after = Date.now();
+    if (command === "database-info")
+      expect(response.status, response.stderr).toBe(0);
+    else {
+      expect(response.status).toBe(1);
+      expect(response.stderr).toContain("workspace not found");
+    }
+    const database = new Database(join(state, "workbench.sqlite3"), {
+      readonly: true,
+    });
+    try {
+      const rows = database
+        .query<
+          { applied_at: string },
+          []
+        >("SELECT applied_at FROM schema_migrations ORDER BY version")
+        .all();
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.applied_at).toMatch(
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{6})?Z$/,
+        );
+        expect(Date.parse(row.applied_at)).toBeGreaterThanOrEqual(before);
+        expect(Date.parse(row.applied_at)).toBeLessThanOrEqual(after);
+      }
+    } finally {
+      database.close();
+    }
+  },
+);
 
 test("target and setup inspection work without Python or creating a state directory", () => {
   const state = join(root, "unused-state");
