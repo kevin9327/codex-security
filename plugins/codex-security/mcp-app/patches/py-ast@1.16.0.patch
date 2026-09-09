@@ -1,0 +1,1074 @@
+diff --git a/dist/LICENSE-UNICODE b/dist/LICENSE-UNICODE
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7e7973c2fd6f2586a8999a69dc21e39af26be0f
+--- /dev/null
++++ b/dist/LICENSE-UNICODE
+@@ -0,0 +1,41 @@
++UNICODE LICENSE V3
++
++COPYRIGHT AND PERMISSION NOTICE
++
++Copyright © 2001-2024 Unicode, Inc.
++
++NOTICE TO USER: Carefully read the following legal agreement. BY
++DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
++SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
++TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
++DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
++
++Permission is hereby granted, free of charge, to any person obtaining a
++copy of data files and any associated documentation (the "Data Files") or
++software and any associated documentation (the "Software") to deal in the
++Data Files or Software without restriction, including without limitation
++the rights to use, copy, modify, merge, publish, distribute, and/or sell
++copies of the Data Files or Software, and to permit persons to whom the
++Data Files or Software are furnished to do so, provided that either (a)
++this copyright and permission notice appear with all copies of the Data
++Files or Software, or (b) this copyright and permission notice appear in
++associated Documentation.
++
++THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
++KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
++MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
++THIRD PARTY RIGHTS.
++
++IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
++BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
++OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
++WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
++ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
++FILES OR SOFTWARE.
++
++Except as contained in this notice, the name of a copyright holder shall
++not be used in advertising or otherwise to promote the sale, use or other
++dealings in these Data Files or Software without prior written
++authorization of the copyright holder.
++
++SPDX-License-Identifier: Unicode-3.0
+diff --git a/dist/index.cjs b/dist/index.cjs
+index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13ffc75270 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -1,5 +1,20 @@
+ 'use strict';
+ 
++var xidStart = require('@unicode/unicode-15.0.0/Binary_Property/XID_Start/regex.js');
++var xidContinue = require('@unicode/unicode-15.0.0/Binary_Property/XID_Continue/regex.js');
++var loadNameData = require('./unicode-data.cjs');
++require('@unicode/unicode-15.0.0/General_Category/Other/regex.js');
++require('@unicode/unicode-15.0.0/General_Category/Separator/regex.js');
++
++const digits = "[0-9](?:_?[0-9])*";
++const exponent = `[eE][+-]?${digits}`;
++const point = `(?:(?:${digits})?\\.${digits}|${digits}\\.)`;
++const floating = `(?:${point}(?:${exponent})?|${digits}${exponent})`;
++const integer = "(?:0(?:_?0)*|[1-9](?:_?[0-9])*)";
++const based = "0(?:[xX](?:_?[a-fA-F0-9])+|[oO](?:_?[0-7])+|[bB](?:_?[01])+)";
++const numericLiteral = new RegExp(
++  `^(?:${based}|${floating}|(?:${digits}|${floating})[jJ]|${integer})$`
++);
+ var TokenType = /* @__PURE__ */ ((TokenType2) => {
+   TokenType2["NUMBER"] = "NUMBER";
+   TokenType2["STRING"] = "STRING";
+@@ -165,6 +180,7 @@ class Lexer {
+     this.tokens = [];
+     /** Stack of indentation widths (in columns) for currently-open blocks; always starts at `[0]` for the top level. */
+     this.indentStack = [0];
++    this.alternateIndentStack = [0];
+     /** Whether the lexer is positioned at the start of a logical line and still needs to process leading indentation. */
+     this.atLineStart = true;
+     /** Nesting depth of `(`/`)`; while > 0, newlines and indentation are not significant (implicit line joining). */
+@@ -173,6 +189,7 @@ class Lexer {
+     this.bracketLevel = 0;
+     /** Nesting depth of `{`/`}`; while > 0, newlines and indentation are not significant (implicit line joining). */
+     this.braceLevel = 0;
++    if (source.includes("\0")) throw new Error("Source contains NUL");
+     this.source = source.replace(/\r\n?/g, "\n");
+     this.position = { line: 1, column: 0, index: 0 };
+   }
+@@ -192,6 +209,7 @@ class Lexer {
+     this.tokens = [];
+     this.position = { line: 1, column: 0, index: 0 };
+     this.indentStack = [0];
++    this.alternateIndentStack = [0];
+     this.atLineStart = true;
+     this.parenLevel = 0;
+     this.bracketLevel = 0;
+@@ -232,7 +250,7 @@ class Lexer {
+       }
+       return;
+     }
+-    if (c === " " || c === "	" || c === "\r") {
++    if (c === " " || c === "	" || c === "\r" || c === "\f") {
+       this.advance();
+       return;
+     }
+@@ -307,13 +325,19 @@ class Lexer {
+    */
+   scanIndentation() {
+     let indent = 0;
++    let alternate = 0;
+     while (this.position.index < this.source.length) {
+       const c2 = this.peek();
+       if (c2 === " ") {
+         indent++;
++        alternate++;
+         this.advance();
+       } else if (c2 === "	") {
+-        indent += 8;
++        indent = (Math.floor(indent / 8) + 1) * 8;
++        alternate++;
++        this.advance();
++      } else if (c2 === "\f") {
++        indent = alternate = 0;
+         this.advance();
+       } else {
+         break;
+@@ -327,15 +351,21 @@ class Lexer {
+       return;
+     }
+     const currentIndent = this.indentStack[this.indentStack.length - 1];
++    const currentAlternate = this.alternateIndentStack[this.alternateIndentStack.length - 1];
++    if (indent === currentIndent && alternate !== currentAlternate)
++      throw new Error(`Inconsistent tabs and spaces at line ${this.position.line}`);
+     if (indent > currentIndent) {
++      if (alternate <= currentAlternate) throw new Error(`Inconsistent tabs and spaces at line ${this.position.line}`);
+       this.indentStack.push(indent);
++      this.alternateIndentStack.push(alternate);
+       this.addToken("INDENT" /* INDENT */, "");
+     } else if (indent < currentIndent) {
+       while (this.indentStack.length > 1 && this.indentStack[this.indentStack.length - 1] > indent) {
+         this.indentStack.pop();
++        this.alternateIndentStack.pop();
+         this.addToken("DEDENT" /* DEDENT */, "");
+       }
+-      if (this.indentStack[this.indentStack.length - 1] !== indent) {
++      if (this.indentStack[this.indentStack.length - 1] !== indent || this.alternateIndentStack[this.alternateIndentStack.length - 1] !== alternate) {
+         throw new Error(`Indentation error at line ${this.position.line}`);
+       }
+     }
+@@ -631,7 +661,7 @@ class Lexer {
+       return;
+     }
+     const tokenType = KEYWORDS.get(value) || "NAME" /* NAME */;
+-    this.addTokenAt(tokenType, value, start);
++    this.addTokenAt(tokenType, tokenType === "NAME" /* NAME */ ? value.normalize("NFKC") : value, start);
+   }
+   /**
+    * Checks whether `value` is a valid Python string-prefix word (e.g.
+@@ -695,6 +725,7 @@ class Lexer {
+       value += quote + quote;
+     }
+     const tracksBraces = /[ft]/i.test(prefix);
++    let closed = false;
+     let braceLevel = 0;
+     while (this.position.index < this.source.length) {
+       const c = this.peek();
+@@ -742,12 +773,14 @@ class Lexer {
+             this.advance();
+             this.advance();
+             this.advance();
++            closed = true;
+             break;
+           }
+         } else {
+           if (c === quote) {
+             value += quote;
+             this.advance();
++            closed = true;
+             break;
+           }
+           if (c === "\n") {
+@@ -760,6 +793,7 @@ class Lexer {
+       value += c;
+       this.advance();
+     }
++    if (!closed) throw new Error(`Unterminated string literal at line ${start.line}`);
+     this.addTokenAt("STRING" /* STRING */, value, start);
+   }
+   /**
+@@ -1001,7 +1035,7 @@ class Lexer {
+    */
+   peek(offset = 0) {
+     const index = this.position.index + offset;
+-    return index < this.source.length ? this.source[index] : "";
++    return index < this.source.length ? String.fromCodePoint(this.source.codePointAt(index)) : "";
+   }
+   /**
+    * Returns the character immediately after the current one, without
+@@ -1021,15 +1055,10 @@ class Lexer {
+     if (c === "\n") {
+       this.position.line++;
+       this.position.column = 0;
+-    } else {
+-      const code = c.charCodeAt(0);
+-      const prevCode = this.position.index > 0 ? this.source.charCodeAt(this.position.index - 1) : 0;
+-      const isLowSurrogateOfPreviousPair = code >= 56320 && code <= 57343 && prevCode >= 55296 && prevCode <= 56319;
+-      if (!isLowSurrogateOfPreviousPair) {
+-        this.position.column += utf8LengthAt(this.source, this.position.index);
+-      }
++    } else if (c) {
++      this.position.column += utf8LengthAt(this.source, this.position.index);
+     }
+-    this.position.index++;
++    this.position.index += c.length;
+     return c;
+   }
+   /**
+@@ -1053,6 +1082,11 @@ class Lexer {
+    *   were consumed.
+    */
+   addTokenAt(type, value, start) {
++    if (type === "NUMBER" /* NUMBER */) {
++      const raw = this.source.slice(start.index, this.position.index);
++      if (!numericLiteral.test(raw))
++        throw new Error(`Invalid numeric literal ${raw}`);
++    }
+     this.tokens.push({
+       type,
+       value,
+@@ -1086,7 +1120,7 @@ class Lexer {
+    * `ID_Start` closely approximates.
+    */
+   isAlpha(c) {
+-    return /^\p{ID_Start}$/u.test(c);
++    return xidStart.test(c);
+   }
+   /**
+    * Returns `true` if `c` is valid inside (not necessarily starting) a
+@@ -1097,7 +1131,7 @@ class Lexer {
+    * includes decimal digits.
+    */
+   isAlphaNumeric(c) {
+-    return /^\p{ID_Continue}$/u.test(c);
++    return xidContinue.test(c);
+   }
+ }
+ 
+@@ -1124,6 +1158,119 @@ class PyComplex {
+   }
+ }
+ 
++var hangul = {
++  "leading": [
++    "G",
++    "GG",
++    "N",
++    "D",
++    "DD",
++    "R",
++    "M",
++    "B",
++    "BB",
++    "S",
++    "SS",
++    "",
++    "J",
++    "JJ",
++    "C",
++    "K",
++    "T",
++    "P",
++    "H"
++  ],
++  "vowel": [
++    "A",
++    "AE",
++    "YA",
++    "YAE",
++    "EO",
++    "E",
++    "YEO",
++    "YE",
++    "O",
++    "WA",
++    "WAE",
++    "OE",
++    "YO",
++    "U",
++    "WEO",
++    "WE",
++    "WI",
++    "YU",
++    "EU",
++    "YI",
++    "I"
++  ],
++  "trailing": [
++    "",
++    "G",
++    "GG",
++    "GS",
++    "N",
++    "NJ",
++    "NH",
++    "D",
++    "L",
++    "LG",
++    "LM",
++    "LB",
++    "LS",
++    "LT",
++    "LP",
++    "LH",
++    "M",
++    "B",
++    "BS",
++    "S",
++    "SS",
++    "NG",
++    "J",
++    "C",
++    "K",
++    "T",
++    "P",
++    "H"
++  ]
++};
++
++let nameLookup;
++let hangulLookup;
++let nameData;
++function unicodeName(name) {
++  if (/[^\x00-\x7f]/u.test(name)) return void 0;
++  const { names, aliases } = nameData ?? (nameData = loadNameData());
++  let point;
++  if (name.startsWith("CJK UNIFIED IDEOGRAPH-")) {
++    const match = /^CJK UNIFIED IDEOGRAPH-([0-9A-F]{4,5})$/u.exec(name);
++    if (!match) return void 0;
++    point = parseInt(match[1], 16);
++    if (!names.get(point)?.startsWith("CJK Ideograph")) return void 0;
++  } else if (name.startsWith("HANGUL SYLLABLE ")) {
++    if (!hangulLookup) {
++      hangulLookup = /* @__PURE__ */ new Map();
++      for (let index = 0; index < 11172; index++) {
++        const suffix = hangul.leading[Math.floor(index / 588)] + hangul.vowel[Math.floor(index % 588 / 28)] + hangul.trailing[index % 28];
++        hangulLookup.set(`HANGUL SYLLABLE ${suffix}`, 44032 + index);
++      }
++    }
++    point = hangulLookup.get(name);
++  } else {
++    if (!nameLookup) {
++      nameLookup = /* @__PURE__ */ new Map();
++      for (const [code, label] of names)
++        if (/^[A-Z]/u.test(label) && label === label.toUpperCase())
++          nameLookup.set(label, code);
++      for (const aliasSet of aliases)
++        for (const [code, labels] of Object.entries(aliasSet))
++          for (const label of labels) nameLookup.set(label, Number(code));
++    }
++    point = nameLookup.get(name.toUpperCase());
++  }
++  return point === void 0 ? void 0 : String.fromCodePoint(point);
++}
++
+ const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+ const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+ class Parser {
+@@ -1141,6 +1288,7 @@ class Parser {
+     const lexer = new Lexer(source);
+     this.tokens = lexer.tokenize();
+     this.includeComments = options.comments ?? false;
++    this.featureVersion = options.feature_version ?? 14;
+     if (!this.includeComments) {
+       this.tokens = this.tokens.filter(
+         (token) => token.type !== TokenType.COMMENT
+@@ -3603,6 +3751,7 @@ class Parser {
+           throw this.error("arguments cannot follow var-keyword argument");
+         }
+         if (this.match(TokenType.SLASH)) {
++          if (!args.length) throw this.error("at least one argument must precede /");
+           if (seenStar) {
+             throw this.error("/ must be ahead of *");
+           }
+@@ -3738,6 +3887,7 @@ class Parser {
+         throw this.error("arguments cannot follow var-keyword argument");
+       }
+       if (this.match(TokenType.SLASH)) {
++        if (!args.length) throw this.error("at least one argument must precede /");
+         if (seenStar) {
+           throw this.error("/ must be ahead of *");
+         }
+@@ -4424,6 +4574,8 @@ class Parser {
+     if (actualValue.startsWith('"""') || actualValue.startsWith("'''")) {
+       content = actualValue.slice(3, -3);
+     }
++    if (prefix.includes("b") && /[^\x00-\x7f]/u.test(content))
++      throw this.error("bytes can only contain ASCII literal characters");
+     if (prefix.includes("r")) {
+       return content;
+     }
+@@ -4438,9 +4590,8 @@ class Parser {
+    * additionally decode `\uxxxx` (4 hex digits) and `\Uxxxxxxxx` (8 hex
+    * digits); those two, along with `\N{...}` named escapes, aren't
+    * recognized in bytes literals and are left as literal text there,
+-   * matching CPython. `\N{...}` is left as literal text for str literals
+-   * too — resolving a Unicode character name requires a Unicode name
+-   * database this library doesn't carry. Any other backslash sequence is
++   * matching CPython. In str literals, named escapes use the pinned
++   * Unicode 15.0 name and alias database. Any other backslash sequence is
+    * kept as-is (backslash plus the following character), matching
+    * CPython's handling of unrecognized escapes.
+    * @param content The literal's content, quotes and prefix already stripped.
+@@ -4503,8 +4654,7 @@ class Parser {
+             result += String.fromCharCode(parseInt(hex, 16));
+             i += 4;
+           } else {
+-            result += ch + next;
+-            i += 2;
++            throw this.error("truncated hexadecimal escape");
+           }
+           continue;
+         }
+@@ -4514,7 +4664,8 @@ class Parser {
+         while (digits.length < 3 && content[i + 1 + digits.length] >= "0" && content[i + 1 + digits.length] <= "7") {
+           digits += content[i + 1 + digits.length];
+         }
+-        result += String.fromCharCode(parseInt(digits, 8) & 255);
++        const point = parseInt(digits, 8);
++        result += String.fromCharCode(isBytes ? point & 255 : point);
+         i += 1 + digits.length;
+         continue;
+       }
+@@ -4525,6 +4676,7 @@ class Parser {
+           i += 6;
+           continue;
+         }
++        throw this.error("truncated Unicode escape");
+       }
+       if (!isBytes && next === "U") {
+         const hex = content.slice(i + 2, i + 10);
+@@ -4533,14 +4685,16 @@ class Parser {
+           i += 10;
+           continue;
+         }
+-      }
+-      if (!isBytes && next === "N" && content[i + 2] === "{") {
+-        const end = content.indexOf("}", i + 3);
+-        if (end !== -1) {
+-          result += content.slice(i, end + 1);
+-          i = end + 1;
+-          continue;
+-        }
++        throw this.error("truncated Unicode escape");
++      }
++      if (!isBytes && next === "N") {
++        const end = content[i + 2] === "{" ? content.indexOf("}", i + 3) : -1;
++        if (end < 0) throw this.error("malformed Unicode name escape");
++        const decoded = unicodeName(content.slice(i + 3, end));
++        if (decoded === void 0) throw this.error("unknown Unicode character name");
++        result += decoded;
++        i = end + 1;
++        continue;
+       }
+       result += ch + next;
+       i += 2;
+@@ -4572,7 +4726,7 @@ class Parser {
+   }
+   /**
+    * Computes a plain string `Constant`'s real CPython `kind`: `"u"` for a
+-   * `u"..."`/`U"..."` literal, `undefined` for everything else. CPython's
++   * lowercase `u"..."` literal, `undefined` for everything else. CPython's
+    * `ast.Constant.kind` never holds anything else (no `r`/`b`/quote-style
+    * info) — that richer info is round-tripping-only and lives in the
+    * node's `quote_style` field instead (a py-ast extension, not part of
+@@ -4581,7 +4735,7 @@ class Parser {
+    * @returns `"u"` or `undefined`.
+    */
+   cpythonStringKind(quoteStyle) {
+-    return /^[uU]/.test(quoteStyle) ? "u" : void 0;
++    return quoteStyle.startsWith("u") ? "u" : void 0;
+   }
+   /**
+    * Determines whether a string token's prefix marks it as an f-string or
+@@ -4651,13 +4805,19 @@ class Parser {
+     const parts = [];
+     let anyFString = false;
+     let anyTemplateStr = false;
++    let bytesLiteral;
+     while (this.match(TokenType.STRING)) {
+       const token = this.previous();
+       const kind = this.getLiteralKind(token.value);
++      const isBytes = /^([fFrRbBuUtT]*)/u.exec(token.value)[1].toLowerCase().includes("b");
++      if (bytesLiteral !== void 0 && bytesLiteral !== isBytes)
++        throw this.error("cannot mix bytes and nonbytes literals");
++      bytesLiteral = isBytes;
+       if (kind === "f") {
+         anyFString = true;
+         parts.push(this.parseFString(token));
+       } else if (kind === "t") {
++        if (this.featureVersion < 14) throw this.error("template strings require Python 3.14");
+         anyTemplateStr = true;
+         parts.push(this.parseTemplateStr(token));
+       } else {
+@@ -5399,7 +5559,7 @@ class Parser {
+     let tempParser;
+     let expr;
+     try {
+-      tempParser = new Parser(exprText);
++      tempParser = new Parser(exprText, { feature_version: this.featureVersion });
+       expr = tempParser.parseTestListWithStar();
+     } catch (_error) {
+       throw this.errorAt(
+@@ -5799,6 +5959,7 @@ class Parser {
+         ).value;
+         let default_value;
+         if (this.match(TokenType.EQUAL)) {
++          if (this.featureVersion < 13) throw this.error("type parameter defaults require Python 3.13");
+           default_value = this.parseTestOrStarred();
+         }
+         params.push({
+@@ -5817,6 +5978,7 @@ class Parser {
+         ).value;
+         let default_value;
+         if (this.match(TokenType.EQUAL)) {
++          if (this.featureVersion < 13) throw this.error("type parameter defaults require Python 3.13");
+           default_value = this.parseTestOrStarred();
+         }
+         params.push({
+@@ -5839,6 +6001,7 @@ class Parser {
+           bound = this.parseTest();
+         }
+         if (this.match(TokenType.EQUAL)) {
++          if (this.featureVersion < 13) throw this.error("type parameter defaults require Python 3.13");
+           default_value = this.parseTestOrStarred();
+         }
+         params.push({
+@@ -8262,4 +8425,3 @@ exports.parsePython = parsePython;
+ exports.toSource = toSource;
+ exports.unparse = unparse;
+ exports.walk = walk;
+-//# sourceMappingURL=index.cjs.map
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 82befec36511a71a077ee003e4351cdff7a1fead..327542c36aae5449af70dcee0025b51086984159 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -147,6 +147,7 @@ declare class Lexer {
+     private tokens;
+     /** Stack of indentation widths (in columns) for currently-open blocks; always starts at `[0]` for the top level. */
+     private indentStack;
++    private alternateIndentStack;
+     /** Whether the lexer is positioned at the start of a logical line and still needs to process leading indentation. */
+     private atLineStart;
+     /** Nesting depth of `(`/`)`; while > 0, newlines and indentation are not significant (implicit line joining). */
+@@ -1215,7 +1216,7 @@ interface ParseOptions {
+     filename?: string;
+     /** When true, comments are lexed and attached to the AST (as `Comment` nodes / `inlineComment`) instead of being discarded. */
+     comments?: boolean;
+-    /** Target Python feature version; currently unused but reserved for future version-gated syntax. */
++    /** Python minor version for syntax added after 3.12; defaults to 14. Does not emulate all older grammar versions. */
+     feature_version?: number;
+ }
+ /**
+diff --git a/dist/index.esm.js b/dist/index.esm.js
+index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8cb4cd471 100644
+--- a/dist/index.esm.js
++++ b/dist/index.esm.js
+@@ -1,3 +1,18 @@
++import xidStart from '@unicode/unicode-15.0.0/Binary_Property/XID_Start/regex.js';
++import xidContinue from '@unicode/unicode-15.0.0/Binary_Property/XID_Continue/regex.js';
++import loadNameData from './unicode-data.cjs';
++import '@unicode/unicode-15.0.0/General_Category/Other/regex.js';
++import '@unicode/unicode-15.0.0/General_Category/Separator/regex.js';
++
++const digits = "[0-9](?:_?[0-9])*";
++const exponent = `[eE][+-]?${digits}`;
++const point = `(?:(?:${digits})?\\.${digits}|${digits}\\.)`;
++const floating = `(?:${point}(?:${exponent})?|${digits}${exponent})`;
++const integer = "(?:0(?:_?0)*|[1-9](?:_?[0-9])*)";
++const based = "0(?:[xX](?:_?[a-fA-F0-9])+|[oO](?:_?[0-7])+|[bB](?:_?[01])+)";
++const numericLiteral = new RegExp(
++  `^(?:${based}|${floating}|(?:${digits}|${floating})[jJ]|${integer})$`
++);
+ var TokenType = /* @__PURE__ */ ((TokenType2) => {
+   TokenType2["NUMBER"] = "NUMBER";
+   TokenType2["STRING"] = "STRING";
+@@ -163,6 +178,7 @@ class Lexer {
+     this.tokens = [];
+     /** Stack of indentation widths (in columns) for currently-open blocks; always starts at `[0]` for the top level. */
+     this.indentStack = [0];
++    this.alternateIndentStack = [0];
+     /** Whether the lexer is positioned at the start of a logical line and still needs to process leading indentation. */
+     this.atLineStart = true;
+     /** Nesting depth of `(`/`)`; while > 0, newlines and indentation are not significant (implicit line joining). */
+@@ -171,6 +187,7 @@ class Lexer {
+     this.bracketLevel = 0;
+     /** Nesting depth of `{`/`}`; while > 0, newlines and indentation are not significant (implicit line joining). */
+     this.braceLevel = 0;
++    if (source.includes("\0")) throw new Error("Source contains NUL");
+     this.source = source.replace(/\r\n?/g, "\n");
+     this.position = { line: 1, column: 0, index: 0 };
+   }
+@@ -190,6 +207,7 @@ class Lexer {
+     this.tokens = [];
+     this.position = { line: 1, column: 0, index: 0 };
+     this.indentStack = [0];
++    this.alternateIndentStack = [0];
+     this.atLineStart = true;
+     this.parenLevel = 0;
+     this.bracketLevel = 0;
+@@ -230,7 +248,7 @@ class Lexer {
+       }
+       return;
+     }
+-    if (c === " " || c === "	" || c === "\r") {
++    if (c === " " || c === "	" || c === "\r" || c === "\f") {
+       this.advance();
+       return;
+     }
+@@ -305,13 +323,19 @@ class Lexer {
+    */
+   scanIndentation() {
+     let indent = 0;
++    let alternate = 0;
+     while (this.position.index < this.source.length) {
+       const c2 = this.peek();
+       if (c2 === " ") {
+         indent++;
++        alternate++;
+         this.advance();
+       } else if (c2 === "	") {
+-        indent += 8;
++        indent = (Math.floor(indent / 8) + 1) * 8;
++        alternate++;
++        this.advance();
++      } else if (c2 === "\f") {
++        indent = alternate = 0;
+         this.advance();
+       } else {
+         break;
+@@ -325,15 +349,21 @@ class Lexer {
+       return;
+     }
+     const currentIndent = this.indentStack[this.indentStack.length - 1];
++    const currentAlternate = this.alternateIndentStack[this.alternateIndentStack.length - 1];
++    if (indent === currentIndent && alternate !== currentAlternate)
++      throw new Error(`Inconsistent tabs and spaces at line ${this.position.line}`);
+     if (indent > currentIndent) {
++      if (alternate <= currentAlternate) throw new Error(`Inconsistent tabs and spaces at line ${this.position.line}`);
+       this.indentStack.push(indent);
++      this.alternateIndentStack.push(alternate);
+       this.addToken("INDENT" /* INDENT */, "");
+     } else if (indent < currentIndent) {
+       while (this.indentStack.length > 1 && this.indentStack[this.indentStack.length - 1] > indent) {
+         this.indentStack.pop();
++        this.alternateIndentStack.pop();
+         this.addToken("DEDENT" /* DEDENT */, "");
+       }
+-      if (this.indentStack[this.indentStack.length - 1] !== indent) {
++      if (this.indentStack[this.indentStack.length - 1] !== indent || this.alternateIndentStack[this.alternateIndentStack.length - 1] !== alternate) {
+         throw new Error(`Indentation error at line ${this.position.line}`);
+       }
+     }
+@@ -629,7 +659,7 @@ class Lexer {
+       return;
+     }
+     const tokenType = KEYWORDS.get(value) || "NAME" /* NAME */;
+-    this.addTokenAt(tokenType, value, start);
++    this.addTokenAt(tokenType, tokenType === "NAME" /* NAME */ ? value.normalize("NFKC") : value, start);
+   }
+   /**
+    * Checks whether `value` is a valid Python string-prefix word (e.g.
+@@ -693,6 +723,7 @@ class Lexer {
+       value += quote + quote;
+     }
+     const tracksBraces = /[ft]/i.test(prefix);
++    let closed = false;
+     let braceLevel = 0;
+     while (this.position.index < this.source.length) {
+       const c = this.peek();
+@@ -740,12 +771,14 @@ class Lexer {
+             this.advance();
+             this.advance();
+             this.advance();
++            closed = true;
+             break;
+           }
+         } else {
+           if (c === quote) {
+             value += quote;
+             this.advance();
++            closed = true;
+             break;
+           }
+           if (c === "\n") {
+@@ -758,6 +791,7 @@ class Lexer {
+       value += c;
+       this.advance();
+     }
++    if (!closed) throw new Error(`Unterminated string literal at line ${start.line}`);
+     this.addTokenAt("STRING" /* STRING */, value, start);
+   }
+   /**
+@@ -999,7 +1033,7 @@ class Lexer {
+    */
+   peek(offset = 0) {
+     const index = this.position.index + offset;
+-    return index < this.source.length ? this.source[index] : "";
++    return index < this.source.length ? String.fromCodePoint(this.source.codePointAt(index)) : "";
+   }
+   /**
+    * Returns the character immediately after the current one, without
+@@ -1019,15 +1053,10 @@ class Lexer {
+     if (c === "\n") {
+       this.position.line++;
+       this.position.column = 0;
+-    } else {
+-      const code = c.charCodeAt(0);
+-      const prevCode = this.position.index > 0 ? this.source.charCodeAt(this.position.index - 1) : 0;
+-      const isLowSurrogateOfPreviousPair = code >= 56320 && code <= 57343 && prevCode >= 55296 && prevCode <= 56319;
+-      if (!isLowSurrogateOfPreviousPair) {
+-        this.position.column += utf8LengthAt(this.source, this.position.index);
+-      }
++    } else if (c) {
++      this.position.column += utf8LengthAt(this.source, this.position.index);
+     }
+-    this.position.index++;
++    this.position.index += c.length;
+     return c;
+   }
+   /**
+@@ -1051,6 +1080,11 @@ class Lexer {
+    *   were consumed.
+    */
+   addTokenAt(type, value, start) {
++    if (type === "NUMBER" /* NUMBER */) {
++      const raw = this.source.slice(start.index, this.position.index);
++      if (!numericLiteral.test(raw))
++        throw new Error(`Invalid numeric literal ${raw}`);
++    }
+     this.tokens.push({
+       type,
+       value,
+@@ -1084,7 +1118,7 @@ class Lexer {
+    * `ID_Start` closely approximates.
+    */
+   isAlpha(c) {
+-    return /^\p{ID_Start}$/u.test(c);
++    return xidStart.test(c);
+   }
+   /**
+    * Returns `true` if `c` is valid inside (not necessarily starting) a
+@@ -1095,7 +1129,7 @@ class Lexer {
+    * includes decimal digits.
+    */
+   isAlphaNumeric(c) {
+-    return /^\p{ID_Continue}$/u.test(c);
++    return xidContinue.test(c);
+   }
+ }
+ 
+@@ -1122,6 +1156,119 @@ class PyComplex {
+   }
+ }
+ 
++var hangul = {
++  "leading": [
++    "G",
++    "GG",
++    "N",
++    "D",
++    "DD",
++    "R",
++    "M",
++    "B",
++    "BB",
++    "S",
++    "SS",
++    "",
++    "J",
++    "JJ",
++    "C",
++    "K",
++    "T",
++    "P",
++    "H"
++  ],
++  "vowel": [
++    "A",
++    "AE",
++    "YA",
++    "YAE",
++    "EO",
++    "E",
++    "YEO",
++    "YE",
++    "O",
++    "WA",
++    "WAE",
++    "OE",
++    "YO",
++    "U",
++    "WEO",
++    "WE",
++    "WI",
++    "YU",
++    "EU",
++    "YI",
++    "I"
++  ],
++  "trailing": [
++    "",
++    "G",
++    "GG",
++    "GS",
++    "N",
++    "NJ",
++    "NH",
++    "D",
++    "L",
++    "LG",
++    "LM",
++    "LB",
++    "LS",
++    "LT",
++    "LP",
++    "LH",
++    "M",
++    "B",
++    "BS",
++    "S",
++    "SS",
++    "NG",
++    "J",
++    "C",
++    "K",
++    "T",
++    "P",
++    "H"
++  ]
++};
++
++let nameLookup;
++let hangulLookup;
++let nameData;
++function unicodeName(name) {
++  if (/[^\x00-\x7f]/u.test(name)) return void 0;
++  const { names, aliases } = nameData ?? (nameData = loadNameData());
++  let point;
++  if (name.startsWith("CJK UNIFIED IDEOGRAPH-")) {
++    const match = /^CJK UNIFIED IDEOGRAPH-([0-9A-F]{4,5})$/u.exec(name);
++    if (!match) return void 0;
++    point = parseInt(match[1], 16);
++    if (!names.get(point)?.startsWith("CJK Ideograph")) return void 0;
++  } else if (name.startsWith("HANGUL SYLLABLE ")) {
++    if (!hangulLookup) {
++      hangulLookup = /* @__PURE__ */ new Map();
++      for (let index = 0; index < 11172; index++) {
++        const suffix = hangul.leading[Math.floor(index / 588)] + hangul.vowel[Math.floor(index % 588 / 28)] + hangul.trailing[index % 28];
++        hangulLookup.set(`HANGUL SYLLABLE ${suffix}`, 44032 + index);
++      }
++    }
++    point = hangulLookup.get(name);
++  } else {
++    if (!nameLookup) {
++      nameLookup = /* @__PURE__ */ new Map();
++      for (const [code, label] of names)
++        if (/^[A-Z]/u.test(label) && label === label.toUpperCase())
++          nameLookup.set(label, code);
++      for (const aliasSet of aliases)
++        for (const [code, labels] of Object.entries(aliasSet))
++          for (const label of labels) nameLookup.set(label, Number(code));
++    }
++    point = nameLookup.get(name.toUpperCase());
++  }
++  return point === void 0 ? void 0 : String.fromCodePoint(point);
++}
++
+ const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+ const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+ class Parser {
+@@ -1139,6 +1286,7 @@ class Parser {
+     const lexer = new Lexer(source);
+     this.tokens = lexer.tokenize();
+     this.includeComments = options.comments ?? false;
++    this.featureVersion = options.feature_version ?? 14;
+     if (!this.includeComments) {
+       this.tokens = this.tokens.filter(
+         (token) => token.type !== TokenType.COMMENT
+@@ -3601,6 +3749,7 @@ class Parser {
+           throw this.error("arguments cannot follow var-keyword argument");
+         }
+         if (this.match(TokenType.SLASH)) {
++          if (!args.length) throw this.error("at least one argument must precede /");
+           if (seenStar) {
+             throw this.error("/ must be ahead of *");
+           }
+@@ -3736,6 +3885,7 @@ class Parser {
+         throw this.error("arguments cannot follow var-keyword argument");
+       }
+       if (this.match(TokenType.SLASH)) {
++        if (!args.length) throw this.error("at least one argument must precede /");
+         if (seenStar) {
+           throw this.error("/ must be ahead of *");
+         }
+@@ -4422,6 +4572,8 @@ class Parser {
+     if (actualValue.startsWith('"""') || actualValue.startsWith("'''")) {
+       content = actualValue.slice(3, -3);
+     }
++    if (prefix.includes("b") && /[^\x00-\x7f]/u.test(content))
++      throw this.error("bytes can only contain ASCII literal characters");
+     if (prefix.includes("r")) {
+       return content;
+     }
+@@ -4436,9 +4588,8 @@ class Parser {
+    * additionally decode `\uxxxx` (4 hex digits) and `\Uxxxxxxxx` (8 hex
+    * digits); those two, along with `\N{...}` named escapes, aren't
+    * recognized in bytes literals and are left as literal text there,
+-   * matching CPython. `\N{...}` is left as literal text for str literals
+-   * too — resolving a Unicode character name requires a Unicode name
+-   * database this library doesn't carry. Any other backslash sequence is
++   * matching CPython. In str literals, named escapes use the pinned
++   * Unicode 15.0 name and alias database. Any other backslash sequence is
+    * kept as-is (backslash plus the following character), matching
+    * CPython's handling of unrecognized escapes.
+    * @param content The literal's content, quotes and prefix already stripped.
+@@ -4501,8 +4652,7 @@ class Parser {
+             result += String.fromCharCode(parseInt(hex, 16));
+             i += 4;
+           } else {
+-            result += ch + next;
+-            i += 2;
++            throw this.error("truncated hexadecimal escape");
+           }
+           continue;
+         }
+@@ -4512,7 +4662,8 @@ class Parser {
+         while (digits.length < 3 && content[i + 1 + digits.length] >= "0" && content[i + 1 + digits.length] <= "7") {
+           digits += content[i + 1 + digits.length];
+         }
+-        result += String.fromCharCode(parseInt(digits, 8) & 255);
++        const point = parseInt(digits, 8);
++        result += String.fromCharCode(isBytes ? point & 255 : point);
+         i += 1 + digits.length;
+         continue;
+       }
+@@ -4523,6 +4674,7 @@ class Parser {
+           i += 6;
+           continue;
+         }
++        throw this.error("truncated Unicode escape");
+       }
+       if (!isBytes && next === "U") {
+         const hex = content.slice(i + 2, i + 10);
+@@ -4531,14 +4683,16 @@ class Parser {
+           i += 10;
+           continue;
+         }
+-      }
+-      if (!isBytes && next === "N" && content[i + 2] === "{") {
+-        const end = content.indexOf("}", i + 3);
+-        if (end !== -1) {
+-          result += content.slice(i, end + 1);
+-          i = end + 1;
+-          continue;
+-        }
++        throw this.error("truncated Unicode escape");
++      }
++      if (!isBytes && next === "N") {
++        const end = content[i + 2] === "{" ? content.indexOf("}", i + 3) : -1;
++        if (end < 0) throw this.error("malformed Unicode name escape");
++        const decoded = unicodeName(content.slice(i + 3, end));
++        if (decoded === void 0) throw this.error("unknown Unicode character name");
++        result += decoded;
++        i = end + 1;
++        continue;
+       }
+       result += ch + next;
+       i += 2;
+@@ -4570,7 +4724,7 @@ class Parser {
+   }
+   /**
+    * Computes a plain string `Constant`'s real CPython `kind`: `"u"` for a
+-   * `u"..."`/`U"..."` literal, `undefined` for everything else. CPython's
++   * lowercase `u"..."` literal, `undefined` for everything else. CPython's
+    * `ast.Constant.kind` never holds anything else (no `r`/`b`/quote-style
+    * info) — that richer info is round-tripping-only and lives in the
+    * node's `quote_style` field instead (a py-ast extension, not part of
+@@ -4579,7 +4733,7 @@ class Parser {
+    * @returns `"u"` or `undefined`.
+    */
+   cpythonStringKind(quoteStyle) {
+-    return /^[uU]/.test(quoteStyle) ? "u" : void 0;
++    return quoteStyle.startsWith("u") ? "u" : void 0;
+   }
+   /**
+    * Determines whether a string token's prefix marks it as an f-string or
+@@ -4649,13 +4803,19 @@ class Parser {
+     const parts = [];
+     let anyFString = false;
+     let anyTemplateStr = false;
++    let bytesLiteral;
+     while (this.match(TokenType.STRING)) {
+       const token = this.previous();
+       const kind = this.getLiteralKind(token.value);
++      const isBytes = /^([fFrRbBuUtT]*)/u.exec(token.value)[1].toLowerCase().includes("b");
++      if (bytesLiteral !== void 0 && bytesLiteral !== isBytes)
++        throw this.error("cannot mix bytes and nonbytes literals");
++      bytesLiteral = isBytes;
+       if (kind === "f") {
+         anyFString = true;
+         parts.push(this.parseFString(token));
+       } else if (kind === "t") {
++        if (this.featureVersion < 14) throw this.error("template strings require Python 3.14");
+         anyTemplateStr = true;
+         parts.push(this.parseTemplateStr(token));
+       } else {
+@@ -5397,7 +5557,7 @@ class Parser {
+     let tempParser;
+     let expr;
+     try {
+-      tempParser = new Parser(exprText);
++      tempParser = new Parser(exprText, { feature_version: this.featureVersion });
+       expr = tempParser.parseTestListWithStar();
+     } catch (_error) {
+       throw this.errorAt(
+@@ -5797,6 +5957,7 @@ class Parser {
+         ).value;
+         let default_value;
+         if (this.match(TokenType.EQUAL)) {
++          if (this.featureVersion < 13) throw this.error("type parameter defaults require Python 3.13");
+           default_value = this.parseTestOrStarred();
+         }
+         params.push({
+@@ -5815,6 +5976,7 @@ class Parser {
+         ).value;
+         let default_value;
+         if (this.match(TokenType.EQUAL)) {
++          if (this.featureVersion < 13) throw this.error("type parameter defaults require Python 3.13");
+           default_value = this.parseTestOrStarred();
+         }
+         params.push({
+@@ -5837,6 +5999,7 @@ class Parser {
+           bound = this.parseTest();
+         }
+         if (this.match(TokenType.EQUAL)) {
++          if (this.featureVersion < 13) throw this.error("type parameter defaults require Python 3.13");
+           default_value = this.parseTestOrStarred();
+         }
+         params.push({
+@@ -8238,4 +8401,3 @@ ${parentIndent})`;
+ }
+ 
+ export { Lexer, NodeTransformer, NodeVisitor, PyComplex, TokenType, ast, copyLocation, dump, fixMissingLocations, getDocstring, getSourceSegment, incrementLineno, isASTNode, iterChildNodes, iterFields, literalEval, parse, parseFile, parseModule, parsePython, toSource, unparse, walk };
+-//# sourceMappingURL=index.esm.js.map
+diff --git a/dist/unicode-data.cjs b/dist/unicode-data.cjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d6909a82e2934d70357b7cb45fdbdab7dac2fa5f
+--- /dev/null
++++ b/dist/unicode-data.cjs
+@@ -0,0 +1,14 @@
++"use strict";
++function loadNameData() {
++  return {
++    names: require("@unicode/unicode-15.0.0/Names/index.js"),
++    aliases: [
++      require("@unicode/unicode-15.0.0/Names/Abbreviation/index.js"),
++      require("@unicode/unicode-15.0.0/Names/Alternate/index.js"),
++      require("@unicode/unicode-15.0.0/Names/Control/index.js"),
++      require("@unicode/unicode-15.0.0/Names/Correction/index.js"),
++      require("@unicode/unicode-15.0.0/Names/Figment/index.js")
++    ]
++  };
++}
++module.exports = loadNameData;

@@ -10,3 +10,5 @@
 *.tsx text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+plugins/codex-security/mcp-app/patches/py-ast.source.patch -whitespace
+plugins/codex-security/mcp-app/patches/py-ast@1.16.0.patch -whitespace

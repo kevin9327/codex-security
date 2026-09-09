@@ -1,3 +1,9 @@
 allowBuilds:
   esbuild: false
 minimumReleaseAge: 10080
+packageExtensions:
+  py-ast@1.16.0:
+    dependencies:
+      "@unicode/unicode-15.0.0": 2.0.2
+patchedDependencies:
+  py-ast@1.16.0: patches/py-ast@1.16.0.patch

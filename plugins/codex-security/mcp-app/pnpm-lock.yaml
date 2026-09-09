@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+packageExtensionsChecksum: sha256-Atsq2tDocHOollJTodFPZPOFy793HEJUCwhDRy+yIPQ=
+
+patchedDependencies:
+  py-ast@1.16.0: a6b7c718d0c02b195cb130d230ecf14a5f468b6598c77c4bf2ce44e2321ba620
+
 importers:
 
   .:
@@ -14,6 +19,9 @@ importers:
       '@openai/codex-sdk':
         specifier: 0.149.1
         version: 0.149.1
+      py-ast:
+        specifier: 1.16.0
+        version: 1.16.0(patch_hash=a6b7c718d0c02b195cb130d230ecf14a5f468b6598c77c4bf2ce44e2321ba620)
       zod:
         specifier: ^4.3.6
         version: 4.4.3
@@ -249,6 +257,9 @@ packages:
 
   '@types/node@25.9.1':
     resolution: {integrity: sha512-xfrlY7UD5rMJk3ZVJP8BNzS28J36YJg+xp+LPXV1TdWxr8uMH5A860QNxYDGQe/ylDSgjxE52Q9VnO7p75tJxg==}
+
+  '@unicode/unicode-15.0.0@2.0.2':
+    resolution: {integrity: sha512-FS0LaEcm22GZAqWW/ybOKSjvHNmyA6RH3z7g8t1DsuI2WxjkAIhXDad9PsEvJL5PYlBDE99ci1A9fHUn33jZCg==}
 
   accepts@2.0.0:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
@@ -515,6 +526,9 @@ packages:
     resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
     engines: {node: '>= 0.10'}
 
+  py-ast@1.16.0:
+    resolution: {integrity: sha512-gwt7YEf5Y3umHCWh413G03s67lwtupfbuVt+NoeoH1HbhWjNa+9wQMEL/Gn+8mdKahhXDYLHpSBJsu2+GG5OzQ==}
+
   qs@6.15.2:
     resolution: {integrity: sha512-Rzq0KEyX/w/tEybncDgdkZrJgVUsUMk3xjh3t5bv3S1HTAtg+uOYt72+ZfwiQwKdysThkTBdL/rTi6HDmX9Ddw==}
     engines: {node: '>=0.6'}
@@ -757,6 +771,8 @@ snapshots:
   '@types/node@25.9.1':
     dependencies:
       undici-types: 7.24.6
+
+  '@unicode/unicode-15.0.0@2.0.2': {}
 
   accepts@2.0.0:
     dependencies:
@@ -1039,6 +1055,10 @@ snapshots:
     dependencies:
       forwarded: 0.2.0
       ipaddr.js: 1.9.1
+
+  py-ast@1.16.0(patch_hash=a6b7c718d0c02b195cb130d230ecf14a5f468b6598c77c4bf2ce44e2321ba620):
+    dependencies:
+      '@unicode/unicode-15.0.0': 2.0.2
 
   qs@6.15.2:
     dependencies:
