@@ -223,8 +223,25 @@ export async function recordCodexSecurityScanDraftViaWorkbench(
   );
 }
 
-/** Preserve one complete Standard scan draft inside its assigned worker output. */
+const workerDraftQueues = new Map<string, Promise<void>>();
+
+/** Serialize reconciliation and acceptance inside this worker's assigned output. */
 export async function recordCodexSecurityWorkerScanDraft(
+  context: ArtifactContext,
+  input: ScanDraftInput,
+): Promise<ScanDraftResult> {
+  const previous = workerDraftQueues.get(context.root) ?? Promise.resolve();
+  const operation = previous.then(() => writeWorkerScanDraft(context, input));
+  const settled = operation.then(() => undefined, () => undefined);
+  workerDraftQueues.set(context.root, settled);
+  try {
+    return await operation;
+  } finally {
+    if (workerDraftQueues.get(context.root) === settled) workerDraftQueues.delete(context.root);
+  }
+}
+
+async function writeWorkerScanDraft(
   context: ArtifactContext,
   input: ScanDraftInput,
 ): Promise<ScanDraftResult> {

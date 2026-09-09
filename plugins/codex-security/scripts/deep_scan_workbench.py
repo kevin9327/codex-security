@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -1367,6 +1368,104 @@ def claim_deep_scan_coordinator_locked(
     }
 
 
+def isolate_checkpoint_worker(
+    connection: sqlite3.Connection, scan: sqlite3.Row, worker: sqlite3.Row, generation: int
+) -> None:
+    """Fence an expired writer by moving the registered attempt to a fresh output.
+
+    The caller owns the coordinator-claim transaction. Old processes can finish
+    writing their old directory, but it no longer supplies this worker's results.
+    """
+    root = require_canonical_scan_directory(Path(scan["scan_dir"]))
+    output = Path(
+        deep_scan_path(scan, worker["artifact_dir"], "Saved Deep output", kind="directory")
+    )
+    prompt = Path(deep_scan_path(scan, worker["prompt_path"], "Saved Deep prompt", kind="file"))
+    replacement = output.parent.parent / f"{worker['id']}-generation-{generation}"
+    replacement_output = replacement / "output"
+    source = output.relative_to(root).as_posix()
+    destination = replacement_output.relative_to(root).as_posix()
+    receipts = connection.execute(
+        "SELECT * FROM scan_checkpoints WHERE scan_id = ? AND source_path = ? ORDER BY sequence",
+        (scan["id"], source),
+    ).fetchall()
+
+    def copy_file(path: Path, target: Path, digest: str | None = None) -> None:
+        descriptor = open_scan_local_file_descriptor(
+            root, path.relative_to(root).as_posix(), "Saved Deep artifact"
+        )
+        with os.fdopen(descriptor, "rb") as handle:
+            contents = handle.read()
+        if digest is not None and hashlib.sha256(contents).hexdigest() != digest:
+            raise SystemExit("An accepted Deep checkpoint changed before coordinator recovery.")
+        write_scan_local_bytes(root, target.relative_to(root).as_posix(), contents)
+
+    def copy_tree(directory: Path, target: Path, *, current_output: bool = False) -> None:
+        if not directory.exists():
+            return
+        deep_scan_path(scan, str(directory), "Saved Deep evidence", kind="directory")
+        for current, directories, filenames in os.walk(directory, followlinks=False):
+            if current_output and Path(current) == directory:
+                directories[:] = [name for name in directories if name != "checkpoints"]
+            for name in directories:
+                deep_scan_path(
+                    scan, str(Path(current) / name), "Saved Deep evidence", kind="directory"
+                )
+            for name in filenames:
+                # The artifact writer uses UUID-named atomic temporary files.
+                if re.fullmatch(r"\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp", name):
+                    continue
+                path = Path(current) / name
+                if current_output and path.relative_to(directory).as_posix() in {
+                    "result.json",
+                    "checkpoint-head.json",
+                    "result.json.lock",
+                    "checkpoint-head.json.lock",
+                    "artifacts/01_context/threat_model.md.lock",
+                }:
+                    continue
+                copy_file(path, target / path.relative_to(directory))
+
+    copy_file(prompt, replacement / prompt.name)
+    copy_tree(prompt.parent / "prompts", replacement / "prompts")
+    copy_tree(output.parent / "attempts", replacement / "attempts")
+    copy_tree(output, replacement_output, current_output=True)
+    for receipt in receipts:
+        checkpoint = Path(receipt["checkpoint_path"])
+        copied = replacement_output / checkpoint.relative_to(source)
+        saved = root / checkpoint
+        if not saved.exists():
+            # Validation retries archive the previous output before another
+            # receipt is accepted under the same logical source path.
+            saved = next(
+                (output.parent / "attempts").glob(f"attempt-*/checkpoints/{checkpoint.name}"),
+                saved,
+            )
+        copy_file(saved, copied, receipt["content_sha256"])
+        connection.execute(
+            "UPDATE scan_checkpoints SET source_path = ?, checkpoint_path = ? WHERE sequence = ?",
+            (destination, copied.relative_to(root).as_posix(), receipt["sequence"]),
+        )
+    latest = receipts[-1]
+    write_scan_local_bytes(
+        root,
+        f"{destination}/checkpoint-head.json",
+        (
+            json.dumps(
+                {
+                    "checkpoint": Path(latest["checkpoint_path"]).name,
+                    "acceptanceId": latest["acceptance_id"],
+                }
+            )
+            + "\n"
+        ).encode(),
+    )
+    connection.execute(
+        "UPDATE deep_scan_workers SET prompt_path = ?, artifact_dir = ? WHERE id = ?",
+        (str(replacement / prompt.name), str(replacement_output), worker["id"]),
+    )
+
+
 def recover_expired_coordinator(
     connection: sqlite3.Connection, run: sqlite3.Row, timestamp: str
 ) -> None:
@@ -1381,7 +1480,7 @@ def recover_expired_coordinator(
         )
     }
     checkpoint_workers = [
-        row["id"]
+        row
         for row in connection.execute(
             "SELECT * FROM deep_scan_workers WHERE scan_id = ? AND kind = 'discovery' "
             "AND (status IN ('queued', 'running') OR (status = 'canceled' "
@@ -1390,6 +1489,8 @@ def recover_expired_coordinator(
         )
         if row["artifact_dir"] in checkpoint_directories
     ]
+    for worker in checkpoint_workers:
+        isolate_checkpoint_worker(connection, scan, worker, run["coordinator_generation"] + 1)
     interrupted_discoveries = int(
         connection.execute(
             """
@@ -1455,7 +1556,7 @@ def recover_expired_coordinator(
         "UPDATE deep_scan_workers SET status = 'queued', merge_state = 'none', "
         "completed_at = NULL, error_message = NULL, result_manifest_path = NULL, updated_at = ? "
         "WHERE id = ?",
-        [(timestamp, worker_id) for worker_id in checkpoint_workers],
+        [(timestamp, worker["id"]) for worker in checkpoint_workers],
     )
     connection.execute(
         """

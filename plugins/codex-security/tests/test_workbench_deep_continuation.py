@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 import uuid
@@ -277,7 +278,9 @@ def test_deep_continuation_rejects_a_changed_frozen_worker_result(tmp_path: Path
     assert (parent_dir / relative).is_file()
 
 
-def test_unfinished_worker_checkpoint_survives_first_and_repeated_coordinator_claim(tmp_path: Path):
+def test_unfinished_worker_checkpoint_survives_first_and_repeated_coordinator_claim(
+    tmp_path: Path, workbench_api, monkeypatch
+):
     state, parent_dir, parent_id, child_dir, child_id, workers = completed_deep_fixture(tmp_path)
     reducer = parent_dir / "artifacts/deep_discovery/dedup/dedup-0001/output/result.json"
     document = json.loads(reducer.read_text())
@@ -336,11 +339,83 @@ def test_unfinished_worker_checkpoint_survives_first_and_repeated_coordinator_cl
             "UPDATE deep_scan_runs SET updated_at = '2026-01-01T02:00:00Z' WHERE scan_id = ?",
             (child_id,),
         )
+    old_output = Path(worker["artifact_dir"])
+    old_prompt = Path(worker["prompt_path"])
+    prompt_attempt = old_prompt.parent / "prompts" / "attempt-02.md"
+    prompt_attempt.parent.mkdir()
+    prompt_attempt.write_text("Saved attempt instructions\n")
+    archive = old_output.parent / "attempts" / "attempt-02" / "checkpoints"
+    archive.mkdir(parents=True)
+    original_checkpoint = old_output / "checkpoints" / head["checkpoint"]
+    original_contents = original_checkpoint.read_bytes()
+    original_checkpoint.rename(archive / original_checkpoint.name)
+    (old_output / "result.json.lock").write_text("held by expired writer")
+    (old_output / "checkpoint-head.json.lock").write_text("held by expired writer")
+    writer_temporary = f".{uuid.uuid4()}.tmp"
+    (old_output / writer_temporary).write_text("incomplete atomic write")
+    (old_output / "example.lock").write_text("Saved lock-file evidence")
+    (old_output / ".example.tmp").write_text("Saved temporary-file evidence")
+    threat_model = Path("artifacts/01_context/threat_model.md")
+    (old_output / threat_model).parent.mkdir(parents=True, exist_ok=True)
+    (old_output / threat_model).write_text("Saved threat model")
+    (old_output / threat_model.with_suffix(".md.lock")).write_text("held by expired writer")
+    (old_output / "result.json").write_text(json.dumps(snapshot))
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        original_receipts = connection.execute(
+            "SELECT * FROM scan_checkpoints WHERE scan_id = ? ORDER BY sequence", (child_id,)
+        ).fetchall()
+    deep = workbench_api["deep_scan"]
+    original_isolate = deep.isolate_checkpoint_worker
+
+    def interrupted_rotation(*args):
+        original_isolate(*args)
+        raise OSError("interrupted after copying the replacement")
+
+    # A failed claim must leave both the coordinator generation and accepted
+    # source ownership unchanged, even when destination files were already copied.
+    with monkeypatch.context() as patch:
+        patch.setattr(deep, "isolate_checkpoint_worker", interrupted_rotation)
+        with sqlite3.connect(state / "workbench.sqlite3") as connection:
+            connection.row_factory = sqlite3.Row
+            with pytest.raises(OSError, match="interrupted after copying"):
+                deep.claim_deep_scan_coordinator(
+                    connection,
+                    argparse.Namespace(
+                        scan_id=child_id,
+                        thread_id="fixture-owner",
+                        claim_token=None,
+                        coordinator_generation=None,
+                    ),
+                )
+            assert connection.execute(
+                "SELECT artifact_dir FROM deep_scan_workers WHERE id = ?", (worker_id,)
+            ).fetchone()[0] == str(old_output)
+            assert [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT * FROM scan_checkpoints WHERE scan_id = ? ORDER BY sequence",
+                    (child_id,),
+                )
+            ] == original_receipts
     reclaimed = run_workbench(
         state, "claim-deep-scan-coordinator", "--scan-id", child_id, "--thread-id", "fixture-owner"
     )
     assert reclaimed["coordinatorDisposition"] == "adopted"
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.row_factory = sqlite3.Row
+        replacement = connection.execute(
+            "SELECT * FROM deep_scan_workers WHERE id = ?", (worker_id,)
+        ).fetchone()
+        assert replacement["artifact_dir"] != str(old_output)
+        assert Path(replacement["artifact_dir"]).name == "output"
+        assert Path(replacement["prompt_path"]).parent == Path(replacement["artifact_dir"]).parent
+        worker_receipts = connection.execute(
+            "SELECT * FROM scan_checkpoints WHERE scan_id = ? ORDER BY sequence", (child_id,)
+        ).fetchall()
+        for before, after in zip(original_receipts, worker_receipts, strict=True):
+            assert tuple(after)[:2] == before[:2]
+            assert tuple(after)[4:] == before[4:]
+        connection.row_factory = None
         assert connection.execute(
             "SELECT status, attempt, completion_sequence FROM deep_scan_workers WHERE id = ?",
             (worker_id,),
@@ -364,9 +439,9 @@ def test_unfinished_worker_checkpoint_survives_first_and_repeated_coordinator_cl
         "--status",
         "running",
         "--prompt-path",
-        worker["prompt_path"],
+        replacement["prompt_path"],
         "--artifact-dir",
-        worker["artifact_dir"],
+        replacement["artifact_dir"],
         "--attempt",
         "3",
         "--coordinator-generation",
@@ -376,7 +451,7 @@ def test_unfinished_worker_checkpoint_survives_first_and_repeated_coordinator_cl
         assert connection.execute(
             "SELECT status, attempt, prompt_path, artifact_dir FROM deep_scan_workers WHERE id = ?",
             (worker_id,),
-        ).fetchone() == ("running", 3, worker["prompt_path"], worker["artifact_dir"])
+        ).fetchone() == ("running", 3, replacement["prompt_path"], replacement["artifact_dir"])
         assert connection.execute(
             "SELECT discovery_runs_dispatched, completion_sequence FROM deep_scan_runs WHERE scan_id = ?",
             (child_id,),
@@ -384,6 +459,72 @@ def test_unfinished_worker_checkpoint_survives_first_and_repeated_coordinator_cl
     assert (
         child_dir / "artifacts/deep_discovery/workers/discovery-0004/output/checkpoint-head.json"
     ).is_file()
+    output = Path(replacement["artifact_dir"])
+    assert not (output / "result.json").exists()
+    assert not (output / "result.json.lock").exists()
+    assert not (output / "checkpoint-head.json.lock").exists()
+    assert not (output / writer_temporary).exists()
+    assert (output / "example.lock").read_text() == "Saved lock-file evidence"
+    assert (output / ".example.tmp").read_text() == "Saved temporary-file evidence"
+    assert (output / threat_model).read_text() == "Saved threat model"
+    assert not (output / threat_model.with_suffix(".md.lock")).exists()
+    assert (output.parent / "prompts" / "attempt-02.md").read_bytes() == prompt_attempt.read_bytes()
+    assert json.loads((output / "checkpoint-head.json").read_text()) == head
+    assert (output / "checkpoints" / head["checkpoint"]).read_bytes() == original_contents
+    # Replaying the relocated head must not manufacture another acceptance.
+    run_workbench(state, "get-cli-scan-resume", "--scan-id", child_id)
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM scan_checkpoints WHERE scan_id = ?", (child_id,)
+        ).fetchone()[0] == len(original_receipts)
+
+    current = json.loads(original_contents)
+    current["coverage"]["deferred"] = []
+    current["coverage"]["surfaces"] = [
+        {
+            "candidateId": "candidate-1",
+            "disposition": "rejected",
+            "reason": "Validated by the replacement worker.",
+            "provenance": {"workerId": worker_id},
+        }
+    ]
+    save(state, child_id, write_checkpoint(output / "checkpoints", current))
+    (output / "result.json").write_text(json.dumps(current))
+    replacement_head = (output / "checkpoint-head.json").read_bytes()
+    expired = json.loads(original_contents)
+    expired["coverage"]["deferred"][0]["candidateId"] = "expired-only"
+    expired_path = write_checkpoint(old_output / "checkpoints", expired)
+    (old_output / "result.json").write_text(json.dumps(expired))
+    failed = save(state, child_id, expired_path, check=False)
+    assert "registered scan worker" in failed["stderr"]
+    assert (output / "checkpoint-head.json").read_bytes() == replacement_head
+    assert json.loads((output / "result.json").read_text()) == current
+
+    grandchild = tmp_path / "grandchild"
+    grandchild.mkdir(mode=0o700)
+    recipe = run_workbench(state, "get-scan-recipe", "--scan-id", child_id)["recipe"]
+    grandchild_id = run_workbench(
+        state,
+        "register-cli-scan",
+        "--repository",
+        str(tmp_path / "repository"),
+        "--scan-dir",
+        str(grandchild),
+        "--recipe-json",
+        json.dumps(recipe),
+        "--parent-scan-id",
+        child_id,
+    )["scanId"]
+    run_workbench(
+        state,
+        "continue-scan-checkpoint",
+        "--scan-id",
+        grandchild_id,
+        "--parent-scan-id",
+        child_id,
+    )
+    assert "expired-only" not in (grandchild / "coverage.json").read_text()
+    assert "Validated by the replacement worker." in (grandchild / "coverage.json").read_text()
 
 
 def test_checkpoint_rebind_preserves_nested_source_owners(workbench_api):

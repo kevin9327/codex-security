@@ -477,83 +477,97 @@ test.each([false, true])(
   },
 );
 
-test("a hard-killed continuation recovers native spend on top of its durable inherited cost", async () => {
-  const f = await savedScan({ maxCostUsd: 20 });
-  const child = join(f.root, "interrupted-child");
-  await mkdir(child, { mode: 0o700 });
-  const registration = await f.command([
-    "register-cli-scan",
-    "--repository",
-    f.repository,
-    "--scan-dir",
-    child,
-    "--parent-scan-id",
-    f.scanId,
-    "--recipe-json",
-    JSON.stringify(f.recipe),
-  ]);
-  const childId = registration["scanId"] as string;
-  await f.command([
-    "continue-scan-checkpoint",
-    "--scan-id",
-    childId,
-    "--parent-scan-id",
-    f.scanId,
-    "--cost-json",
-    JSON.stringify(previousCost),
-  ]);
-  const threadId = randomUUID();
-  await f.command([
-    "set-scan-thread",
-    "--scan-id",
-    childId,
-    "--thread-id",
-    threadId,
-  ]);
-  const sessionPath = join(
-    f.codexHome,
-    "sessions",
-    `rollout-${threadId}.jsonl`,
-  );
-  await writeFile(
-    sessionPath,
-    JSON.stringify({
-      type: "session_meta",
-      payload: { id: threadId, cwd: child },
-    }) + "\n",
-  );
-  await appendFile(
-    sessionPath,
-    JSON.stringify({
-      type: "event_msg",
-      payload: {
-        type: "token_count",
-        info: {
-          total_token_usage: { input_tokens: 10000, output_tokens: 2000 },
+test.each([true, false])(
+  "a hard-killed continuation requires bound native spend to enforce its saved cap: persistedThread=%j",
+  async (persistedThread) => {
+    const f = await savedScan({ maxCostUsd: 20 });
+    const child = join(f.root, "interrupted-child");
+    await mkdir(child, { mode: 0o700 });
+    const registration = await f.command([
+      "register-cli-scan",
+      "--repository",
+      f.repository,
+      "--scan-dir",
+      child,
+      "--parent-scan-id",
+      f.scanId,
+      "--recipe-json",
+      JSON.stringify(f.recipe),
+    ]);
+    const childId = registration["scanId"] as string;
+    await f.command([
+      "continue-scan-checkpoint",
+      "--scan-id",
+      childId,
+      "--parent-scan-id",
+      f.scanId,
+      "--cost-json",
+      JSON.stringify(previousCost),
+    ]);
+    const threadId = randomUUID();
+    if (persistedThread)
+      await f.command([
+        "set-scan-thread",
+        "--scan-id",
+        childId,
+        "--thread-id",
+        threadId,
+      ]);
+    const sessionPath = join(
+      f.codexHome,
+      "sessions",
+      `rollout-${threadId}.jsonl`,
+    );
+    await writeFile(
+      sessionPath,
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: threadId, cwd: child },
+      }) + "\n",
+    );
+    await appendFile(
+      sessionPath,
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: { input_tokens: 10000, output_tokens: 2000 },
+          },
         },
+      }) + "\n",
+    );
+    let latestId = "";
+    let modelCalls = 0;
+    const outcome = await resume({ ...f, scanId: childId }, (options) => ({
+      startThread(threadOptions) {
+        latestId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+        const newThread = randomUUID();
+        return {
+          id: newThread,
+          async runStreamed() {
+            modelCalls++;
+            await finishChild(f, threadOptions.workingDirectory!, latestId);
+            return { events: completedEvents(newThread) };
+          },
+        };
       },
-    }) + "\n",
-  );
-  let latestId = "";
-  const outcome = await resume({ ...f, scanId: childId }, (options) => ({
-    startThread(threadOptions) {
-      latestId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
-      const newThread = randomUUID();
-      return {
-        id: newThread,
-        async runStreamed() {
-          await finishChild(f, threadOptions.workingDirectory!, latestId);
-          return { events: completedEvents(newThread) };
-        },
-      };
-    },
-  }));
-  expect(outcome.code, outcome.stderr).toBe(0);
-  const result = JSON.parse(outcome.stdout);
-  expect(result.cost.estimatedUsd).toBeGreaterThan(12.5);
-  expect(result.cost.inputTokens).toBe(11010);
-  expect(result.cost.outputTokens).toBe(2053);
-});
+    }));
+    if (!persistedThread) {
+      expect(outcome.code, outcome.stderr).toBe(2);
+      expect(modelCalls).toBe(0);
+      expect(outcome.stderr).toContain("cost is unavailable");
+      expect(outcome.stderr).toContain("limit cannot be enforced");
+      return;
+    }
+    expect(outcome.code, outcome.stderr).toBe(0);
+    expect(modelCalls).toBe(1);
+    const result = JSON.parse(outcome.stdout);
+    expect(result.cost.estimatedUsd).toBeGreaterThan(12.5);
+    expect(result.cost.inputTokens).toBe(11010);
+    expect(result.cost.outputTokens).toBe(2053);
+  },
+);
 
 async function saveCompleteCheckpoint(f: Fixture) {
   const current = (

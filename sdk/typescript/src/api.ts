@@ -1021,9 +1021,6 @@ export class CodexSecurity {
                   `Previous scan cost is unavailable: ${safeErrorMessage(error)}`,
                 );
               }
-            } else if (savedThreadId === null) {
-              // Registration and checkpoint seeding can finish before the first model call.
-              previousCost = inheritedCost;
             }
           }
           if (

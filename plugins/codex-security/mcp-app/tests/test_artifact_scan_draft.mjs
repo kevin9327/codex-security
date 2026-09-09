@@ -136,6 +136,80 @@ try {
   };
   const workerResultPath = path.join(workerRoot, "result.json");
 
+  for (const rejectFirst of [false, true]) {
+    const overlappingRoot = path.join(root, `overlapping-worker-${rejectFirst}`);
+    const independentRoot = path.join(root, `independent-worker-${rejectFirst}`);
+    await mkdir(overlappingRoot);
+    await mkdir(independentRoot);
+    const firstEntered = Promise.withResolvers();
+    const releaseFirst = Promise.withResolvers();
+    const accepted = [];
+    const commitFailure = new Error("First checkpoint acceptance failed");
+    let calls = 0;
+    const overlappingContext = {
+      ...workerContext,
+      root: overlappingRoot,
+      onCheckpoint: async (checkpointPath) => {
+        if (++calls === 1) {
+          firstEntered.resolve();
+          await releaseFirst.promise;
+          if (rejectFirst) throw commitFailure;
+        }
+        accepted.push(JSON.parse(await readFile(checkpointPath, "utf8")));
+        await writeFile(path.join(overlappingRoot, "checkpoint-head.json"), JSON.stringify({
+          checkpoint: path.basename(checkpointPath),
+        }));
+      },
+    };
+    const additionalFinding = structuredClone(finding);
+    additionalFinding.title = "Unsafe extraction in the additional importer";
+    additionalFinding.locations = [{ path: "src/import.py", startLine: 10, endLine: 12 }];
+    additionalFinding.identity = { anchor: "additional-worker-finding" };
+    additionalFinding.provenance.candidateId = "additional-worker-candidate";
+    additionalFinding.extensions.candidateId = "additional-worker-candidate";
+    const first = recordCodexSecurityWorkerScanDraft(overlappingContext, {
+      ...workerInput, complete: false,
+      coverage: { ...coverage, completeness: "partial", reviewedFiles: ["clean.ts"] },
+    }).then((result) => ({ result }), (error) => ({ error }));
+    await firstEntered.promise;
+    const second = recordCodexSecurityWorkerScanDraft({ ...overlappingContext }, {
+      ...workerInput, complete: false, findings: [additionalFinding],
+      coverage: {
+        ...coverage, completeness: "partial", reviewedFiles: ["pending.ts"],
+        deferred: [{ candidateId: "unfinished-candidate", reason: "Runtime validation remains pending." }],
+      },
+    });
+    try {
+      // Another worker can accept successive updates while this worker's first
+      // acceptance is held. Neither worker needs a timer or a persistent lock.
+      const independentContext = { ...workerContext, root: independentRoot };
+      await recordCodexSecurityWorkerScanDraft(independentContext, {
+        ...workerInput, complete: false,
+      });
+      await recordCodexSecurityWorkerScanDraft(independentContext, {
+        ...workerInput, complete: false, findings: [additionalFinding],
+      });
+      assert.equal(accepted.length, 0, "the second call must wait for this worker's outstanding acceptance");
+    } finally {
+      releaseFirst.resolve();
+      await Promise.allSettled([first, second]);
+    }
+    const firstOutcome = await first;
+    if (rejectFirst) assert.equal(firstOutcome.error, commitFailure);
+    else assert.equal(firstOutcome.result.findingCount, 1);
+    assert.equal((await second).findingCount, 2, "a failed earlier call must not poison the worker queue");
+    assert.equal(accepted.length, rejectFirst ? 1 : 2);
+    const final = JSON.parse(await readFile(path.join(overlappingRoot, "result.json"), "utf8"));
+    assert.deepEqual(final, accepted.at(-1), "the replaceable result and accepted checkpoint must agree");
+    assert.deepEqual(new Set(final.findings.map((item) => item.provenance.candidateId)), new Set([
+      finding.provenance.candidateId, additionalFinding.provenance.candidateId,
+    ]));
+    assert.deepEqual(new Set(final.coverage.reviewedFiles), new Set(
+      rejectFirst ? ["pending.ts"] : ["clean.ts", "pending.ts"],
+    ));
+    assert.equal(final.coverage.deferred[0].candidateId, "unfinished-candidate");
+  }
+
   const committedRoot = path.join(root, "committed-worker");
   await mkdir(committedRoot);
   const committedSnapshots = [];
