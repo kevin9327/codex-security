@@ -105,21 +105,26 @@ async function testCappedQueueAndSerialDedup(scopePaths) {
   assert.equal(terminal.manifestPath, path.join(fixture.run.scanDir, "scan-manifest.json"));
 }
 
-async function testStandardWorkersReceiveExistingFalsePositiveFeedback() {
+async function testStandardWorkersReceiveExistingFalsePositiveFeedback(currentAttempt = false) {
   const fixture = await fixtureRun({
     workers: 1,
     subagents: 0,
     stopAfterNoNew: 1,
     maxDiscoveryRuns: 1
   });
-  const feedbackPath = path.join(
+  const inheritedFeedbackPath = path.join(
     fixture.run.scanDir,
     "artifacts",
     "01_context",
     "false_positive_feedback.json"
   );
+  const feedbackPath = currentAttempt
+    ? path.join(path.dirname(inheritedFeedbackPath), `false_positive_feedback-${fixture.run.scanId}.json`)
+    : inheritedFeedbackPath;
   await mkdir(path.dirname(feedbackPath), { recursive: true });
-  await writeFile(feedbackPath, JSON.stringify([{ reason: "existing control still applies" }]));
+  const inheritedFeedback = JSON.stringify([{ reason: "existing control still applies" }]);
+  await writeFile(inheritedFeedbackPath, inheritedFeedback);
+  if (currentAttempt) await writeFile(feedbackPath, "[]\n");
   const store = new FakeStore(fixture.run);
   const coordinator = new DeepScanCoordinator({
     run: fixture.run,
@@ -138,6 +143,10 @@ async function testStandardWorkersReceiveExistingFalsePositiveFeedback() {
   assert.ok(worker);
   const prompt = await readFile(worker.promptPath, "utf8");
   assert.equal(prompt.includes(JSON.stringify(feedbackPath)), true);
+  if (currentAttempt) {
+    assert.equal(prompt.includes(JSON.stringify(inheritedFeedbackPath)), false);
+    assert.equal(await readFile(inheritedFeedbackPath, "utf8"), inheritedFeedback);
+  }
   assert.equal(Object.hasOwn(await promptContext(worker.promptPath), "falsePositiveFeedbackPath"), false);
   await assert.rejects(readFile(path.join(
     worker.artifactDir,
@@ -3878,6 +3887,7 @@ try {
   await testCappedQueueAndSerialDedup();
   await testCappedQueueAndSerialDedup(["src", "explicit.ignored"]);
   await testStandardWorkersReceiveExistingFalsePositiveFeedback();
+  await testStandardWorkersReceiveExistingFalsePositiveFeedback(true);
   await testDiscoveryWorkersKeepOneContextAfterPersistedUpdate();
   await testPersistedContextDoesNotChangeAnotherProcessDiscoverySnapshot();
   await testWorkerScopedCandidateSourceAggregation();

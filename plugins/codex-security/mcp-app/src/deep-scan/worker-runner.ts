@@ -151,16 +151,17 @@ export class DeepScanWorkerRunner {
     const promptPath = continuation?.promptPath ?? join(workerRoot, "prompt.md");
     const files = discoveryArtifacts(artifactDir);
     await fs.mkdir(artifactDir, { recursive: true });
-    const feedbackPath = join(
-      artifacts.scanDir,
-      "artifacts",
-      "01_context",
+    let feedback: string | undefined;
+    for (const filename of [
+      `false_positive_feedback-${run.scanId}.json`,
       "false_positive_feedback.json"
-    );
-    const feedback = await fs.stat(feedbackPath).then(
-      (metadata) => metadata.isFile() ? feedbackPath : undefined,
-      () => undefined
-    );
+    ]) {
+      const feedbackPath = join(artifacts.scanDir, "artifacts", "01_context", filename);
+      if (await fs.stat(feedbackPath).then((metadata) => metadata.isFile(), () => false)) {
+        feedback = feedbackPath;
+        break;
+      }
+    }
     let basePrompt = renderDiscoveryPrompt({
       scanId: run.scanId,
       pluginRoot: this.options.pluginRoot,

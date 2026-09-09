@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { scanPreflightCodexConfig } from "../src/api.js";
@@ -281,7 +288,7 @@ test("Standard continuation preserves the sealed parent and resumes only unfinis
                   childDirectory,
                   "artifacts",
                   "01_context",
-                  "scan-continuation.json",
+                  `scan-continuation-${childId}.json`,
                 ),
                 "utf8",
               ),
@@ -325,6 +332,142 @@ test("Standard continuation preserves the sealed parent and resumes only unfinis
     f.command(["get-cli-scan-resume", "--scan-id", childId]),
   ).rejects.toThrow("already completed");
 });
+
+test.each(["scan-continuation.json", "false_positive_feedback.json"])(
+  "continuation preserves inherited %s receipts while writing current context",
+  async (filename) => {
+    const f = await savedScan({ running: true });
+    const receipt = `artifacts/01_context/${filename}`;
+    const inherited =
+      JSON.stringify({ evidence: "Previous attempt context" }) + "\n";
+    await mkdir(join(f.scanDir, "artifacts", "01_context"), {
+      recursive: true,
+    });
+    await writeFile(join(f.scanDir, receipt), inherited);
+    const current = (
+      await f.command(["get-cli-scan-resume", "--scan-id", f.scanId])
+    )["checkpoint"] as {
+      sources: Array<{ findings: object[]; coverage: object }>;
+    };
+    await f.checkpoint(f.scanDir, f.scanId, {
+      scanId: f.scanId,
+      complete: false,
+      findings: current.sources[0]!.findings,
+      coverage: {
+        ...current.sources[0]!.coverage,
+        surfaces: [
+          {
+            id: "saved-context",
+            label: "Previously reviewed context",
+            disposition: "not_applicable",
+            receiptRefs: [receipt],
+          },
+        ],
+      },
+    });
+    await f.command([
+      "fail-scan",
+      "--scan-id",
+      f.scanId,
+      "--message",
+      "Synthetic interruption after saving context",
+      "--cost-json",
+      JSON.stringify(previousCost),
+    ]);
+    const reason = "The current route checks the session before access.";
+    if (filename === "false_positive_feedback.json") {
+      const reviewedDirectory = join(f.root, "reviewed-scan");
+      await mkdir(reviewedDirectory, { mode: 0o700 });
+      const registration = await f.command([
+        "register-cli-scan",
+        "--repository",
+        f.repository,
+        "--scan-dir",
+        reviewedDirectory,
+        "--parent-scan-id",
+        f.scanId,
+        "--recipe-json",
+        JSON.stringify(f.recipe),
+      ]);
+      const reviewedId = registration["scanId"] as string;
+      await f.command([
+        "continue-scan-checkpoint",
+        "--scan-id",
+        reviewedId,
+        "--parent-scan-id",
+        f.scanId,
+      ]);
+      await finishChild(f, reviewedDirectory, reviewedId);
+      const completed = await f.command([
+        "complete-scan",
+        "--scan-id",
+        reviewedId,
+      ]);
+      const scan = completed["scan"] as {
+        findings: Array<{ occurrenceId: string }>;
+      };
+      await f.command([
+        "set-finding-triage",
+        "--occurrence-id",
+        scan.findings[0]!.occurrenceId,
+        "--status",
+        "closed",
+        "--close-reason",
+        "false_positive",
+        "--note",
+        reason,
+      ]);
+    }
+    let childDirectory = "";
+    let modelCalls = 0;
+    const outcome = await resume(f, (options) => ({
+      startThread(threadOptions) {
+        childDirectory = threadOptions.workingDirectory!;
+        const scanId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+        const threadId = randomUUID();
+        return {
+          id: threadId,
+          async runStreamed(prompt) {
+            modelCalls++;
+            expect(await readFile(join(childDirectory, receipt), "utf8")).toBe(
+              inherited,
+            );
+            const contextDirectory = join(
+              childDirectory,
+              "artifacts",
+              "01_context",
+            );
+            const contextFiles = await readdir(contextDirectory);
+            let foundCurrent = false;
+            for (const name of contextFiles) {
+              if (name === filename || !name.endsWith(".json")) continue;
+              const document = JSON.parse(
+                await readFile(join(contextDirectory, name), "utf8"),
+              );
+              const matches =
+                filename === "scan-continuation.json"
+                  ? document.parentScanId === f.scanId
+                  : Array.isArray(document) && document[0]?.reason === reason;
+              if (matches) {
+                foundCurrent = true;
+                expect(prompt).toContain(name);
+              }
+            }
+            expect(foundCurrent).toBe(true);
+            await finishChild(f, childDirectory, scanId);
+            return { events: completedEvents(threadId) };
+          },
+        };
+      },
+    }));
+    expect(outcome.code, outcome.stderr).toBe(0);
+    expect(modelCalls).toBe(1);
+    expect(await readFile(join(f.scanDir, receipt), "utf8")).toBe(inherited);
+    expect(await readFile(join(childDirectory, receipt), "utf8")).toBe(
+      inherited,
+    );
+  },
+);
 
 test("missing Deep native history falls back to a new attempt from semantic checkpoints", async () => {
   const f = await savedScan({ mode: "deep", running: true });
