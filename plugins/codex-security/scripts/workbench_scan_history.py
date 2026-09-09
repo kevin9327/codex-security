@@ -3,7 +3,6 @@
 import argparse
 import fnmatch
 import json
-import os
 import sqlite3
 import sys
 from collections.abc import Iterable, Iterator
@@ -15,13 +14,7 @@ from urllib.parse import urlsplit
 # Some plugin hosts launch Python with safe-path isolation enabled.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from report_projection import SEVERITY_ORDER
-from workbench_constants import FINDINGS_PAGE_MAX
-from workbench_scan_usage import stored_scan_cost_fields
 from workbench_target import git_output
-
-
-def _windows_path_key(value: str) -> str:
-    return os.path.normcase(os.path.realpath(value))
 
 
 def _same_repository(
@@ -81,160 +74,6 @@ def _repository_origin(target: Path) -> tuple[str, str] | None:
         host = authority.rsplit("@", 1)[-1]
     path = path.strip("/").removesuffix(".git")
     return (host.lower(), path) if host and path else None
-
-
-def list_scans(
-    connection: sqlite3.Connection, args: argparse.Namespace | None = None
-) -> dict[str, Any]:
-    if os.name == "nt":
-        connection.create_function("codex_security_path_key", 1, _windows_path_key)
-    clauses: list[str] = []
-    values: list[Any] = []
-    if args is not None and args.repository:
-        repository = Path(args.repository).expanduser().resolve()
-        requested_repository = connection.execute(
-            """
-            SELECT COALESCE((SELECT id FROM security_targets WHERE current_path = ?), '') AS target_id,
-                ? AS target_path
-            """,
-            (str(repository), str(repository)),
-        ).fetchone()
-        requested_identity = (
-            git_output(repository, "rev-parse", "--path-format=absolute", "--git-common-dir"),
-            _repository_origin(repository),
-        )
-        related_target_ids = [
-            target["target_id"]
-            for target in connection.execute(
-                "SELECT id AS target_id, current_path AS target_path FROM security_targets"
-            )
-            if _same_repository(target, requested_repository, after_identity=requested_identity)
-        ]
-        repository_clauses = ["scans.target_path = ?"]
-        values.append(str(repository))
-        if related_target_ids:
-            placeholders = ", ".join("?" for _ in related_target_ids)
-            repository_clauses.append(f"scans.target_id IN ({placeholders})")
-            values.extend(related_target_ids)
-        clauses.append(f"({' OR '.join(repository_clauses)})")
-    if args is not None and args.scan_root:
-        scan_root = str(Path(args.scan_root).expanduser().resolve())
-        prefix = scan_root.rstrip(os.sep) + os.sep
-        if os.name == "nt":
-            scan_root = _windows_path_key(scan_root)
-            prefix = scan_root.rstrip(os.sep) + os.sep
-            clauses.append(
-                "(codex_security_path_key(scans.scan_dir) = ? "
-                "OR substr(codex_security_path_key(scans.scan_dir), 1, ?) = ?)"
-            )
-        else:
-            clauses.append("(scans.scan_dir = ? OR substr(scans.scan_dir, 1, ?) = ?)")
-        values.extend((scan_root, len(prefix), prefix))
-    if args is not None and args.target_id:
-        clauses.append("scans.target_id = ?")
-        values.append(args.target_id)
-    if args is not None and args.mode:
-        clauses.append("scans.mode = ?")
-        values.append(args.mode)
-    if args is not None and args.status:
-        if args.status == "canceled":
-            clauses.append("scans.canceled_at IS NOT NULL")
-        else:
-            clauses.append("scans.status = ? AND scans.canceled_at IS NULL")
-            values.append(args.status)
-    if args is not None and args.query:
-        query = args.query.strip().casefold()
-        if query:
-            clauses.append(
-                "(instr(lower(scans.target_path), ?) > 0 "
-                "OR instr(lower(COALESCE(scans.target_summary, '')), ?) > 0 "
-                "OR instr(lower(scans.scope), ?) > 0 "
-                "OR instr(lower(scans.mode), ?) > 0)"
-            )
-            values.extend((query, query, query, query))
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    paginated = args is not None and (args.limit is not None or args.offset != 0)
-    limit = min(args.limit or FINDINGS_PAGE_MAX, FINDINGS_PAGE_MAX) if paginated else None
-    pagination = "LIMIT ? OFFSET ?" if paginated else ""
-    if limit is not None:
-        values.extend((limit + 1, args.offset))
-    rows = connection.execute(
-        f"""
-        SELECT
-            scans.*,
-            progress.reportable_findings_count,
-            progress.scope_file_count,
-            progress.review_items_completed,
-            progress.review_items_total,
-            progress.updated_at AS progress_updated_at,
-            (
-                SELECT COUNT(*)
-                FROM finding_occurrences AS occurrences
-                WHERE occurrences.scan_id = scans.id
-            ) AS finding_count
-        FROM scans
-        JOIN scan_progress AS progress ON progress.scan_id = scans.id
-        {where}
-        ORDER BY
-            CASE WHEN scans.status = 'running' AND scans.canceled_at IS NULL THEN 0 ELSE 1 END,
-            MAX(scans.updated_at, progress.updated_at) DESC,
-            scans.started_at DESC,
-            scans.id
-        {pagination}
-        """,
-        values,
-    ).fetchall()
-    result = {
-        "scans": [
-            {
-                "completedAt": row["completed_at"],
-                "continuationThreadId": row["continuation_thread_id"],
-                **stored_scan_cost_fields(row["cost_json"]),
-                "findingCount": row["finding_count"],
-                "handoffStatus": row["handoff_status"],
-                "mode": row["mode"],
-                "model": row["model"],
-                "parentScanId": row["parent_scan_id"],
-                "progress": {
-                    "candidates": {"reportable": row["reportable_findings_count"]},
-                    "coverage": {
-                        "closedRows": row["review_items_completed"],
-                        "filesTotal": row["scope_file_count"],
-                        "worklistRows": row["review_items_total"],
-                    },
-                    "phase": row["phase"],
-                    "status": "canceled" if row["canceled_at"] else row["status"],
-                    "updatedAt": row["progress_updated_at"],
-                },
-                "recipeAvailable": row["recipe_json"] is not None,
-                "reasoningEffort": row["reasoning_effort"],
-                "scanDir": row["scan_dir"],
-                "scanId": row["id"],
-                "scope": row["scope"],
-                "startedAt": row["started_at"],
-                "targetId": row["target_id"],
-                "targetPath": row["target_path"],
-                "targetRevision": row["target_revision"],
-                "targetSummary": row["target_summary"],
-                "updatedAt": max(row["updated_at"], row["progress_updated_at"]),
-                **(
-                    {"warnings": json.loads(row["completion_warnings_json"])}
-                    if row["completion_warnings_json"] != "[]"
-                    else {}
-                ),
-            }
-            for row in rows[:limit]
-        ]
-    }
-    if limit is not None:
-        result.update(
-            {
-                "limit": limit,
-                "nextOffset": args.offset + limit if len(rows) > limit else None,
-                "offset": args.offset,
-            }
-        )
-    return result
 
 
 def list_unmatched_scan_pairs(

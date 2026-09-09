@@ -1,6 +1,7 @@
 import type { Connection } from "../../native/sqlite.mjs";
 import { fileInfo } from "./helpers/helper-files";
-import { object, parseJson, pythonRepr } from "./helpers/python-json";
+import { pythonRepr } from "./helpers/python-json";
+import { listScans } from "./workbench-scan-history";
 import { compare } from "./helpers/rank-worklists";
 import { casefold } from "./workbench-dashboard";
 
@@ -233,84 +234,11 @@ export function listGlobalFindings(
   };
 }
 
-function scanSummaries(connection: Connection) {
-  return connection
-    .prepare(
-      `
-    SELECT scans.*, progress.reportable_findings_count, progress.scope_file_count,
-        progress.review_items_completed, progress.review_items_total,
-        progress.updated_at AS progress_updated_at,
-        (SELECT COUNT(*) FROM finding_occurrences AS occurrences WHERE occurrences.scan_id = scans.id) AS finding_count
-    FROM scans JOIN scan_progress AS progress ON progress.scan_id = scans.id
-    ORDER BY CASE WHEN scans.status = 'running' AND scans.canceled_at IS NULL THEN 0 ELSE 1 END,
-        MAX(scans.updated_at, progress.updated_at) DESC, scans.started_at DESC, scans.id
-  `,
-    )
-    .all()
-    .map((record) => {
-      const row = record.toObject();
-      const stored =
-        row["cost_json"] === null
-          ? null
-          : parseJson(row["cost_json"] as string, false, BigInt, (value) => {
-              throw new Error(`invalid JSON number ${value}`);
-            });
-      const cost = !object(stored)
-        ? {}
-        : !("usage" in stored)
-          ? { cost: stored }
-          : {
-              usage: stored["usage"],
-              ...(object(stored["cost"]) ? { cost: stored["cost"] } : {}),
-            };
-      return {
-        completedAt: row["completed_at"],
-        continuationThreadId: row["continuation_thread_id"],
-        ...cost,
-        findingCount: row["finding_count"],
-        handoffStatus: row["handoff_status"],
-        mode: row["mode"],
-        model: row["model"],
-        parentScanId: row["parent_scan_id"],
-        progress: {
-          candidates: { reportable: row["reportable_findings_count"] },
-          coverage: {
-            closedRows: row["review_items_completed"],
-            filesTotal: row["scope_file_count"],
-            worklistRows: row["review_items_total"],
-          },
-          phase: row["phase"],
-          status: row["canceled_at"] ? "canceled" : row["status"],
-          updatedAt: row["progress_updated_at"],
-        },
-        recipeAvailable: row["recipe_json"] !== null,
-        reasoningEffort: row["reasoning_effort"],
-        scanDir: row["scan_dir"],
-        scanId: row["id"] as string,
-        scope: row["scope"],
-        startedAt: row["started_at"],
-        targetId: row["target_id"] as string,
-        targetPath: row["target_path"],
-        targetRevision: row["target_revision"],
-        targetSummary: row["target_summary"],
-        updatedAt: latest(
-          row["updated_at"] as string,
-          row["progress_updated_at"] as string,
-        ),
-        ...(row["completion_warnings_json"] !== "[]"
-          ? {
-              warnings: parseJson(row["completion_warnings_json"] as string),
-            }
-          : {}),
-      };
-    });
-}
-
 export function listRepositories(
   connection: Connection,
   args?: NavigationQuery,
 ) {
-  const scans = scanSummaries(connection);
+  const scans = listScans(connection).scans;
   const scansById = new Map(scans.map((scan) => [scan.scanId, scan]));
   const counts = new Map<string, number>();
   for (const scan of scans)

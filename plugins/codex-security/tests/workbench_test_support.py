@@ -91,7 +91,7 @@ def run_workbench(
             "node",
             str(SCRIPT.parents[3] / "sdk/typescript/_bundled_plugin/mcp/helpers.mjs"),
         ]
-        if args and args[0] in {"list-global-findings", "list-repositories"}
+        if args and args[0] in {"list-global-findings", "list-repositories", "list-scans"}
         else [sys.executable, str(SCRIPT)]
     )
     completed = subprocess.run(

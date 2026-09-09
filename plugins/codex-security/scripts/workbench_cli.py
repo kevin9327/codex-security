@@ -131,16 +131,6 @@ def parse_args(description: str) -> argparse.Namespace:
     update_scan_context_owner.add_argument("--thread-id")
     update_scan_context.add_argument("--claim-token")
 
-    list_scans = subparsers.add_parser("list-scans")
-    list_scans.add_argument("--query")
-    list_scans.add_argument("--target-id")
-    list_scans.add_argument("--status", choices=("running", "complete", "failed", "canceled"))
-    list_scans.add_argument("--mode", choices=MODES)
-    list_scans.add_argument("--repository")
-    list_scans.add_argument("--scan-root")
-    list_scans.add_argument("--offset", type=non_negative_int, default=0)
-    list_scans.add_argument("--limit", type=positive_int)
-
     list_unmatched_scan_pairs = subparsers.add_parser("list-unmatched-scan-pairs")
     list_unmatched_scan_pairs.add_argument("--repository", required=True)
     list_unmatched_scan_pairs.add_argument("--force", action="store_true")

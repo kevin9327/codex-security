@@ -1551,6 +1551,7 @@ export async function runWorkbench(
       "list-dedupe-groups",
       "list-global-findings",
       "list-repositories",
+      "list-scans",
     ].includes(args[0] ?? "");
     const command = node
       ? process.execPath

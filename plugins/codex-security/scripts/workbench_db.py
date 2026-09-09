@@ -3493,8 +3493,6 @@ def main() -> None:
             result = scan_context(connection, args.scan_id, args.occurrence_id)
         elif args.command == "get-scan-feedback":
             result = get_scan_feedback(connection, require_scan(connection, args.scan_id))
-        elif args.command == "list-scans":
-            result = scan_history.list_scans(connection, args)
         elif args.command == "list-unmatched-scan-pairs":
             result = scan_history.list_unmatched_scan_pairs(
                 connection,

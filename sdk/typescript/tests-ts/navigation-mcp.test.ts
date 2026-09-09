@@ -100,7 +100,8 @@ async function start(environment: Record<string, string | undefined>) {
   });
   expect(initialized.error, stderr).toBeUndefined();
   return {
-    call: (name: string) => request("tools/call", { name, arguments: {} }),
+    call: (name: string, arguments_: Record<string, unknown> = {}) =>
+      request("tools/call", { name, arguments: arguments_ }),
     events: () =>
       stderr.split(/\r?\n/).flatMap((line) => {
         try {
@@ -128,6 +129,7 @@ async function start(environment: Record<string, string | undefined>) {
 }
 const findings = "list_codex_security_global_findings";
 const repositories = "list_codex_security_repositories";
+const scans = "list_codex_security_scans";
 function successful(response: Response) {
   expect(response.error).toBeUndefined();
   expect(response.result?.isError, JSON.stringify(response)).toBeUndefined();
@@ -154,6 +156,7 @@ test("native MCP tools share their first persistent selection and keep proven fa
     const responses = await Promise.all([
       server.call(findings),
       server.call(repositories),
+      server.call(scans),
     ]);
     expect(successful(responses[0]!)).toEqual({
       findings: [],
@@ -162,6 +165,17 @@ test("native MCP tools share their first persistent selection and keep proven fa
       offset: 0,
     });
     expect(successful(responses[1]!)).toEqual({ repositories: [] });
+    expect(successful(responses[2]!)).toEqual({ scans: [] });
+    expect(
+      successful(
+        await server.call(scans, {
+          limit: 50,
+          offset: 1,
+          mode: "deep",
+          status: "complete",
+        }),
+      ),
+    ).toEqual({ scans: [], limit: 20, offset: 1, nextOffset: null });
     expect(statSync(database).isFile()).toBe(true);
     expect(server.events()).toEqual([]);
     rmSync(database);
@@ -192,6 +206,7 @@ test.each(["0", "1"])(
       const responses = await Promise.all([
         server.call(repositories),
         server.call(findings),
+        server.call(scans),
       ]);
       expect(successful(responses[0]!)).toEqual({ repositories: [] });
       expect(successful(responses[1]!)).toEqual({
@@ -201,6 +216,7 @@ test.each(["0", "1"])(
         offset: 0,
       });
       successful(await server.call(repositories));
+      expect(successful(responses[2]!)).toEqual({ scans: [] });
       expect(
         statSync(join(scanRoot, "workbench-state/workbench.sqlite3")).isFile(),
       ).toBe(true);
@@ -234,7 +250,7 @@ test("configured state and malformed databases retain the existing no-fallback b
     });
     try {
       failed(
-        await server.call(findings),
+        await server.call(scans),
         configured ? /unable to open database file/ : /file is not a database/,
       );
       expect(server.events()).toEqual([]);

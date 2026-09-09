@@ -78,7 +78,8 @@ if (command === "resolve-security-md") {
   command === "store-dedupe-groups" ||
   command === "list-dedupe-groups" ||
   command === "list-global-findings" ||
-  command === "list-repositories"
+  command === "list-repositories" ||
+  command === "list-scans"
 ) {
   void workbenchCommand(command, args).then((status) => {
     process.exitCode = status;
@@ -93,7 +94,7 @@ if (command === "resolve-security-md") {
   process.exitCode = configPreflightCommand(args);
 } else {
   console.error(
-    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | list-global-findings | list-repositories | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight> [options]",
+    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | list-global-findings | list-repositories | list-scans | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight> [options]",
   );
   process.exitCode = 2;
 }

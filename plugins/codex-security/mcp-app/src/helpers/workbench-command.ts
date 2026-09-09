@@ -18,6 +18,7 @@ import {
   listRepositories,
   type NavigationQuery,
 } from "../workbench-navigation";
+import { listScans } from "../workbench-scan-history";
 
 type Command =
   | "dashboard"
@@ -28,7 +29,8 @@ type Command =
   | "store-dedupe-groups"
   | "list-dedupe-groups"
   | "list-global-findings"
-  | "list-repositories";
+  | "list-repositories"
+  | "list-scans";
 
 export function timestamp(microseconds: bigint): string {
   const fraction = ((microseconds % 1_000_000n) + 1_000_000n) % 1_000_000n;
@@ -46,7 +48,9 @@ export async function workbenchCommand(
   const duplicates = command === "find-potential-duplicates";
   const finding = duplicates || command === "list-dedupe-groups";
   const navigation =
-    command === "list-global-findings" || command === "list-repositories";
+    command === "list-global-findings" ||
+    command === "list-repositories" ||
+    command === "list-scans";
   const navigationOptions =
     command === "list-global-findings"
       ? {
@@ -57,13 +61,24 @@ export async function workbenchCommand(
           offset: undefined,
           limit: undefined,
         }
-      : {
-          query: undefined,
-          "target-id": undefined,
-          status: ["scanned", "not_scanned", "open_findings"],
-          offset: undefined,
-          limit: undefined,
-        };
+      : command === "list-scans"
+        ? {
+            query: undefined,
+            "target-id": undefined,
+            status: ["running", "complete", "failed", "canceled"],
+            mode: ["diff", "standard", "deep"],
+            repository: undefined,
+            "scan-root": undefined,
+            offset: undefined,
+            limit: undefined,
+          }
+        : {
+            query: undefined,
+            "target-id": undefined,
+            status: ["scanned", "not_scanned", "open_findings"],
+            offset: undefined,
+            limit: undefined,
+          };
   const navigationUsage = Object.entries(navigationOptions)
     .map(
       ([name, choices]) =>
@@ -186,6 +201,18 @@ export async function workbenchCommand(
         break;
       case "list-dedupe-groups":
         result = listDedupeGroups(connection, options["finding-id"] as string);
+        break;
+      case "list-scans":
+        result = listScans(connection, {
+          query: options["query"] as string | undefined,
+          targetId: options["target-id"] as string | undefined,
+          status: options["status"] as string | undefined,
+          mode: options["mode"] as string | undefined,
+          repository: options["repository"] as string | undefined,
+          scanRoot: options["scan-root"] as string | undefined,
+          offset: (options["offset"] as bigint | undefined) ?? 0n,
+          limit: options["limit"] as bigint | undefined,
+        });
         break;
       case "list-global-findings":
       case "list-repositories": {
