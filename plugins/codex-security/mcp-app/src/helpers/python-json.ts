@@ -39,6 +39,25 @@ export function objectFromEntries(
   return row;
 }
 
+export function copyJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(copyJson);
+  if (object(value))
+    return objectFromEntries(
+      objectEntries(value).map(([key, child]) => [key, copyJson(child)]),
+    );
+  return value;
+}
+
+/** Update a parsed object with Python's insertion order, including numeric keys. */
+export function assignJson(target: Row, source: Row): void {
+  const keys = new Set(objectEntries(target).map(([key]) => key));
+  for (const [key, value] of objectEntries(source)) {
+    target[key] = value;
+    keys.add(key);
+  }
+  keyOrder.set(target, [...keys]);
+}
+
 // json.dumps(..., ensure_ascii=True, indent=2), with compact persistence support.
 export function stringifyJson(
   value: unknown,

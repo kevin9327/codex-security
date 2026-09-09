@@ -1,23 +1,9 @@
 import { hasText } from "./finding-root-cause";
 import { primaryFindingLocation } from "./finding-evidence";
-import {
-  object,
-  objectEntries,
-  objectFromEntries,
-  pythonRepr,
-} from "./python-json";
+import { copyJson, object, pythonRepr } from "./python-json";
 import { encodeUtf8 } from "./utf8";
 
 type Table = Record<string, unknown>;
-
-function copy(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(copy);
-  if (object(value))
-    return objectFromEntries(
-      objectEntries(value).map(([key, child]) => [key, copy(child)]),
-    );
-  return value;
-}
 
 function normalizeLists(section: Table, fields: readonly string[]): void {
   for (const field of fields) {
@@ -58,7 +44,7 @@ function filterEvidenceRefs(section: Table, ids: Set<string>): void {
 
 /** Preserve the finalizer's compatibility projection without changing sealed input. */
 export function legacySealedFindingsForValidation(findings: Table): Table {
-  const compatible = copy(findings) as Table;
+  const compatible = copyJson(findings) as Table;
   const items = compatible["findings"];
   if (!Array.isArray(items)) return compatible;
   for (const finding of items) {
