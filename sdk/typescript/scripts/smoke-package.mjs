@@ -359,7 +359,9 @@ assert.equal(
   "Plugin contract must not contain duplicate installed paths.",
 );
 
-const consumer = await mkdtemp(join(tmpdir(), "codex-security-package-"));
+const consumer = await realpath(
+  await mkdtemp(join(tmpdir(), "codex-security-package-")),
+);
 try {
   await writeFile(
     join(consumer, "package.json"),
