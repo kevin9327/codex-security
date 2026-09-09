@@ -20,6 +20,9 @@ import {
   type NavigationQuery,
 } from "../workbench-navigation";
 import { listScans } from "../workbench-scan-history";
+import { getScanFeedback } from "../workbench-feedback";
+import { requireScan } from "../workbench-records";
+import { WorkbenchValidationError } from "../workbench-validation";
 
 type Command =
   | "dashboard"
@@ -31,7 +34,8 @@ type Command =
   | "list-dedupe-groups"
   | "list-global-findings"
   | "list-repositories"
-  | "list-scans";
+  | "list-scans"
+  | "get-scan-feedback";
 
 export { timestamp } from "./utc-timestamp";
 
@@ -42,6 +46,15 @@ export async function workbenchCommand(
   const paging = command === "list-stored-findings";
   const duplicates = command === "find-potential-duplicates";
   const finding = duplicates || command === "list-dedupe-groups";
+  const selector =
+    command === "get-scan-feedback"
+      ? "scan-id"
+      : finding
+        ? "finding-id"
+        : undefined;
+  const selectorUsage = selector
+    ? ` --${selector} ${selector.toUpperCase().replaceAll("-", "_")}`
+    : "";
   const navigation =
     command === "list-global-findings" ||
     command === "list-repositories" ||
@@ -80,14 +93,14 @@ export async function workbenchCommand(
         ` [--${name} ${choices ? `{${choices.join(",")}}` : name.toUpperCase().replaceAll("-", "_")}]`,
     )
     .join("");
-  const usage = `usage: launch_codex_security_mcp[.cmd] --helper ${command} [-h]${navigation ? navigationUsage : paging ? " --limit LIMIT --offset OFFSET" : finding ? " --finding-id FINDING_ID" : ""}${duplicates ? " (--repository-id REPOSITORY_ID | --all-repositories)" : ""}`;
+  const usage = `usage: launch_codex_security_mcp[.cmd] --helper ${command} [-h]${navigation ? navigationUsage : paging ? " --limit LIMIT --offset OFFSET" : selectorUsage}${duplicates ? " (--repository-id REPOSITORY_ID | --all-repositories)" : ""}`;
   let options: ReturnType<typeof argumentsFor> = {};
   if (command !== "dashboard" && command !== "database-info") {
     let scope: string | undefined;
     try {
       options = argumentsFor(
         args,
-        paging ? ["limit", "offset"] : finding ? ["finding-id"] : [],
+        paging ? ["limit", "offset"] : selector ? [selector] : [],
         paging || navigation ? ["limit", "offset"] : [],
         navigation
           ? navigationOptions
@@ -116,7 +129,7 @@ export async function workbenchCommand(
       );
       if (options["help"]) {
         print(
-          `${usage}\n\noptions:\n  -h, --help  show this help message and exit${navigation ? navigationUsage.replaceAll(" [", "\n  ").replaceAll("]", "") : paging ? "\n  --limit LIMIT\n  --offset OFFSET" : finding ? "\n  --finding-id FINDING_ID" : ""}${duplicates ? "\n  --repository-id REPOSITORY_ID\n  --all-repositories" : ""}`,
+          `${usage}\n\noptions:\n  -h, --help  show this help message and exit${navigation ? navigationUsage.replaceAll(" [", "\n  ").replaceAll("]", "") : paging ? "\n  --limit LIMIT\n  --offset OFFSET" : selectorUsage ? `\n ${selectorUsage}` : ""}${duplicates ? "\n  --repository-id REPOSITORY_ID\n  --all-repositories" : ""}`,
         );
         return 0;
       }
@@ -153,6 +166,12 @@ export async function workbenchCommand(
     switch (command) {
       case "database-info":
         result = { databasePath: databasePath() };
+        break;
+      case "get-scan-feedback":
+        result = getScanFeedback(
+          connection,
+          requireScan(connection, options["scan-id"] as string),
+        );
         break;
       case "dashboard":
         result = dashboard(
@@ -230,6 +249,10 @@ export async function workbenchCommand(
       stringifyJson(result, { compact: true, allowNan: false, sortKeys: true }),
     );
     return 0;
+  } catch (error) {
+    if (!(error instanceof WorkbenchValidationError)) throw error;
+    print(error.message, true);
+    return 1;
   } finally {
     connection.close();
   }

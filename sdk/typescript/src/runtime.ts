@@ -1522,6 +1522,7 @@ export async function runWorkbench(
       "list-global-findings",
       "list-repositories",
       "list-scans",
+      "get-scan-feedback",
     ].includes(args[0] ?? "");
     const command = node
       ? process.execPath

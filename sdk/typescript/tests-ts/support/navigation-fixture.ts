@@ -15,6 +15,11 @@ import {
   stringifyJson,
 } from "../../../../plugins/codex-security/mcp-app/src/helpers/python-json";
 import { runWorkbench } from "../../src/runtime.js";
+import {
+  requireScan,
+  requireWorkspace,
+  resolveScanId,
+} from "../../../../plugins/codex-security/mcp-app/src/workbench-records";
 
 export type Operation =
   | { sql: string; parameters?: Parameters }
@@ -23,6 +28,7 @@ export type Operation =
       options?: NavigationQuery;
     }
   | { snapshot: true }
+  | { lookup: "scan" | "workspace" | "resolve"; id: string }
   | { sdk: string[]; pluginRoot: string; stateDir: string };
 export interface Request {
   initialize?: boolean;
@@ -63,6 +69,14 @@ async function main() {
                 .map((row) => row.toObject()),
             ]),
           );
+        } else if ("lookup" in operation) {
+          value =
+            operation.lookup === "resolve"
+              ? resolveScanId(connection, operation.id)
+              : (operation.lookup === "scan" ? requireScan : requireWorkspace)(
+                  connection,
+                  operation.id,
+                ).toObject();
         } else if ("sdk" in operation) {
           value = await runWorkbench(
             {

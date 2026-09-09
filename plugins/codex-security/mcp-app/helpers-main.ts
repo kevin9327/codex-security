@@ -87,7 +87,8 @@ if (command === "resolve-security-md") {
   command === "list-dedupe-groups" ||
   command === "list-global-findings" ||
   command === "list-repositories" ||
-  command === "list-scans"
+  command === "list-scans" ||
+  command === "get-scan-feedback"
 ) {
   void workbenchCommand(command, args).then((status) => {
     process.exitCode = status;

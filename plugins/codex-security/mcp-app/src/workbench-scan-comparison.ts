@@ -1,4 +1,6 @@
-import { normalizedUuid } from "./workbench-validation";
+import { WorkbenchValidationError } from "./workbench-validation";
+import { requireScan as requireScanRecord } from "./workbench-records";
+export { resolveScanId } from "./workbench-records";
 import type { Connection, Parameter } from "../../native/sqlite.mjs";
 import { hasText } from "./helpers/finding-root-cause";
 import {
@@ -10,7 +12,6 @@ import {
   type FindingPair,
 } from "./workbench-finding-links";
 export { findingMatches } from "./workbench-finding-links";
-import { lowercase } from "./helpers/unicode-case";
 import { environment } from "./helpers/environment";
 import {
   JsonFloat,
@@ -61,36 +62,12 @@ export interface ComparisonCallbacks {
   ) => void;
 }
 /** The Python command's SystemExit boundary, including unavailable sealed scans. */
-export class ScanComparisonError extends Error {}
-
-export function resolveScanId(connection: Connection, value: string): string {
-  const canonical = normalizedUuid(value);
-  if (canonical !== null) return canonical;
-  const length = Array.from(value).length;
-  if (length < 8)
-    throw new ScanComparisonError(
-      "Scan ID prefixes must be at least eight characters.",
-    );
-  const rows = connection
-    .prepare("SELECT id FROM scans WHERE substr(id, 1, ?) = ? LIMIT 2")
-    .all([BigInt(length), lowercase(value)]);
-  if (!rows.length)
-    throw new ScanComparisonError("Codex Security scan not found.");
-  if (rows.length > 1)
-    throw new ScanComparisonError(
-      `Scan ID prefix "${value}" matches multiple scans; use a longer prefix.`,
-    );
-  return rows[0]!.get("id") as string;
-}
+export class ScanComparisonError extends WorkbenchValidationError {}
 export function requireScan(
   connection: Connection,
   value: string,
 ): ComparisonScan {
-  const id = resolveScanId(connection, value);
-  const row = connection.prepare("SELECT * FROM scans WHERE id = ?").get([id]);
-  if (row === undefined)
-    throw new ScanComparisonError("Codex Security scan not found.");
-  return row.toObject() as ComparisonScan;
+  return requireScanRecord(connection, value).toObject() as ComparisonScan;
 }
 function pair(
   connection: Connection,
@@ -480,7 +457,7 @@ export function listUnmatchedScanPairs(
       callbacks.readCoverage(scan);
       return true;
     } catch (error) {
-      if (error instanceof ScanComparisonError) return false;
+      if (error instanceof WorkbenchValidationError) return false;
       throw error;
     }
   });
