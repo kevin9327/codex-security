@@ -1255,7 +1255,12 @@ def merge_saved_results(
                 continue
             item.setdefault("id", item.get("candidateId") or f"saved-{_digest(item)[:16]}")
             if item["id"] in used:
-                item["id"] = f"{item['id']}-{_digest(item)[:16]}"
+                renamed = f"{item['id']}-{_digest(item)[:16]}"
+                item["id"] = renamed
+                occurrence = 2
+                while item["id"] in used:
+                    item["id"] = f"{renamed}-{occurrence}"
+                    occurrence += 1
             used.add(item["id"])
             if field == "surfaces":
                 item.setdefault("receiptRefs", [])
