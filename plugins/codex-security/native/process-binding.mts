@@ -20,10 +20,10 @@ export interface ProcessResult {
   stderr: Buffer;
 }
 
-export function loadProcessBinding(): {
+export interface ProcessBinding {
   rawProcess(request: ProcessRequest): ProcessResult;
-} {
-  return createRequire(import.meta.url)(binaryPath) as {
-    rawProcess(request: ProcessRequest): ProcessResult;
-  };
+}
+
+export function loadProcessBinding(): ProcessBinding {
+  return createRequire(import.meta.url)(binaryPath) as ProcessBinding;
 }
