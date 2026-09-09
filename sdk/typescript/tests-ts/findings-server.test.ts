@@ -173,6 +173,17 @@ test("dashboard serves only findings and groups, and never calls an embedding pr
   );
 });
 
+test("initializes and serves dashboard reads before a retained command needs Python", async () => {
+  const { environment } = await fixture();
+  const store = new SqliteFindingsStore({
+    ...environment,
+    PYTHON: join(environment.CODEX_SECURITY_STATE_DIR, "missing-python"),
+  });
+  const base = await start(store);
+  expect((await dashboard(base)).overview).toEqual({ findings: 0, groups: 0 });
+  await expect(store.list({ limit: 1, offset: 0 })).rejects.toThrow("PYTHON");
+});
+
 test("dashboard browses imported findings and overlapping groups without local runs", async () => {
   const { store, environment } = await fixture();
   const base = await start(store);
@@ -193,37 +204,6 @@ test("dashboard browses imported findings and overlapping groups without local r
     environment,
     "print(json.dumps(list(db.iterdump())))",
   );
-  expect(
-    await database(
-      environment,
-      `from workbench_dashboard import dashboard
-allowed = {'findings', 'finding_repositories', 'finding_dedupe_groups', 'finding_dedupe_group_members'}
-def authorize(action, table, column, database, source):
-    if action == sqlite3.SQLITE_READ and table not in allowed:
-        return sqlite3.SQLITE_DENY
-    return sqlite3.SQLITE_OK
-db.set_authorizer(authorize)
-queries = json.load(sys.stdin)
-print(json.dumps([dashboard(db, query)['total'] for query in queries]))`,
-      [
-        {
-          view: "findings",
-          limit: 50,
-          offset: 0,
-          sort: "activity",
-          id: first.findingId,
-        },
-        {
-          view: "groups",
-          limit: 50,
-          offset: 0,
-          sort: "newest",
-          id: groups[0]!.groupId,
-        },
-      ],
-    ),
-  ).toEqual([3, 2]);
-
   const page = await dashboard(base, {
     limit: "1",
     repository: "repository-a",

@@ -83,6 +83,12 @@ function worker(root: string, descriptor: string): unknown {
     closeSync(result.value);
   }
   const native = loadProcessBinding();
+  const before = BigInt(Date.now()) * 1000n;
+  const micros = native.wallClockMicroseconds();
+  const after = BigInt(Date.now() + 1) * 1000n;
+  assert.equal(typeof micros, "bigint");
+  // The OS and JavaScript clocks can have different sampling precision.
+  assert.ok(before - 1_000_000n <= micros && micros < after + 1_000_000n);
   const directory = raw(`${root}${sep}process-cwd-`);
   const program = Buffer.concat([
     directory,

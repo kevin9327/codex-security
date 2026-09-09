@@ -352,7 +352,6 @@ def parse_args(description: str) -> argparse.Namespace:
         publication.add_argument("--input-file", required=True)
 
     subparsers.add_parser("database-info")
-    subparsers.add_parser("dashboard")
     subparsers.add_parser("finding-workflow")
     subparsers.add_parser("severity-classification")
     severity = subparsers.add_parser("read-severity-classification")

@@ -21,6 +21,7 @@ export interface ProcessResult {
 }
 
 export interface ProcessBinding {
+  wallClockMicroseconds(): bigint;
   rawProcess(request: ProcessRequest): ProcessResult;
 }
 

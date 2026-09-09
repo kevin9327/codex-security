@@ -1535,33 +1535,45 @@ const workbenchComparisonSupport = new Map<
 >();
 
 export async function runWorkbench(
-  options: WorkbenchCommandOptions,
+  options: Omit<WorkbenchCommandOptions, "python"> & { python?: string },
   args: readonly string[],
   input?: string,
 ): Promise<JsonObject> {
-  const script = join(options.pluginRoot, "scripts", "workbench_db.py");
-  const run = async (
-    arguments_: readonly string[],
-    input?: string,
-  ): Promise<string> => {
-    const result = await runCodexCommand(
-      { command: options.python },
-      ["-I", "-X", "utf8", "-B", script, ...arguments_],
-      pluginHelperEnvironment(options.environment),
-      input,
-      options.signal,
-    );
-    if (!result.success) {
-      throw new Error(
-        result.stderr.trim() ||
-          result.stdout.trim() ||
-          `Workbench exited with status ${result.exitCode}.`,
-      );
-    }
-    return result.stdout;
-  };
   let stdout: string;
   try {
+    const node = args[0] === "dashboard" || args[0] === "database-info";
+    const command = node
+      ? process.execPath
+      : options.python ??
+        (await resolvePluginPython({
+          environment: options.environment,
+          signal: options.signal,
+        }));
+    const script = node
+      ? join(options.pluginRoot, "mcp", "helpers.mjs")
+      : join(options.pluginRoot, "scripts", "workbench_db.py");
+    const run = async (
+      arguments_: readonly string[],
+      input?: string,
+    ): Promise<string> => {
+      const result = await runCodexCommand(
+        { command },
+        node
+          ? [script, ...arguments_]
+          : ["-I", "-X", "utf8", "-B", script, ...arguments_],
+        pluginHelperEnvironment(options.environment),
+        input,
+        options.signal,
+      );
+      if (!result.success) {
+        throw new Error(
+          result.stderr.trim() ||
+            result.stdout.trim() ||
+            `Workbench exited with status ${result.exitCode}.`,
+        );
+      }
+      return result.stdout;
+    };
     const arguments_ = [...args];
     const matchesStdinIndex = arguments_.indexOf("--matches-json-stdin");
     if (
@@ -1569,7 +1581,7 @@ export async function runWorkbench(
       matchesStdinIndex !== -1 &&
       input !== undefined
     ) {
-      const key = JSON.stringify([options.python, script]);
+      const key = JSON.stringify([command, script]);
       let support = workbenchComparisonSupport.get(key);
       if (support === undefined) {
         const help = await run(["save-scan-comparison", "--help"]);
