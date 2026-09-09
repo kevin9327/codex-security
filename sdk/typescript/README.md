@@ -520,6 +520,14 @@ npx @openai/codex-security scan-components /path/to/project \
   --output-dir /path/outside/project/results
 ```
 
+For large repositories, automatic planning splits inventories into separate calls
+that fit Codex's input character limit. It preserves directory boundaries where
+possible and subdivides oversized packages and flat directories as needed. Each
+call uses a fresh context and can select only paths within its batch. Omitted
+files are retained in `Other files` components within those same boundaries.
+Large repositories can therefore require more planning calls and produce more
+components. Review or edit the saved plan before scanning with `--components-file`.
+
 Components use repository-relative paths:
 
 ```json
