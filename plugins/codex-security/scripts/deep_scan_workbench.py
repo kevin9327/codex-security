@@ -1427,7 +1427,9 @@ def isolate_checkpoint_worker(
         deep_scan_path(scan, worker["artifact_dir"], "Saved Deep output", kind="directory")
     )
     prompt = Path(deep_scan_path(scan, worker["prompt_path"], "Saved Deep prompt", kind="file"))
-    replacement = output.parent.parent / f"{worker['id']}-generation-{generation}"
+    # The scheduler reads the discovery sequence from this directory name.
+    label = re.sub(r"-generation-\d+$", "", output.parent.name)
+    replacement = output.parent.parent / f"{label}-generation-{generation}"
     replacement_output = replacement / "output"
     source = output.relative_to(root).as_posix()
     destination = replacement_output.relative_to(root).as_posix()
