@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { hasText } from "./finding-root-cause";
-import { JsonFloat, object, objectEntries, pythonRepr } from "./python-json";
+import {
+  JsonFloat,
+  object,
+  objectEntries,
+  pythonRepr,
+  pythonValueError,
+} from "./python-json";
 import { compare } from "./rank-worklists";
 import { ContractError } from "./scan-contract-errors";
 import { requireSafeJsonValue } from "./scan-contract-json";
@@ -109,21 +115,22 @@ export function validateRemote(remote: string, context: string): void {
     authority = end === -1 ? rest.slice(2) : rest.slice(2, end + 2);
     rest = end === -1 ? "" : rest.slice(end + 2);
     if (authority.includes("[") !== authority.includes("]"))
-      throw new Error("Invalid IPv6 URL");
+      throw pythonValueError("Invalid IPv6 URL");
     if (authority.includes("[")) {
       const hostInfo = authority.slice(authority.lastIndexOf("@") + 1),
         at = hostInfo.indexOf("[");
       let host: string;
       if (at !== -1) {
-        if (at !== 0) throw new Error("Invalid IPv6 URL");
+        if (at !== 0) throw pythonValueError("Invalid IPv6 URL");
         const close = hostInfo.indexOf("]", 1);
         host = hostInfo.slice(1, close);
         const port = hostInfo.slice(close + 1);
-        if (port && !port.startsWith(":")) throw new Error("Invalid IPv6 URL");
+        if (port && !port.startsWith(":"))
+          throw pythonValueError("Invalid IPv6 URL");
       } else host = hostInfo.split(":", 1)[0]!;
       if (host.startsWith("v")) {
         if (!/^v[a-fA-F0-9]+\.[^\n]+$(?![\s\S])/u.test(host))
-          throw new Error("IPvFuture address is invalid");
+          throw pythonValueError("IPvFuture address is invalid");
       } else {
         const [address, scope, ...extra] = host.split("%");
         const version = isIP(address!);
@@ -133,11 +140,11 @@ export function validateRemote(remote: string, context: string): void {
           scope === "" ||
           (version === 4 && scope !== undefined)
         )
-          throw new Error(
+          throw pythonValueError(
             `${pythonRepr(host)} does not appear to be an IPv4 or IPv6 address`,
           );
         if (version === 4)
-          throw new Error("An IPv4 address cannot be in brackets");
+          throw pythonValueError("An IPv4 address cannot be in brackets");
       }
     }
   }
@@ -148,7 +155,7 @@ export function validateRemote(remote: string, context: string): void {
     query = queryAt === -1 ? "" : rest.slice(queryAt + 1);
   const normalized = authority.replace(/[@:#?]/gu, "").normalize("NFKC");
   if (/[/?#@:]/u.test(normalized))
-    throw new Error(
+    throw pythonValueError(
       `netloc '${authority}' contains invalid characters under NFKC normalization`,
     );
   if (!scheme || !authority)

@@ -15,6 +15,7 @@ import {
   objectFromEntries,
   parseJson,
   pythonRepr,
+  pythonValueError,
 } from "./python-json";
 import { resolvedPath } from "./resolve-path";
 import { expandHome, parsedPath } from "./resolve-security-md";
@@ -198,7 +199,7 @@ export function preflightInteger(source: string): bigint {
   const clean = source.replaceAll("_", "");
   const digits = clean.replace(/^[+-]/u, "").length;
   if (!/^0[box]/u.test(clean) && limit && digits > limit)
-    throw new Error(
+    throw pythonValueError(
       `Exceeds the limit (${limit} digits) for integer string conversion: value has ${digits} digits; use sys.set_int_max_str_digits() to increase the limit`,
     );
   return BigInt(clean);

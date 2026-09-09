@@ -12,7 +12,12 @@ import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workb
 import * as results from "../../../../plugins/codex-security/mcp-app/src/workbench-results";
 import * as findingResults from "../../../../plugins/codex-security/mcp-app/src/workbench-finding-results";
 import * as savedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-saved-result-sources";
+import {
+  backfillLegacyFindingDetails,
+  legacyFindingMatches,
+} from "../../../../plugins/codex-security/mcp-app/src/workbench-legacy-findings";
 import { scanTargetIdentity } from "../../../../plugins/codex-security/mcp-app/src/workbench-target";
+import { finalizeScan } from "../../../../plugins/codex-security/mcp-app/src/helpers/scan-finalization";
 import {
   findingOccurrenceConditions,
   findingOccurrenceRows,
@@ -67,6 +72,9 @@ export interface Action {
     | "savedRecovery"
     | "savedNeeded"
     | "savedEncoded"
+    | "backfill"
+    | "legacy-match"
+    | "finalize"
     | "sql"
     | "query"
     | "commit"
@@ -101,6 +109,7 @@ export interface Action {
   workers?: Record<string, Parameter>[];
   label?: string;
   kind?: string | null;
+  beforeBeginSql?: string;
 }
 export interface Request {
   targetIdentityPath?: string;
@@ -229,7 +238,14 @@ function execute(request: Request): Response {
         raw = connection.raw,
         prepare = raw.prepare,
         exec = raw.exec;
+      let beforeBeginSql = action.beforeBeginSql;
       raw.prepare = (sql) => {
+        if (beforeBeginSql && sql.trim() === "BEGIN IMMEDIATE") {
+          const pending = beforeBeginSql;
+          beforeBeginSql = undefined;
+          events.push(["before-begin", pending, connection.inTransaction]);
+          exec.call(raw, pending);
+        }
         events.push([
           "query",
           sql.trim().replace(/\s+/gu, " "),
@@ -368,6 +384,25 @@ function execute(request: Request): Response {
             break;
           case "savedNeeded":
             result = savedResults.scanResultsRecoveryNeeded(connection, scan());
+            break;
+          case "finalize":
+            result = finalizeScan(
+              scan().get("scan_dir") as string,
+              undefined,
+              undefined,
+              {
+                expectedCoverageMode: "repository",
+              },
+            );
+            break;
+          case "backfill":
+            backfillLegacyFindingDetails(connection, scan());
+            break;
+          case "legacy-match":
+            result = legacyFindingMatches(
+              requireOccurrence(connection, action.occurrenceId ?? "unknown"),
+              action.value,
+            );
             break;
           case "details":
             result = findingResults.readFindingDetails(

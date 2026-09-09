@@ -170,6 +170,10 @@ export function stringifyJson(
 
 export class JsonSyntaxError extends Error {}
 
+export function pythonValueError(message: string): Error {
+  return Object.assign(new Error(message), { name: "ValueError" });
+}
+
 // json.loads(bytes) detects UTF-8/16/32 and decodes with surrogatepass.
 export function parseJsonBytes(
   bytes: Buffer,
