@@ -88,7 +88,16 @@ def record_checkpoint(
         contents = handle.read()
     digest = hashlib.sha256(contents).hexdigest()
     if relative.name != f"{digest}.json":
-        raise SystemExit("The checkpoint filename does not match its saved content.")
+        # Older worker writers named pretty-printed files with the compact JSON
+        # digest. Preserve their string escapes and number spelling when matching
+        # that name; decoding and re-encoding JSON can change JavaScript's bytes.
+        compact = re.sub(
+            rb'"(?:\\.|[^"\\])*"|[ \t\r\n]+',
+            lambda match: match[0] if match[0].startswith(b'"') else b"",
+            contents,
+        )
+        if relative.name != f"{hashlib.sha256(compact).hexdigest()}.json":
+            raise SystemExit("The checkpoint filename does not match its saved content.")
     snapshot = json.loads(contents)
     if (
         not isinstance(snapshot, dict)
@@ -297,17 +306,17 @@ def checkpoint_completion_ready(checkpoint: dict[str, Any], mode: str) -> bool:
 
 def copy_checkpoint_artifacts(
     db: Any, parent: sqlite3.Row, child_root: Path, checkpoint: dict[str, Any]
-) -> None:
-    """Keep referenced reports, coverage receipts, and report-local PoCs with their result."""
+) -> dict[str, str] | None:
+    """Keep referenced evidence and derived hardening files with their saved result."""
     parent_root = db.require_canonical_scan_directory(Path(parent["scan_dir"]))
-    sealed_artifacts = (
-        {
-            item["path"]: item["sha256"]
-            for item in _read_scan_local_json(
-                parent_root, "scan-manifest.json", "Saved scan manifest"
-            )["scan"]["artifacts"]
-        }
+    parent_manifest = (
+        _read_scan_local_json(parent_root, "scan-manifest.json", "Saved scan manifest")
         if parent["seal_manifest_digest"] is not None
+        else None
+    )
+    sealed_artifacts = (
+        {item["path"]: item["sha256"] for item in parent_manifest["scan"]["artifacts"]}
+        if parent_manifest is not None
         else {}
     )
     files: set[str] = set()
@@ -334,12 +343,21 @@ def copy_checkpoint_artifacts(
                 references(item)
 
     references(checkpoint["sources"])
-    for report in sorted(reports):
-        poc = parent_root / Path(report).parent / "poc"
-        if not poc.exists() and not poc.is_symlink():
+    portfolio = "hardening/hardening.md"
+    has_portfolio = bool(parent_manifest and parent_manifest["scan"].get("hardening")) or (
+        (parent_root / portfolio).exists() or (parent_root / portfolio).is_symlink()
+    )
+    if has_portfolio:
+        files.add(portfolio)
+    directories_to_copy = [parent_root / Path(report).parent / "poc" for report in sorted(reports)]
+    directories_to_copy.append(parent_root / "hardening")
+    for evidence_dir in directories_to_copy:
+        if not evidence_dir.exists() and not evidence_dir.is_symlink():
             continue
-        db.deep_scan.deep_scan_path(parent, str(poc), "Saved report evidence", kind="directory")
-        for directory, directories, filenames in os.walk(poc, followlinks=False):
+        db.deep_scan.deep_scan_path(
+            parent, str(evidence_dir), "Saved report evidence", kind="directory"
+        )
+        for directory, directories, filenames in os.walk(evidence_dir, followlinks=False):
             for path in (Path(directory), *(Path(directory) / name for name in directories)):
                 db.deep_scan.deep_scan_path(
                     parent, str(path), "Saved report evidence", kind="directory"
@@ -359,6 +377,7 @@ def copy_checkpoint_artifacts(
         ):
             raise ContractError(f"{relative}: sealed artifact changed after completion")
         write_scan_local_bytes(child_root, relative, contents)
+    return {"portfolioPath": portfolio} if has_portfolio else None
 
 
 def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> dict[str, Any]:
@@ -404,7 +423,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         completion_ready = checkpoint_completion_ready(checkpoint, parent["mode"])
         worker_ids = db.deep_scan.restore_checkpoint_workers(connection, parent, child, db.now())
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
-        copy_checkpoint_artifacts(db, parent, root, checkpoint)
+        hardening = copy_checkpoint_artifacts(db, parent, root, checkpoint)
         for source in checkpoint["sources"]:
             snapshot = {
                 "scanId": child["id"],
@@ -440,6 +459,16 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         if merged is None:
             raise SystemExit("The saved semantic checkpoint could not seed the continuation.")
         manifest, findings, coverage = merged
+        root_source = next(
+            (source for source in checkpoint["sources"] if source["source"] == "."), None
+        )
+        if root_source is not None and isinstance(root_source.get("scope"), dict):
+            manifest["scan"]["scope"] = {
+                **root_source["scope"],
+                **manifest["scan"]["scope"],
+            }
+        if hardening is not None:
+            manifest["scan"]["hardening"] = hardening
         manifest["scan"]["complete"] = completion_ready
         coverage["completeness"] = "complete" if completion_ready else "partial"
         coverage["reviewedFiles"] = checkpoint["reviewedFiles"]

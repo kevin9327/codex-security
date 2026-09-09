@@ -522,7 +522,7 @@ async function readCurrentCheckpoints(
 
 function scanDraftCheckpointName(input: Omit<ScanDraftInput, "coverage">): string {
   const { handoffClaimToken: _claim, ...snapshot } = input;
-  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex") + ".json";
+  return createHash("sha256").update(JSON.stringify(snapshot, null, 2) + "\n").digest("hex") + ".json";
 }
 
 async function readPreviousScanDraft(

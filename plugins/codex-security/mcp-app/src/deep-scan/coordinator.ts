@@ -596,6 +596,9 @@ export class DeepScanCoordinator {
   private async runScheduler(): Promise<SchedulerResult> {
     const config = this.state.config;
     const active = new Map<string, Promise<DiscoveryOutcome>>();
+    const queued = (this.state.persistedWorkers ?? [])
+      .filter((worker) => worker.kind === "discovery" && worker.status === "queued");
+    const pendingContinuations = new Set(queued.map((worker) => worker.id));
     const recovered = await this.recoverAcceptedDiscoveries();
     const accepted: AcceptedDiscovery[] = [...recovered];
     const mergedIds = new Set(
@@ -664,6 +667,7 @@ export class DeepScanCoordinator {
       && previousReducerResultPath
       && this.state.noNewStreak >= config.stopAfterNoNew
       && buffer.length === 0
+      && pendingContinuations.size === 0
     ) {
       stopReason = "saturated";
     }
@@ -780,16 +784,23 @@ export class DeepScanCoordinator {
       if (settlements.length === 0) {
         while (
           !this.discoveryDeadlineReached
-          && (!previousReducerResultPath || this.state.noNewStreak < config.stopAfterNoNew)
           && active.size < config.workers
-          && dispatched < config.maxDiscoveryRuns
+          && (queued.length > 0 || (
+            (!previousReducerResultPath || this.state.noNewStreak < config.stopAfterNoNew)
+            && dispatched < config.maxDiscoveryRuns
+          ))
         ) {
-          dispatched += 1;
-          workerSequence += 1;
-          const workerLabel = `discovery-${String(workerSequence).padStart(4, "0")}`;
-          const workerId = randomUUID();
+          const continuation = queued.shift();
+          if (!continuation) {
+            dispatched += 1;
+            workerSequence += 1;
+          }
+          const workerLabel = continuation
+            ? basename(dirname(continuation.artifactDir))
+            : `discovery-${String(workerSequence).padStart(4, "0")}`;
+          const workerId = continuation?.id ?? randomUUID();
           const workerPromise = this.trackSchedulerWork(
-            this.discoveryWorkers.runDiscoveryWorker(workerId, workerLabel)
+            this.discoveryWorkers.runDiscoveryWorker(workerId, workerLabel, continuation)
           );
           active.set(workerId, workerPromise);
           observe(workerPromise);
@@ -839,8 +850,11 @@ export class DeepScanCoordinator {
       }
       const outcome = settlement.outcome;
       if (outcome.type === "discovery") {
-        active.delete(outcome.status === "succeeded" ? outcome.worker.id : outcome.workerId);
+        const workerId = outcome.status === "succeeded" ? outcome.worker.id : outcome.workerId;
+        active.delete(workerId);
+        const continued = pendingContinuations.delete(workerId);
         if (outcome.status === "failed") {
+          if (continued) throw outcome.error;
           if (outcome.replaceableFailureKind) {
             lastReplaceableFailure = outcome;
             const consecutiveErrors = outcome.consecutiveErrors
@@ -930,6 +944,7 @@ export class DeepScanCoordinator {
         !this.discoveryDeadlineReached
         && outcome.run.noNewStreak >= config.stopAfterNoNew
         && buffer.length === 0
+        && pendingContinuations.size === 0
       ) {
         stopReason = "saturated";
         canceledWorkerIds.push(...active.keys());
@@ -1243,7 +1258,7 @@ async function persistedWorkerEvidence(worker: PersistedDeepScanWorker): Promise
   attemptPromptPaths: string[];
 }> {
   const attemptPromptPaths = [worker.promptPath];
-  for (let attempt = 2; attempt <= worker.attempt; attempt += 1) {
+  for (let attempt = 1; attempt <= worker.attempt; attempt += 1) {
     const promptPath = join(
       dirname(worker.promptPath),
       "prompts",

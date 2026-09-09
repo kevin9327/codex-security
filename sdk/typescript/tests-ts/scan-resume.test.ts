@@ -656,7 +656,7 @@ test.each(["failed", "missing-checkout", "missing-session", "standard"])(
               );
               expect(
                 await readFile(join(repository, "source.py"), "utf8"),
-              ).toBe("# synthetic source\n");
+              ).toMatch(/^# synthetic source\r?\n$/);
               return {
                 coverage: { completeness: "complete" },
                 cost: null,

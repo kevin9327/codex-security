@@ -277,6 +277,115 @@ def test_deep_continuation_rejects_a_changed_frozen_worker_result(tmp_path: Path
     assert (parent_dir / relative).is_file()
 
 
+def test_unfinished_worker_checkpoint_survives_first_and_repeated_coordinator_claim(tmp_path: Path):
+    state, parent_dir, parent_id, child_dir, child_id, workers = completed_deep_fixture(tmp_path)
+    reducer = parent_dir / "artifacts/deep_discovery/dedup/dedup-0001/output/result.json"
+    document = json.loads(reducer.read_text())
+    document["findings"] = []
+    reducer.write_text(json.dumps(document))
+    for head in parent_dir.glob("artifacts/deep_discovery/*/*/output/checkpoint-head.json"):
+        head.unlink()
+        (head.parent / "checkpoints" / "old.json").unlink()
+    pending_root = parent_dir / "artifacts/deep_discovery/workers/discovery-0004/output"
+    save(
+        state,
+        parent_id,
+        write_checkpoint(pending_root / "checkpoints", semantic(parent_id, ["clean.ts"])),
+    )
+    continued = run_workbench(
+        state, "continue-scan-checkpoint", "--scan-id", child_id, "--parent-scan-id", parent_id
+    )
+    assert continued["restoredWorkers"] == 5
+    worker_id = str(uuid.uuid5(uuid.UUID(child_id), workers[3]))
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.row_factory = sqlite3.Row
+        worker = connection.execute(
+            "SELECT * FROM deep_scan_workers WHERE id = ?", (worker_id,)
+        ).fetchone()
+        assert worker["status"] == "queued"
+        assert worker["started_at"] is None
+        assert worker["sdk_thread_id"] is None
+        assert worker["result_manifest_path"] is None
+        assert worker["completion_sequence"] is None
+        assert worker["attempt"] == 0
+        head = json.loads((Path(worker["artifact_dir"]) / "checkpoint-head.json").read_text())
+        snapshot = json.loads(
+            (Path(worker["artifact_dir"]) / "checkpoints" / head["checkpoint"]).read_text()
+        )
+        assert snapshot["complete"] is False
+        assert snapshot["coverage"]["reviewedFiles"] == ["clean.ts"]
+        assert snapshot["coverage"]["deferred"][0]["provenance"]["workerId"] == worker_id
+        assert not (Path(worker["artifact_dir"]) / "result.json").exists()
+        connection.execute(
+            "UPDATE scans SET deep_scan_owner_thread_id = ?, handoff_status = 'delivered' WHERE id = ?",
+            ("fixture-owner", child_id),
+        )
+    claimed = run_workbench(
+        state, "claim-deep-scan-coordinator", "--scan-id", child_id, "--thread-id", "fixture-owner"
+    )
+    assert claimed["coordinatorDisposition"] == "claimed"
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT status FROM deep_scan_workers WHERE id = ?", (worker_id,)
+        ).fetchone() == ("queued",)
+        connection.execute(
+            "UPDATE deep_scan_workers SET status = 'running', attempt = 2, started_at = '2026-01-01T02:00:00Z', sdk_thread_id = 'interrupted-worker-thread' WHERE id = ?",
+            (worker_id,),
+        )
+        connection.execute(
+            "UPDATE deep_scan_runs SET updated_at = '2026-01-01T02:00:00Z' WHERE scan_id = ?",
+            (child_id,),
+        )
+    reclaimed = run_workbench(
+        state, "claim-deep-scan-coordinator", "--scan-id", child_id, "--thread-id", "fixture-owner"
+    )
+    assert reclaimed["coordinatorDisposition"] == "adopted"
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT status, attempt, completion_sequence FROM deep_scan_workers WHERE id = ?",
+            (worker_id,),
+        ).fetchone() == ("queued", 2, None)
+        assert connection.execute(
+            "SELECT discovery_runs_dispatched, completion_sequence FROM deep_scan_runs WHERE scan_id = ?",
+            (child_id,),
+        ).fetchone() == (4, 3)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM deep_scan_workers WHERE scan_id = ?", (child_id,)
+        ).fetchone() == (5,)
+    run_workbench(
+        state,
+        "upsert-deep-scan-worker",
+        "--scan-id",
+        child_id,
+        "--worker-id",
+        worker_id,
+        "--kind",
+        "discovery",
+        "--status",
+        "running",
+        "--prompt-path",
+        worker["prompt_path"],
+        "--artifact-dir",
+        worker["artifact_dir"],
+        "--attempt",
+        "3",
+        "--coordinator-generation",
+        str(reclaimed["deepScan"]["coordinatorGeneration"]),
+    )
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT status, attempt, prompt_path, artifact_dir FROM deep_scan_workers WHERE id = ?",
+            (worker_id,),
+        ).fetchone() == ("running", 3, worker["prompt_path"], worker["artifact_dir"])
+        assert connection.execute(
+            "SELECT discovery_runs_dispatched, completion_sequence FROM deep_scan_runs WHERE scan_id = ?",
+            (child_id,),
+        ).fetchone() == (4, 3)
+    assert (
+        child_dir / "artifacts/deep_discovery/workers/discovery-0004/output/checkpoint-head.json"
+    ).is_file()
+
+
 def test_checkpoint_rebind_preserves_nested_source_owners(workbench_api):
     document = {
         "scanId": "parent-scan",
@@ -415,7 +524,9 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
     continued = run_workbench(
         state, "continue-scan-checkpoint", "--scan-id", child_id, "--parent-scan-id", parent_id
     )
-    assert continued["restoredWorkers"] == 0
+    assert continued["restoredWorkers"] == (2 if outcome in {"other_worker", "grandchild"} else 1)
+    worker_id = str(uuid.uuid5(uuid.UUID(child_id), worker_id))
+    other_worker_id = str(uuid.uuid5(uuid.UUID(child_id), other_worker_id))
     finding = continued["checkpoint"]["sources"][0]["findings"][0]
     assert finding["provenance"]["workerId"] == worker_id
     if outcome in {"other_worker", "grandchild"}:
@@ -446,7 +557,10 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
             "--parent-scan-id",
             child_id,
         )
-        assert grandchild["restoredWorkers"] == 0
+        assert grandchild["restoredWorkers"] == 2
+        worker_id = str(uuid.uuid5(uuid.UUID(grandchild_id), worker_id))
+        other_worker_id = str(uuid.uuid5(uuid.UUID(grandchild_id), other_worker_id))
+        finding = grandchild["checkpoint"]["sources"][0]["findings"][0]
         assert {
             item["provenance"]["workerId"]
             for item in grandchild["checkpoint"]["sources"][0]["coverage"]["deferred"]
@@ -511,5 +625,6 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
     assert source.read_bytes() == original
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         assert connection.execute(
-            "SELECT COUNT(*) FROM deep_scan_workers WHERE scan_id = ?", (child_id,)
+            "SELECT COUNT(*) FROM deep_scan_workers WHERE scan_id = ? AND status = 'succeeded'",
+            (child_id,),
         ).fetchone() == (0,)

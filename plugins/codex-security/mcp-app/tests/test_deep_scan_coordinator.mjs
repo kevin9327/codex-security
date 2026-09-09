@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { build } from "esbuild";
 import { testDeepScanPublication } from "./deep_scan_publication_cases.mjs";
+import { testCheckpointResume } from "./deep_scan_checkpoint_cases.mjs";
 
 const bundle = await build({
   bundle: true,
@@ -4033,6 +4034,7 @@ try {
   await testRemoteObserverRetriesTransientPersistenceFailures();
   await testJoinAndOrphanRules();
   await testPausedDiscoverySurvivesCoordinatorRestart();
+  await testCheckpointResume({ DeepScanCoordinator, FakeStore, FakeExecutor, fixtureRun, standardScanDraft, immediateClock, deferred, eventually });
   await testResumedDiscoveryDeadlineUsesPersistedCreationTime();
   await testResumedDiscoveryDeadlineUsesPersistedCreationTime(true);
   await testResumedDiscoveryDeadlineUsesPersistedCreationTime(false, 2.5);

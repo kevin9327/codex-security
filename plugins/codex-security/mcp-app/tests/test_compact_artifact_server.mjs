@@ -28,6 +28,7 @@ try {
   await testSemanticScanDraftCompletion(runtimeBundle, "source");
   await testCompactDiffScanCompletion(runtimeBundle, "source");
   await testDiscoveryWorkerToolList(runtimeBundle);
+  await testWorkerCheckpointDatabase(runtimeBundle, "source");
   await testReducerWorkerToolList(runtimeBundle);
 
   const shippedRuntime = path.join(bundledPluginRoot, "mcp", "server.mjs");
@@ -36,6 +37,7 @@ try {
   await testSemanticScanDraftCompletion(shippedRuntime, "shipped");
   await testCompactDiffScanCompletion(shippedRuntime, "shipped");
   await testDiscoveryWorkerToolList(shippedRuntime);
+  await testWorkerCheckpointDatabase(shippedRuntime, "shipped");
   await testReducerWorkerToolList(shippedRuntime);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
@@ -1104,6 +1106,115 @@ async function testDiscoveryWorkerToolList(bundle) {
   } finally {
     await client.close();
   }
+}
+
+async function testWorkerCheckpointDatabase(bundle, runtimeLabel) {
+  const workerPluginRoot = runtimeLabel === "shipped" ? bundledPluginRoot : pluginRoot;
+  const fixtureRoot = path.join(temporaryRoot, `worker-checkpoint-${runtimeLabel}`);
+  const repoRoot = path.join(fixtureRoot, "repository");
+  const scanRoot = path.join(fixtureRoot, "scan");
+  const stateRoot = path.join(fixtureRoot, "state");
+  const workerRoot = path.join(scanRoot, "artifacts", "deep_discovery", "workers", "discovery-0001");
+  const artifactRoot = path.join(workerRoot, "output");
+  await mkdir(scanRoot, { recursive: true, mode: 0o700 });
+  await Promise.all([
+    mkdir(repoRoot, { recursive: true }),
+    mkdir(stateRoot, { recursive: true })
+  ]);
+  await writeFile(path.join(repoRoot, "clean.ts"), "export const clean = true;\n");
+  await writeFile(path.join(repoRoot, "pending.ts"), "export const pending = true;\n");
+  const python = process.env.CODEX_SECURITY_PYTHON_COMMAND ?? "python3";
+  const environment = { ...process.env, CODEX_SECURITY_STATE_DIR: stateRoot };
+  const workbench = (...arguments_) => JSON.parse(execFileSync(python, [
+    path.join(workerPluginRoot, "scripts", "workbench_db.py"), ...arguments_
+  ], { env: environment, encoding: "utf8" }));
+  const { scanId } = workbench("register-cli-scan", "--repository", repoRoot,
+    "--scan-dir", scanRoot, "--recipe-json", JSON.stringify({
+      repository: repoRoot,
+      target: { kind: "repository", paths: [] },
+      mode: "deep",
+      config: {}
+    }));
+  await mkdir(artifactRoot, { recursive: true });
+  const workerId = randomUUID();
+  const promptPath = path.join(workerRoot, "prompt.md");
+  await writeFile(promptPath, "Synthetic discovery worker\n");
+  execFileSync(python, ["-c", `
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    connection.execute("INSERT INTO deep_scan_runs (scan_id, schema_version, workflow_version, status, phase, workers, subagents, stop_after_no_new, max_discovery_runs, created_at, updated_at) VALUES (?, 1, 'deep-security-scan/v1', 'running', 'discovery', 1, 0, 1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", (sys.argv[2],))
+    connection.execute("INSERT INTO deep_scan_workers (id, scan_id, kind, status, prompt_path, artifact_dir, attempt, created_at, updated_at) VALUES (?, ?, 'discovery', 'running', ?, ?, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')", (sys.argv[3], sys.argv[2], sys.argv[4], sys.argv[5]))
+`, path.join(stateRoot, "workbench.sqlite3"), scanId, workerId, promptPath, artifactRoot]);
+  const workerEnvironment = {
+    CODEX_SECURITY_ARTIFACT_ROOT: artifactRoot,
+    CODEX_SECURITY_REPO_ROOT: repoRoot,
+    CODEX_SECURITY_ARTIFACT_LAYOUT: "worker",
+    CODEX_SECURITY_SCAN_ID: scanId,
+    CODEX_SECURITY_WORKER_ID: workerId,
+    CODEX_SECURITY_PLUGIN_ROOT: workerPluginRoot,
+    CODEX_SECURITY_PYTHON_COMMAND: python,
+    CODEX_SECURITY_STATE_DIR: stateRoot
+  };
+  const input = {
+    scanId,
+    complete: false,
+    findings: [],
+    coverage: {
+      completeness: "partial",
+      surfaces: [],
+      explicitExclusions: [],
+      deferred: [{ candidateId: "candidate-1", reason: 'Inspect the "café" control.\nKeep its evidence.' }],
+      reviewedFiles: ["clean.ts"]
+    }
+  };
+  let client = await startClient(bundle, workerEnvironment);
+  try {
+    requireSuccessfulTool(await client.callTool({
+      name: "record_codex_security_scan_draft", arguments: input
+    }), `${runtimeLabel}: commit worker checkpoint through Python`);
+  } finally {
+    await client.close();
+  }
+  const { checkpoint } = workbench("get-scan", "--scan-id", scanId).scan;
+  assert.equal(checkpoint.reviewedFileCount, 1);
+  assert.equal(checkpoint.pendingCount, 1);
+  const savedPath = path.join(scanRoot, checkpoint.sources[0].checkpointPath);
+  const saved = await readFile(savedPath);
+  assert.equal(path.basename(savedPath), `${createHash("sha256").update(saved).digest("hex")}.json`);
+
+  // The prior writer used a compact JSON digest for pretty-printed bytes. Replay
+  // those existing files without changing their immutable names or string data.
+  const legacy = JSON.parse(saved);
+  legacy.coverage.deferred[0].candidate = { summary: "Saved evidence", score: 1e-7 };
+  const legacyName = `${createHash("sha256").update(JSON.stringify(legacy)).digest("hex")}.json`;
+  const legacyPath = path.join(artifactRoot, "checkpoints", legacyName);
+  await writeFile(legacyPath, JSON.stringify(legacy, null, 2) + "\n");
+  workbench("record-scan-checkpoint", "--scan-id", scanId, "--checkpoint-path", legacyPath);
+  assert.equal(workbench("get-scan", "--scan-id", scanId).scan.checkpoint.pendingCount, 1);
+
+  client = await startClient(bundle, workerEnvironment);
+  try {
+    requireSuccessfulTool(await client.callTool({
+      name: "record_codex_security_scan_draft",
+      arguments: {
+        ...input,
+        complete: true,
+        coverage: {
+          completeness: "complete",
+          surfaces: [{ label: "Saved control", candidateId: "candidate-1", disposition: "rejected", reason: "The control is effective." }],
+          explicitExclusions: [],
+          deferred: [],
+          reviewedFiles: ["pending.ts"]
+        }
+      }
+    }), `${runtimeLabel}: resume worker evidence after restarting MCP`);
+  } finally {
+    await client.close();
+  }
+  const resumed = workbench("get-scan", "--scan-id", scanId).scan.checkpoint;
+  assert.equal(resumed.reviewedFileCount, 2);
+  assert.equal(resumed.pendingCount, 0);
+  assert.equal(JSON.parse(await readFile(path.join(artifactRoot, "result.json"), "utf8")).complete, true);
 }
 
 async function testReducerWorkerToolList(bundle) {

@@ -123,28 +123,32 @@ async function testWorkbenchStateFallback() {
       await explicitServer.stop();
     }
 
-    await writeFile(invocationLog, "");
-    const relativeStateDir = path.join(fixtureRoot, "relative-state");
-    const relativeTarget = path.join(fixtureRoot, "relative-target");
-    await mkdir(relativeTarget);
-    await writeFile(path.join(relativeTarget, "app.py"), "print('relative fixture')\n");
-    const relativeServer = startServer(serverBundlePath, childEnvironment({
-      CODEX_SECURITY_SCAN_ROOT: path.join(fixtureRoot, "relative-scans"),
-      CODEX_SECURITY_STATE_DIR: path.relative(pluginRoot, relativeStateDir),
-      FAKE_PYTHON_ALWAYS_FAIL: undefined,
-      FAKE_PYTHON_FAILURE: undefined,
-      FAKE_PYTHON_LOG: invocationLog,
-      FAKE_REAL_PYTHON: realPython,
-      PYTHON: path.relative(pluginRoot, fakePythonPath)
-    }));
-    try {
-      await initialize(relativeServer, 12);
-      assertToolError(await startDeepScan(relativeServer, 13, relativeTarget, pluginRoot), new RegExp(
-        `Synthetic worker state: ${escapeRegex(relativeStateDir)}; Python: ${escapeRegex(fakePythonPath)}`
-      ));
-      assert.equal(await pathExists(path.join(relativeStateDir, "workbench.sqlite3")), true);
-    } finally {
-      await relativeServer.stop();
+    for (const homeRelative of [false, true]) {
+      await writeFile(invocationLog, "");
+      const prefix = homeRelative ? "home" : "relative";
+      const stateDir = path.join(fixtureRoot, `${prefix}-state`);
+      const target = path.join(fixtureRoot, `${prefix}-target`);
+      await mkdir(target);
+      await writeFile(path.join(target, "app.py"), "print('relative fixture')\n");
+      const server = startServer(serverBundlePath, childEnvironment({
+        HOME: fixtureRoot,
+        CODEX_SECURITY_SCAN_ROOT: path.join(fixtureRoot, `${prefix}-scans`),
+        CODEX_SECURITY_STATE_DIR: homeRelative ? `~/${prefix}-state` : path.relative(pluginRoot, stateDir),
+        FAKE_PYTHON_ALWAYS_FAIL: undefined,
+        FAKE_PYTHON_FAILURE: undefined,
+        FAKE_PYTHON_LOG: invocationLog,
+        FAKE_REAL_PYTHON: realPython,
+        PYTHON: path.relative(pluginRoot, fakePythonPath)
+      }));
+      try {
+        await initialize(server, 12);
+        assertToolError(await startDeepScan(server, 13, target, pluginRoot), new RegExp(
+          `Synthetic worker state: ${escapeRegex(stateDir)}; Python: ${escapeRegex(fakePythonPath)}`
+        ));
+        assert.equal(await pathExists(path.join(stateDir, "workbench.sqlite3")), true);
+      } finally {
+        await server.stop();
+      }
     }
 
     await writeFile(invocationLog, "");

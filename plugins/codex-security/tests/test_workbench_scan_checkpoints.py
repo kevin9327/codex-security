@@ -310,16 +310,34 @@ def test_completed_checkpoint_continuation_keeps_bound_reports_receipts_and_poc_
     payload["coverage"] = json.loads((contract / "coverage.json").read_text())
     payload["coverage"]["reviewedFiles"] = ["clean.ts", "pending.ts"]
     payload["coverage"]["surfaces"][0]["receiptRefs"] = ["artifacts/review/clean.json"]
+    payload["scope"] = {
+        "summary": "Saved source review",
+        "runtimeStatus": "Unit tests completed",
+        "context": "Review of the current parser design",
+        "limitations": ["Integration tests were unavailable"],
+    }
     artifacts = {
         "findings/saved/saved.md": b"# Saved finding\n\n[Proof](poc/sample.bin)\n",
         "findings/saved/poc/sample.bin": b"\x00saved evidence\xff",
         "artifacts/review/clean.json": b'{"reviewed": ["clean.ts", "pending.ts"]}\n',
+        "hardening/hardening.md": b"# Hardening\n\n[Proposal](proposals/parser.md)\n",
+        "hardening/proposals/parser.md": b"# Parser design\n\n[Diagram](../diagrams/parser.mmd)\n",
+        "hardening/diagrams/parser.mmd": b"graph LR\n  Input --> Parser\n",
     }
     for relative, contents in artifacts.items():
         path = scan_dir / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(contents)
     save(state, scan_id, write_checkpoint(scan_dir / "checkpoints", payload))
+    manifest = json.loads((contract / "scan-manifest.json").read_text())
+    manifest["scan"]["scope"].update(payload["scope"])
+    manifest["scan"]["hardening"] = {"portfolioPath": "hardening/hardening.md"}
+    for filename, document in (
+        ("scan-manifest.json", manifest),
+        ("findings.json", {"findings": payload["findings"]}),
+        ("coverage.json", payload["coverage"]),
+    ):
+        (scan_dir / filename).write_text(json.dumps(document))
     run_workbench(state, "fail-scan", "--scan-id", scan_id, "--message", "Export interrupted")
     parent_seal = (scan_dir / "scan-manifest.json").read_bytes()
     recipe = run_workbench(state, "get-scan-recipe", "--scan-id", scan_id)["recipe"]
@@ -374,6 +392,16 @@ def test_completed_checkpoint_continuation_keeps_bound_reports_receipts_and_poc_
     assert json.loads((child_dir / "coverage.json").read_text())["completeness"] == "complete"
     findings = json.loads((child_dir / "findings.json").read_text())["findings"]
     assert findings[0]["writeup"] == {"reportPath": "findings/saved/saved.md"}
+    child_manifest = json.loads((child_dir / "scan-manifest.json").read_text())["scan"]
+    assert child_manifest["hardening"] == {"portfolioPath": "hardening/hardening.md"}
+    assert child_manifest["scope"]["includePaths"] == ["."]
+    for key, value in payload["scope"].items():
+        assert child_manifest["scope"][key] == value
+    report = (child_dir / "report.md").read_text()
+    assert "Unit tests completed" in report
+    assert "Review of the current parser design" in report
+    assert "Integration tests were unavailable" in report
+    assert "hardening/hardening.md" in report
     for relative, contents in artifacts.items():
         assert (child_dir / relative).read_bytes() == contents
         assert (scan_dir / relative).read_bytes() == contents
