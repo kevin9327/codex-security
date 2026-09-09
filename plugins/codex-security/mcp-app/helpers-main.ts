@@ -11,6 +11,7 @@ import { bindRepoScopesCommand } from "./src/helpers/bind-repo-scopes";
 import { snapshotSqliteCommand } from "./src/helpers/snapshot-sqlite";
 import { generateInScopeFilesCommand } from "./src/helpers/generate-in-scope-files";
 import { workbenchCommand } from "./src/helpers/workbench-command";
+import { workbenchLifecycleCommand } from "./src/helpers/workbench-lifecycle-command";
 import { workbenchResultsCommand } from "./src/helpers/workbench-results-command";
 import { generateRankInputCommand } from "./src/helpers/generate-rank-input";
 import { configPreflightCommand } from "./src/helpers/config-preflight-command";
@@ -80,6 +81,19 @@ if (command === "resolve-security-md") {
 } else if (command === "generate-in-scope-files") {
   process.exitCode = generateInScopeFilesCommand(args, posixHome);
 } else if (
+  command === "create-workspace" ||
+  command === "save-workspace" ||
+  command === "start-scan" ||
+  command === "start-prompt-only-scan" ||
+  command === "start-headless-standard-scan" ||
+  command === "register-cli-scan" ||
+  command === "set-scan-thread" ||
+  command === "get-scan-recipe"
+) {
+  void workbenchLifecycleCommand(command, args).then((status) => {
+    process.exitCode = status;
+  });
+} else if (
   command === "inspect-target" ||
   command === "inspect-setup" ||
   command === "get-workspace" ||
@@ -121,7 +135,7 @@ if (command === "resolve-security-md") {
   process.exitCode = finalizeScanContractCommand(args);
 } else {
   console.error(
-    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | validate-scan-contract | validate-tracking-source | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | list-global-findings | list-repositories | list-scans | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight | deep-scan-config | finalize-scan-contract> [options]",
+    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | validate-scan-contract | validate-tracking-source | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | create-workspace | save-workspace | start-scan | start-prompt-only-scan | start-headless-standard-scan | register-cli-scan | set-scan-thread | get-scan-recipe | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | list-global-findings | list-repositories | list-scans | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight | deep-scan-config | finalize-scan-contract> [options]",
   );
   process.exitCode = 2;
 }

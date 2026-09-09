@@ -1624,7 +1624,7 @@ async function runWorkbench(
 ): Promise<JsonObject> {
   let pythonCommand: string | undefined;
   try {
-    if (!["list-global-findings", "list-repositories", "list-scans", "inspect-target", "inspect-setup", "get-workspace", "get-scan", "list-findings"].includes(args[0] ?? "")) {
+    if (!["list-global-findings", "list-repositories", "list-scans", "create-workspace", "save-workspace", "start-scan", "start-prompt-only-scan", "start-headless-standard-scan", "register-cli-scan", "set-scan-thread", "get-scan-recipe", "inspect-target", "inspect-setup", "get-workspace", "get-scan", "list-findings"].includes(args[0] ?? "")) {
       pythonCommand = await resolvePythonCommand();
     }
     return await executeWorkbenchWithStateSelection(pythonCommand, args, input);

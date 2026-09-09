@@ -183,6 +183,7 @@ export function argumentsFor(
   booleanOptions: readonly string[] = [],
   integerMaxDigits?: number,
   positionalNames: readonly string[] = [],
+  requiredAlternatives: readonly (readonly string[])[] = [],
 ): Record<string, string | bigint | true> {
   const names = [
     ...new Set([
@@ -278,6 +279,12 @@ export function argumentsFor(
     throw new ArgumentError(
       `the following arguments are required: ${missing.join(", ")}`,
     );
+  for (const group of requiredAlternatives) {
+    if (!group.some((name) => values[name] !== undefined))
+      throw new ArgumentError(
+        `one of the arguments ${group.map((name) => `--${name}`).join(" ")} is required`,
+      );
+  }
   if (extra.length)
     throw new ArgumentError(`unrecognized arguments: ${extra.join(" ")}`);
   return values;

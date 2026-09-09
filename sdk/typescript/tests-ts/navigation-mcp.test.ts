@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -258,5 +259,53 @@ test("configured state and malformed databases retain the existing no-fallback b
     } finally {
       await server.stop();
     }
+  }
+});
+
+test("MCP workspace setup and start preserve context without Python", async () => {
+  const root = realpathSync(mkdtempSync(join(directory, "lifecycle-"))),
+    target = join(root, "target"),
+    state = join(root, "state");
+  mkdirSync(target);
+  writeFileSync(join(target, "source.ts"), "synthetic source\n");
+  const server = await start({
+    CODEX_SECURITY_STATE_DIR: state,
+    CODEX_HOME: join(root, "codex"),
+    CODEX_SQLITE_HOME: join(root, "sqlite"),
+    CODEX_SECURITY_SCAN_ROOT: join(root, "scans"),
+  });
+  try {
+    const opened = successful(
+      await server.call("open_codex_security_workspace", {
+        targetPath: target,
+        scope: ".",
+        mode: "standard",
+      }),
+    )!["workspace"] as Record<string, unknown>;
+    expect(opened["targetPath"]).toBe(target);
+    const context = "Review Σ.\nKeep the context.";
+    const saved = successful(
+      await server.call("submit_codex_security_setup", {
+        sessionId: opened["id"],
+        targetPath: target,
+        scope: ".",
+        mode: "standard",
+        userContext: context,
+      }),
+    )!["workspace"] as Record<string, unknown>;
+    expect(saved["userContext"]).toBe(context);
+    const started = successful(
+      await server.call("start_codex_security_scan", {
+        sessionId: opened["id"],
+      }),
+    )!["workspace"] as Record<string, unknown>;
+    expect(started["results"]).toMatchObject({
+      progress: { status: "running" },
+      userContext: context,
+    });
+    expect(statSync(join(state, "workbench.sqlite3")).isFile()).toBe(true);
+    expect(server.events()).toEqual([]);
+  } finally {
+    await server.stop();
   }
 });
