@@ -35,6 +35,7 @@ export async function buildMcpApp({ output }) {
     ["@unicode/unicode-15.0.0 (MIT)", "scripts/licenses/UNICODE-DATA-MIT.txt"],
     ["Unicode data", "node_modules/py-ast/dist/LICENSE-UNICODE"],
     ["Python derived parser data", "node_modules/py-ast/dist/LICENSE-PYTHON"],
+    ["Tomli parser (MIT)", "scripts/licenses/TOMLI-MIT.txt"],
     ["CPython numerical routines and regex frontend", "scripts/licenses/PYTHON-NUMERICS.txt"]
   ];
   const notices = await Promise.all(frontendLicenses.map(async ([name, path]) =>

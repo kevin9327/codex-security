@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -339,4 +339,32 @@ test("the SDK initializes and reads through the packaged helper on the actual No
   };
   expect(result.result.overview).toEqual({ findings: 0, groups: 0 });
   expect(result.page.total).toBe(0);
+});
+
+test("database utility help and argument errors leave state untouched", () => {
+  for (const command of ["dashboard", "database-info"]) {
+    for (const argument of ["--help", "-h", "--unknown", "unexpected"]) {
+      const state = join(directory, `arguments-${counter++}`);
+      const child = spawnSync(
+        node,
+        [join(PLUGIN_ROOT, "mcp", "helpers.mjs"), command, argument],
+        {
+          input: "",
+          encoding: "utf8",
+          env: { ...process.env, PATH: "", CODEX_SECURITY_STATE_DIR: state },
+        },
+      );
+      if (argument === "--help" || argument === "-h") {
+        expect(child.status, child.stderr).toBe(0);
+        expect(child.stderr).toBe("");
+        expect(child.stdout).toContain(`--helper ${command} [-h]`);
+        expect(child.stdout).toContain("--help");
+      } else {
+        expect(child.status, child.stderr).toBe(2);
+        expect(child.stdout).toBe("");
+        expect(child.stderr).toContain(`unrecognized arguments: ${argument}`);
+      }
+      expect(existsSync(state)).toBe(false);
+    }
+  }
 });

@@ -94,57 +94,55 @@ export async function workbenchCommand(
     )
     .join("");
   const usage = `usage: launch_codex_security_mcp[.cmd] --helper ${command} [-h]${navigation ? navigationUsage : paging ? " --limit LIMIT --offset OFFSET" : selectorUsage}${duplicates ? " (--repository-id REPOSITORY_ID | --all-repositories)" : ""}`;
-  let options: ReturnType<typeof argumentsFor> = {};
-  if (command !== "dashboard" && command !== "database-info") {
-    let scope: string | undefined;
-    try {
-      options = argumentsFor(
-        args,
-        paging ? ["limit", "offset"] : selector ? [selector] : [],
-        paging || navigation ? ["limit", "offset"] : [],
-        navigation
-          ? navigationOptions
-          : duplicates
-            ? { "repository-id": undefined }
-            : {},
-        (name, value) => {
-          if (name === "limit" && (value as bigint) < 1n)
+  let options: ReturnType<typeof argumentsFor>;
+  let scope: string | undefined;
+  try {
+    options = argumentsFor(
+      args,
+      paging ? ["limit", "offset"] : selector ? [selector] : [],
+      paging || navigation ? ["limit", "offset"] : [],
+      navigation
+        ? navigationOptions
+        : duplicates
+          ? { "repository-id": undefined }
+          : {},
+      (name, value) => {
+        if (name === "limit" && (value as bigint) < 1n)
+          throw new ArgumentError(
+            "argument --limit: expected a positive integer",
+          );
+        if (name === "offset" && (value as bigint) < 0n)
+          throw new ArgumentError(
+            "argument --offset: expected a non-negative integer",
+          );
+        if (name === "repository-id" || name === "all-repositories") {
+          if (scope !== undefined && scope !== name)
             throw new ArgumentError(
-              "argument --limit: expected a positive integer",
+              `argument --${name}: not allowed with argument --${scope}`,
             );
-          if (name === "offset" && (value as bigint) < 0n)
-            throw new ArgumentError(
-              "argument --offset: expected a non-negative integer",
-            );
-          if (name === "repository-id" || name === "all-repositories") {
-            if (scope !== undefined && scope !== name)
-              throw new ArgumentError(
-                `argument --${name}: not allowed with argument --${scope}`,
-              );
-            scope = name;
-          }
-        },
-        duplicates ? ["all-repositories"] : [],
-        4300,
-      );
-      if (options["help"]) {
-        print(
-          `${usage}\n\noptions:\n  -h, --help  show this help message and exit${navigation ? navigationUsage.replaceAll(" [", "\n  ").replaceAll("]", "") : paging ? "\n  --limit LIMIT\n  --offset OFFSET" : selectorUsage ? `\n ${selectorUsage}` : ""}${duplicates ? "\n  --repository-id REPOSITORY_ID\n  --all-repositories" : ""}`,
-        );
-        return 0;
-      }
-      if (duplicates && scope === undefined)
-        throw new ArgumentError(
-          "one of the arguments --repository-id --all-repositories is required",
-        );
-    } catch (error) {
-      print(usage, true);
+          scope = name;
+        }
+      },
+      duplicates ? ["all-repositories"] : [],
+      4300,
+    );
+    if (options["help"]) {
       print(
-        `${command}: error: ${(error as Error).message.replace("--limit: invalid int value:", "--limit: invalid positive_int value:").replace("--offset: invalid int value:", "--offset: invalid non_negative_int value:")}`,
-        true,
+        `${usage}\n\noptions:\n  -h, --help  show this help message and exit${navigation ? navigationUsage.replaceAll(" [", "\n  ").replaceAll("]", "") : paging ? "\n  --limit LIMIT\n  --offset OFFSET" : selectorUsage ? `\n ${selectorUsage}` : ""}${duplicates ? "\n  --repository-id REPOSITORY_ID\n  --all-repositories" : ""}`,
       );
-      return 2;
+      return 0;
     }
+    if (duplicates && scope === undefined)
+      throw new ArgumentError(
+        "one of the arguments --repository-id --all-repositories is required",
+      );
+  } catch (error) {
+    print(usage, true);
+    print(
+      `${command}: error: ${(error as Error).message.replace("--limit: invalid int value:", "--limit: invalid positive_int value:").replace("--offset: invalid int value:", "--offset: invalid non_negative_int value:")}`,
+      true,
+    );
+    return 2;
   }
   const now = () =>
     timestamp(processBinding().wallClockMicroseconds()).replace("+00:00", "Z");
