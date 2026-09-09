@@ -59,6 +59,10 @@ export interface WindowsBinding {
   ): { error: number; handle?: WindowsHandle | null };
   createWindowsDirectory(path: Buffer): number;
   createWindowsDirectories(path: Buffer): number;
+  createWindowsPrivateDirectory(path: Buffer): {
+    error: number;
+    path: Buffer | null;
+  };
   setWindowsWritable(path: Buffer, writable: boolean): number;
   readCopyStat(
     source: Buffer,

@@ -18,6 +18,10 @@ use windows_sys::Win32::{
         ERROR_LOCK_VIOLATION, HANDLE, INVALID_HANDLE_VALUE,
     },
     Globalization::{LCMapStringEx, LCMAP_LOWERCASE, LOCALE_NAME_INVARIANT},
+    Security::{
+        Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
+        SECURITY_ATTRIBUTES,
+    },
     Storage::FileSystem::*,
     System::Diagnostics::Debug::{
         FormatMessageW, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,
@@ -457,6 +461,50 @@ pub fn open_windows_file(
 pub fn create_windows_directory(path: Buffer) -> napi::Result<u32> {
     let path = wide_path(path)?;
     Ok(status(unsafe { CreateDirectoryW(path.as_ptr(), null()) }))
+}
+
+#[napi(object, use_nullable = true)]
+pub struct WindowsPrivateDirectoryResult {
+    pub error: u32,
+    pub path: Option<Buffer>,
+}
+
+#[napi]
+pub fn create_windows_private_directory(
+    path: Buffer,
+) -> napi::Result<WindowsPrivateDirectoryResult> {
+    let wide = wide_path(path.to_vec().into())?;
+    let mut attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        ..Default::default()
+    };
+    let mut descriptor_size = 0;
+    // CPython mkdir(mode=0700): protected, inheritable system/admin/owner access.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            windows_sys::core::w!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)"),
+            SDDL_REVISION_1,
+            &mut attributes.lpSecurityDescriptor,
+            &mut descriptor_size,
+        )
+    } == 0
+    {
+        return Ok(WindowsPrivateDirectoryResult {
+            error: unsafe { GetLastError() },
+            path: None,
+        });
+    }
+    let created = unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) };
+    if !unsafe { LocalFree(attributes.lpSecurityDescriptor) }.is_null() {
+        return Ok(WindowsPrivateDirectoryResult {
+            error: unsafe { GetLastError() },
+            path: None,
+        });
+    }
+    Ok(WindowsPrivateDirectoryResult {
+        error: status(created),
+        path: if created == 0 { Some(path) } else { None },
+    })
 }
 
 #[napi]

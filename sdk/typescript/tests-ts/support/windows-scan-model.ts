@@ -284,6 +284,7 @@ export class WindowsScanModel {
       return 0;
     },
     createWindowsDirectories: unavailable,
+    createWindowsPrivateDirectory: unavailable,
     setWindowsWritable: unavailable,
     readCopyStat: unavailable,
     setWindowsTimes: unavailable,

@@ -17,6 +17,71 @@ fn main() -> std::io::Result<()> {
         OsString::from_wide(&prefix.encode_utf16().chain([unit]).collect::<Vec<_>>())
     }
 
+    fn private_directory_acl(path: &Path) -> io::Result<()> {
+        use std::{os::windows::ffi::OsStrExt, ptr::null_mut};
+        use windows_sys::Win32::{
+            Foundation::LocalFree,
+            Security::{
+                Authorization::{
+                    ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+                },
+                GetFileSecurityW, DACL_SECURITY_INFORMATION,
+            },
+        };
+        let path = path
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect::<Vec<_>>();
+        let mut length = 0;
+        unsafe {
+            GetFileSecurityW(
+                path.as_ptr(),
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                0,
+                &mut length,
+            )
+        };
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut descriptor = vec![0_usize; (length as usize).div_ceil(size_of::<usize>())];
+        if unsafe {
+            GetFileSecurityW(
+                path.as_ptr(),
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut text = null_mut();
+        if unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.as_mut_ptr().cast(),
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                &mut length,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let value = String::from_utf16_lossy(unsafe {
+            std::slice::from_raw_parts(text, length as usize - 1)
+        });
+        if !unsafe { LocalFree(text.cast()) }.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        println!("{value}");
+        Ok(())
+    }
+
     fn run(node: OsString, script: OsString, root: &Path) -> io::Result<()> {
         let cwd = root.join(raw("cwd-", 0xd800));
         fs::create_dir(&cwd)?;
@@ -673,6 +738,12 @@ fn main() -> std::io::Result<()> {
     let script = args.next().expect("Windows wide proof script");
     let fixture = PathBuf::from(args.next().expect("Proof fixture directory"));
     let mode = args.next();
+    if mode
+        .as_ref()
+        .is_some_and(|argument| argument == "private-directory-acl")
+    {
+        return private_directory_acl(&fixture);
+    }
     if mode.as_ref().is_some_and(|argument| argument == "command") {
         let bytes = fs::read(fixture)?;
         let units = bytes

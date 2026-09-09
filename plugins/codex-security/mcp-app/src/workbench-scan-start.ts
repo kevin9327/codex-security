@@ -6,12 +6,12 @@ import number from "@unicode/unicode-15.0.0/General_Category/Number/regex.js";
 import type { Connection, Row, SqlValue } from "../../native/sqlite.mjs";
 import {
   widePath,
-  windowsFileSystem,
   windowsJoin,
   windowsParts,
 } from "../../native/windows-files.mjs";
 import { windowsBinding } from "./native";
 import { environment } from "./helpers/environment";
+import { filesystemErrorMessage } from "./helpers/file-errors";
 import { encodePosixPath } from "./helpers/posix-path";
 import { stringifyJson } from "./helpers/python-json";
 import { resolvedPath } from "./helpers/resolve-path";
@@ -64,9 +64,18 @@ function temporaryDirectory(parent: string, prefix: string): string {
     ).join("");
     const path = append(parent, prefix + suffix);
     try {
-      if (windows)
-        windowsFileSystem(windowsBinding()).mkdir(widePath(path), false);
-      else mkdirSync(encodePosixPath(path), { mode: 0o700 });
+      if (windows) {
+        const result = windowsBinding().createWindowsPrivateDirectory(
+          widePath(path),
+        );
+        if (result.error !== 0) {
+          const error = {
+            winerror: result.error,
+            ...(result.path === null ? {} : { path }),
+          };
+          throw Object.assign(new Error(filesystemErrorMessage(error)), error);
+        }
+      } else mkdirSync(encodePosixPath(path), { mode: 0o700 });
     } catch (error) {
       const failure = error as NodeJS.ErrnoException & { winerror?: number };
       if (

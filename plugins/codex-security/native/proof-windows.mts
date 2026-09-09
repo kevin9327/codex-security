@@ -20,6 +20,8 @@ import { fileURLToPath } from "node:url";
 import { setImmediate } from "node:timers/promises";
 import { wideProcessProof } from "./proof-windows-wide.mjs";
 import { windowsFileSystem } from "./windows-files.mjs";
+import { output } from "./binding.mjs";
+import { loadProcessBinding } from "./process-binding.mjs";
 import {
   loadWindowsBinding,
   windowsFlags as flags,
@@ -170,6 +172,70 @@ function copyMetadataProof(root: string) {
     success(native.setWindowsWritable(pathBytes(source), true));
     if (existsSync(destination))
       success(native.setWindowsWritable(pathBytes(destination), true));
+  }
+}
+
+function privateDirectoryProof(root: string) {
+  const files = windowsFileSystem(native);
+  const paths = [join(root, "private-directory"), join(root, "private-\ud800")];
+  const replacement = join(root, "private-\ufffd");
+  mkdirSync(replacement);
+  writeFileSync(join(replacement, "sentinel"), "replacement untouched");
+  try {
+    for (const path of paths) {
+      const bytes = pathBytes(path);
+      assert.deepEqual(native.createWindowsPrivateDirectory(bytes), {
+        error: 0,
+        path: null,
+      });
+      assert(files.stat(bytes).isDirectory());
+      assert.deepEqual(native.createWindowsPrivateDirectory(bytes), {
+        error: 183,
+        path: bytes,
+      });
+      const acl = checked(
+        loadProcessBinding().rawProcess({
+          program: pathBytes(join(output, "windows-wide-launcher.exe")),
+          args: [
+            pathBytes(process.execPath),
+            pathBytes(self),
+            bytes,
+            Buffer.from("private-directory-acl", "utf16le"),
+          ],
+        }),
+      );
+      assert.equal(acl.returnCode, 0, acl.stderr.toString());
+      assert.equal(acl.stderr.length, 0);
+      assert.equal(
+        acl.stdout.toString().trim(),
+        "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)",
+      );
+      const child = pathBytes(join(path, "contents"));
+      files.writeFile(child, Buffer.from("private contents"));
+      assert.equal(files.readFile(child).toString(), "private contents");
+      files.unlink(child);
+    }
+    const missing = pathBytes(join(root, "missing-parent", "private"));
+    assert.deepEqual(native.createWindowsPrivateDirectory(missing), {
+      error: 3,
+      path: missing,
+    });
+    for (const malformed of [
+      Buffer.from([0]),
+      Buffer.from("bad\0path", "utf16le"),
+    ])
+      assert.throws(() => native.createWindowsPrivateDirectory(malformed));
+    assert.equal(
+      readFileSync(join(replacement, "sentinel"), "utf8"),
+      "replacement untouched",
+    );
+    return {
+      protectedOwnerAcl: true,
+      rawNames: true,
+      existingAndMissingErrors: true,
+    };
+  } finally {
+    for (const path of paths) remove(path);
   }
 }
 
@@ -1036,6 +1102,7 @@ if (process.argv[2] === "worker") {
           nodeApi: 8,
           rawProcess: rawProcessProof(root),
           copyMetadata: copyMetadataProof(root),
+          privateDirectories: privateDirectoryProof(root),
           copyPrimitives: copyPrimitivesProof(root),
           completionFiles: await completionFileProof(root),
           handles: handleProof(root),
