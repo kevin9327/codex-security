@@ -1,4 +1,9 @@
+import { validateDateTime } from "./contract-date-time";
+import { fullPatternMatch } from "./python-regex";
 import { JsonFloat, object, objectEntries, pythonRepr } from "./python-json";
+import { ContractError } from "./scan-contract-errors";
+
+type Numeric = number | bigint | JsonFloat;
 
 type SchemaType =
   | "array"
@@ -13,27 +18,91 @@ export interface ContractSchema {
   type?: SchemaType | SchemaType[];
   const?: unknown;
   enum?: unknown[];
-  minLength?: number;
+  minLength?: Numeric;
   pattern?: string;
-  minimum?: number;
-  maximum?: number;
-  minItems?: number;
-  maxItems?: number;
+  format?: string;
+  minimum?: Numeric;
+  maximum?: Numeric;
+  minItems?: Numeric;
+  maxItems?: Numeric;
   uniqueItems?: boolean;
+  contains?: ContractSchema;
+  minContains?: Numeric;
+  maxContains?: Numeric;
   items?: ContractSchema;
+  allOf?: ContractSchema[];
+  if?: ContractSchema;
+  then?: ContractSchema;
   required?: string[];
-  minProperties?: number;
+  minProperties?: Numeric;
   properties?: Record<string, ContractSchema>;
   additionalProperties?: boolean | ContractSchema;
   [key: string]: unknown;
 }
 
-const numeric = (value: unknown): value is number | bigint | JsonFloat =>
+const numeric = (value: unknown): value is Numeric =>
   typeof value === "number" ||
   typeof value === "bigint" ||
   value instanceof JsonFloat;
-const number = (value: number | bigint | JsonFloat) =>
+const number = (value: Numeric) =>
   value instanceof JsonFloat ? Number(value.source) : value;
+
+function typeName(value: unknown): string {
+  if (value === null) return "NoneType";
+  if (Array.isArray(value)) return "list";
+  if (typeof value === "boolean") return "bool";
+  if (typeof value === "string") return "str";
+  if (numeric(value))
+    return value instanceof JsonFloat ||
+      (typeof value === "number" && !Number.isInteger(value))
+      ? "float"
+      : "int";
+  return object(value) ? "dict" : typeof value;
+}
+
+function operationError(name: string, message: string): never {
+  const error = new Error(message);
+  error.name = name;
+  throw error;
+}
+
+function get(value: unknown, key: string, fallback: unknown = null): unknown {
+  if (!object(value))
+    operationError(
+      "AttributeError",
+      `'${typeName(value)}' object has no attribute 'get'`,
+    );
+  return Object.hasOwn(value, key) ? value[key] : fallback;
+}
+
+function hashable(value: unknown): void {
+  if (Array.isArray(value) || object(value))
+    throw new TypeError(`unhashable type: '${typeName(value)}'`);
+}
+
+function* iterate(value: unknown): Generator<unknown> {
+  if (Array.isArray(value) || typeof value === "string") yield* value;
+  else if (object(value)) for (const [key] of objectEntries(value)) yield key;
+  else throw new TypeError(`'${typeName(value)}' object is not iterable`);
+}
+
+function truthy(value: unknown): boolean {
+  if (numeric(value)) return number(value) !== 0 && number(value) !== 0n;
+  if (Array.isArray(value) || typeof value === "string")
+    return value.length > 0;
+  if (object(value)) return Object.keys(value).length > 0;
+  return Boolean(value);
+}
+
+function compare(left: Numeric, right: unknown, operator: "<" | ">"): boolean {
+  if (!numeric(right) && typeof right !== "boolean")
+    throw new TypeError(
+      `'${operator}' not supported between instances of '${typeName(left)}' and '${typeName(right)}'`,
+    );
+  const a = number(left),
+    b = typeof right === "boolean" ? Number(right) : number(right);
+  return operator === "<" ? a < b : a > b;
+}
 
 function equal(left: unknown, right: unknown): boolean {
   if (numeric(left) && numeric(right)) {
@@ -65,7 +134,7 @@ function equal(left: unknown, right: unknown): boolean {
   return left === right;
 }
 
-function matches(value: unknown, expected: SchemaType): boolean {
+function matches(value: unknown, expected: unknown): boolean {
   switch (expected) {
     case "array":
       return Array.isArray(value);
@@ -85,9 +154,11 @@ function matches(value: unknown, expected: SchemaType): boolean {
     case "null":
       return value === null;
   }
+  hashable(expected);
+  return operationError("KeyError", pythonRepr(expected));
 }
 
-/** The assessment schema uses the same structural rules as the scan contract. */
+/** Validate the structural rules shared by assessments and scan contracts. */
 export function validateAgainstSchema(
   value: unknown,
   schema: ContractSchema,
@@ -95,10 +166,10 @@ export function validateAgainstSchema(
   root: ContractSchema = schema,
 ): void {
   const fail: (message: string) => never = (message) => {
-    throw new Error(`${context}: ${message}`);
+    throw new ContractError(`${context}: ${message}`);
   };
-  if (schema.$ref !== undefined) {
-    const reference = schema.$ref;
+  const reference = get(schema, "$ref");
+  if (reference !== null) {
     if (typeof reference !== "string")
       fail("schema reference must be a string");
     let target: unknown = root;
@@ -125,27 +196,50 @@ export function validateAgainstSchema(
   }
   if (Object.hasOwn(schema, "const") && !equal(value, schema.const))
     fail(`expected ${pythonRepr(schema.const)}`);
-  if (schema.enum && !schema.enum.some((candidate) => equal(value, candidate)))
-    fail(`unsupported value ${pythonRepr(value)}`);
+  if (Object.hasOwn(schema, "enum")) {
+    let found = false;
+    for (const candidate of iterate(schema.enum))
+      if (equal(value, candidate)) {
+        found = true;
+        break;
+      }
+    if (!found) fail(`unsupported value ${pythonRepr(value)}`);
+  }
   if (typeof value === "string") {
-    if (schema.minLength && Array.from(value).length < schema.minLength)
-      fail("string is too short");
     if (
-      schema.pattern !== undefined &&
-      !new RegExp(`^(?:${schema.pattern})$(?![\\s\\S])`, "u").test(value)
+      truthy(schema.minLength) &&
+      compare(Array.from(value).length, schema.minLength, "<")
     )
-      fail("string does not match schema pattern");
+      fail("string is too short");
+    if (Object.hasOwn(schema, "pattern")) {
+      const pattern = schema.pattern;
+      if (typeof pattern !== "string") {
+        hashable(pattern);
+        throw new TypeError(
+          "first argument must be string or compiled pattern",
+        );
+      }
+      if (!fullPatternMatch(pattern, value))
+        fail("string does not match schema pattern");
+    }
+    if (schema.format === "date-time") validateDateTime(value, context);
   }
   if (numeric(value)) {
-    if (schema.minimum !== undefined && number(value) < schema.minimum)
+    if (Object.hasOwn(schema, "minimum") && compare(value, schema.minimum, "<"))
       fail("value is below schema minimum");
-    if (schema.maximum !== undefined && number(value) > schema.maximum)
+    if (Object.hasOwn(schema, "maximum") && compare(value, schema.maximum, ">"))
       fail("value is above schema maximum");
   }
   if (Array.isArray(value)) {
-    if (schema.minItems !== undefined && value.length < schema.minItems)
+    if (
+      Object.hasOwn(schema, "minItems") &&
+      compare(value.length, schema.minItems, "<")
+    )
       fail("array has too few items");
-    if (schema.maxItems !== undefined && value.length > schema.maxItems)
+    if (
+      Object.hasOwn(schema, "maxItems") &&
+      compare(value.length, schema.maxItems, ">")
+    )
       fail("array has too many items");
     if (
       schema.uniqueItems === true &&
@@ -154,7 +248,25 @@ export function validateAgainstSchema(
       )
     )
       fail("array items must be unique");
-    if (schema.items)
+    if (object(schema.contains)) {
+      let count = 0;
+      for (const item of value) {
+        try {
+          validateAgainstSchema(item, schema.contains, context, root);
+          count++;
+        } catch (error) {
+          if (!(error instanceof ContractError)) throw error;
+        }
+      }
+      if (compare(count, get(schema, "minContains", 1), "<"))
+        fail("array contains too few matching items");
+      if (
+        Object.hasOwn(schema, "maxContains") &&
+        compare(count, schema.maxContains, ">")
+      )
+        fail("array contains too many matching items");
+    }
+    if (object(schema.items))
       value.forEach((item, index) =>
         validateAgainstSchema(
           item,
@@ -165,21 +277,40 @@ export function validateAgainstSchema(
       );
   }
   if (object(value)) {
-    for (const key of schema.required ?? [])
-      if (!Object.hasOwn(value, key))
-        throw new Error(`${context}.${key}: missing required schema property`);
+    for (const child of iterate(get(schema, "allOf", [])))
+      validateAgainstSchema(value, child as ContractSchema, context, root);
+    if (object(schema.if)) {
+      let matches = true;
+      try {
+        validateAgainstSchema(value, schema.if, context, root);
+      } catch (error) {
+        if (!(error instanceof ContractError)) throw error;
+        matches = false;
+      }
+      if (matches && object(schema.then))
+        validateAgainstSchema(value, schema.then, context, root);
+    }
+    for (const key of iterate(get(schema, "required", []))) {
+      hashable(key);
+      if (typeof key !== "string" || !Object.hasOwn(value, key))
+        throw new ContractError(
+          `${context}.${typeof key === "string" ? key : pythonRepr(key)}: missing required schema property`,
+        );
+    }
     if (
-      schema.minProperties !== undefined &&
-      Object.keys(value).length < schema.minProperties
+      Object.hasOwn(schema, "minProperties") &&
+      compare(Object.keys(value).length, schema.minProperties, "<")
     )
       fail("object has too few properties");
+    const properties = get(schema, "properties", {});
     for (const [key, item] of objectEntries(value)) {
-      const child = Object.hasOwn(schema.properties ?? {}, key)
-        ? schema.properties![key]
-        : undefined;
-      if (child) validateAgainstSchema(item, child, `${context}.${key}`, root);
+      const child = get(properties, key);
+      if (object(child))
+        validateAgainstSchema(item, child, `${context}.${key}`, root);
       else if (schema.additionalProperties === false)
-        throw new Error(`${context}.${key}: unexpected schema property`);
+        throw new ContractError(
+          `${context}.${key}: unexpected schema property`,
+        );
       else if (object(schema.additionalProperties))
         validateAgainstSchema(
           item,
