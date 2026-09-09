@@ -17,7 +17,6 @@ export interface ScanArtifactContextOptions {
   requireClaim?: boolean;
   handoffClaimToken?: string;
   pluginRoot?: string;
-  pythonCommand?: string;
 }
 
 export interface WorkerArtifactContextInput {
@@ -27,7 +26,6 @@ export interface WorkerArtifactContextInput {
   scanId?: string;
   scope?: string;
   pluginRoot?: string;
-  pythonCommand?: string;
   targetContract?: Readonly<Record<string, unknown>>;
   targetRevision?: string;
   targetSnapshotDigest?: string;
@@ -99,7 +97,6 @@ export async function createScanArtifactContext(
     scanId,
     ...defined("scope", optionalString(scan.scope)),
     ...defined("pluginRoot", options.pluginRoot),
-    ...defined("pythonCommand", options.pythonCommand),
     ...defined("targetContract", targetContract),
     ...defined("targetRevision", optionalString(scan.targetRevision)),
     ...defined(
@@ -136,7 +133,6 @@ export async function createWorkerArtifactContext(
     ...defined("scanId", input.scanId),
     ...defined("scope", input.scope),
     ...defined("pluginRoot", input.pluginRoot),
-    ...defined("pythonCommand", input.pythonCommand),
     ...defined("targetContract", input.targetContract),
     ...defined("targetRevision", input.targetRevision),
     ...defined("targetSnapshotDigest", input.targetSnapshotDigest),

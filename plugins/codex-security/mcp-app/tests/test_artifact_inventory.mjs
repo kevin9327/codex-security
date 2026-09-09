@@ -365,8 +365,7 @@ async function createFixture(label) {
       layout: "scan",
       scanId: "f84c8312-a602-4660-8e01-518a176cd75a",
       scope: ".",
-      pluginRoot: runtimePluginRoot,
-      pythonCommand: path.join(root, "missing-python")
+      pluginRoot: runtimePluginRoot
     },
     worker: {
       root: workerRoot,

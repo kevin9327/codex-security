@@ -23,7 +23,6 @@ export interface ArtifactContext {
   scanId?: string;
   scope?: string;
   pluginRoot?: string;
-  pythonCommand?: string;
   targetContract?: Readonly<Record<string, unknown>>;
   targetRevision?: string;
   targetSnapshotDigest?: string;

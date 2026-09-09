@@ -39,9 +39,6 @@ export async function createCodexSecurityArtifactWriterServer(
     ...(environment.CODEX_SECURITY_PLUGIN_ROOT
       ? { pluginRoot: environment.CODEX_SECURITY_PLUGIN_ROOT }
       : {}),
-    ...(environment.CODEX_SECURITY_PYTHON_COMMAND
-      ? { pythonCommand: environment.CODEX_SECURITY_PYTHON_COMMAND }
-      : {}),
     ...(deepReducer ? { deepReducer } : {})
   });
   const server = new McpServer(

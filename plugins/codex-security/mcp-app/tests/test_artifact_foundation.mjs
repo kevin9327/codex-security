@@ -168,8 +168,7 @@ async function testScanContext() {
       requireRunning: true,
       requireClaim: true,
       handoffClaimToken: "fixture-claim",
-      pluginRoot: "/fixture/plugin",
-      pythonCommand: "python3"
+      pluginRoot: "/fixture/plugin"
     }
   );
   assert.deepEqual(calls, [["get-scan", "--scan-id", scanId]]);
@@ -182,7 +181,6 @@ async function testScanContext() {
   assert.equal(context.targetSnapshotDigest, "sha256:fixture");
   assert.equal(context.handoffClaimToken, "fixture-claim");
   assert.equal(context.pluginRoot, "/fixture/plugin");
-  assert.equal(context.pythonCommand, "python3");
 
   await assert.rejects(
     contextApi.createScanArtifactContext(scanId, runWorkbench, {

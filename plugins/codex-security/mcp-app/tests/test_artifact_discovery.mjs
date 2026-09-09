@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -77,27 +76,10 @@ assert.deepEqual(
 assert.deepEqual(toolSchemas.$defs.workbenchListCandidatesInput.required, ["scanId"]);
 
 const root = await realpath(await mkdtemp(path.join(tmpdir(), "security-artifact-discovery-")));
-const runtimePluginRoot = path.join(root, "plugin");
+const runtimePluginRoot = process.env.CODEX_SECURITY_TEST_PLUGIN_ROOT
+  ? path.resolve(process.env.CODEX_SECURITY_TEST_PLUGIN_ROOT)
+  : fileURLToPath(new URL("../../../../sdk/typescript/_bundled_plugin/", import.meta.url));
 try {
-  await build({
-    bundle: true,
-    entryPoints: [path.join(pluginRoot, "mcp-app", "helpers-main.ts")],
-    outfile: path.join(runtimePluginRoot, "mcp", "helpers.cjs"),
-    format: "cjs",
-    target: "node20",
-    define: { "import.meta.url": "__filename" },
-    platform: "node"
-  });
-  await writeFile(path.join(runtimePluginRoot, "mcp", "helpers.mjs"), 'import "./helpers.cjs";\n');
-  if (process.platform === "win32") {
-    const target = `win32-${process.arch}`;
-    const destination = path.join(runtimePluginRoot, "mcp", "native", target);
-    await mkdir(destination, { recursive: true });
-    await copyFile(
-      path.join(pluginRoot, "native", "prebuilt", target, "windows.node"),
-      path.join(destination, "windows.node")
-    );
-  }
   const repoRoot = path.join(root, "repository");
   await mkdir(path.join(repoRoot, "src"), { recursive: true });
   await mkdir(path.join(repoRoot, "support"), { recursive: true });
@@ -409,8 +391,7 @@ async function createContext(root, repoRoot, name, layout) {
     root: artifactRoot,
     repoRoot,
     layout,
-    pluginRoot: runtimePluginRoot,
-    pythonCommand: path.join(root, "python-must-not-run")
+    pluginRoot: runtimePluginRoot
   };
 }
 
