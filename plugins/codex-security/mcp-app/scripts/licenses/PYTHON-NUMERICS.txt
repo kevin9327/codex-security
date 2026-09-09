@@ -1,4 +1,4 @@
-CPython 3.12 numerical routines and regular expression parser
+CPython 3.12 numerical routines and regular expression frontend
 
 The vector norm and compensated sum in finding-similarity.ts adapt the
 algorithms in CPython mathmodule.c and bltinmodule.c. This TypeScript
@@ -10,6 +10,12 @@ python-regex-parser.ts and python-regex-ir.ts adapt Lib/re/_parser.py and
 Lib/re/_constants.py. They retain Python pattern syntax, flags, captures,
 width rules, and errors, using Unicode 15 data and TypeScript values.
 Copyright (c) 1998-2001 by Secret Labs AB. All rights reserved.
+
+The bytecode compiler in python-regex-compiler.ts adapts Lib/re/_compiler.py
+and Lib/re/_casefix.py. It emits the native SRE instruction format, omits
+search-only prefix tables for full matching, and retains Python 3.12's
+empty-subject non-boundary behavior with an assertion at each such anchor.
+Copyright (c) 1997-2001 by Secret Labs AB. All rights reserved.
 
 This version of the SRE library can be redistributed under CNRI's
 Python 1.6 license.  For any other use, please contact Secret Labs
