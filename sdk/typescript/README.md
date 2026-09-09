@@ -439,6 +439,33 @@ Scans are report-only by default. Set `--fail-on-severity high` to exit with
 `1` if a completed scan finds high or critical issues. Incomplete scans exit
 with `2`, writing available results to stdout and a coverage warning to stderr.
 
+### Import a CSV as a saved scan
+
+```bash
+codex-security scan import --csv /path/to/findings.csv
+codex-security scans show <returned-scan-id>
+```
+
+The command imports a Codex Security findings CSV into local SQLite history and
+returns `scanId`, `scanDir`, and `findingCount`. It uses the same CSV parser as
+Cloud publication; the [findings CSV template](https://github.com/openai/codex-security/blob/main/examples/findings.csv)
+shows the required columns. `candidate_id` is optional. Quoted multiline fields
+are supported. Each row needs unique `finding_id` and `occurrence_id` values;
+rows describing the same issue remain separate findings.
+
+Each import creates a completed, sealed scan under the normal state directory
+(`CODEX_SECURITY_STATE_DIR` when set). The original CSV is retained in the
+adjacent `source/findings.csv` snapshot. This dataset has its own target and is
+not attached to the current repository. Use the returned scan ID to view or
+export it; repository-filtered history will not include it.
+
+Import performs no model calls, authentication, deduplication, or publication.
+Coverage is `unknown` and findings have `csv_import` provenance. Source IDs,
+status, close reason, and notes are retained as metadata; imported findings
+start open in local triage. Importing again creates a new scan and dataset;
+`scans rerun` directs you to import the CSV again. A repository directory named
+`import` can still be scanned using `scan ./import`.
+
 ### Generate mock scan results
 
 Use `--mock` to populate a Standard scan with synthetic test data in seconds,
@@ -888,7 +915,7 @@ npx @openai/codex-security publish scan --to cloud \
 ```
 
 The [findings CSV template](https://github.com/openai/codex-security/blob/main/examples/findings.csv)
-has the required columns; deep-scan exports may add `candidate_id`. `--csv`
+has the required columns; deep-scan exports may add `candidate_id`. For `publish scan`, `--csv`
 only supports Cloud and cannot be combined with scan IDs or directories.
 
 For artifacts outside local history, pass a directory or repeat `--scan-dir PATH`.

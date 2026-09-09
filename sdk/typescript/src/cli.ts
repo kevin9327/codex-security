@@ -63,6 +63,7 @@ import {
   type ScanOptions,
   type ScanPreflight,
 } from "./api.js";
+import { importScanCsv } from "./scan-import.js";
 import { accountStatus } from "./auth.js";
 import { publishScanToCustom } from "./custom-publish.js";
 import { deduplicateScanInternal } from "./deduplication/scan.js";
@@ -2891,6 +2892,48 @@ export async function main(
       }
     },
   });
+  const scanImports = Cli.create("scan", {
+    description: "Import a local scan.",
+  }).command("import", {
+    description:
+      "Import a findings CSV as a completed local scan without running analysis.",
+    destructive: true,
+    mcp: false,
+    options: z.object({
+      csv: optionValue("--csv").describe(
+        "Codex Security findings CSV to import.",
+      ),
+    }),
+    output: z
+      .object({
+        scanId: z.string(),
+        scanDir: z.string(),
+        findingCount: z.number().int(),
+      })
+      .optional(),
+    async run({ options }) {
+      const controller = new AbortController();
+      const onInterrupt = () => controller.abort("SIGINT");
+      const onTerminate = () => controller.abort("SIGTERM");
+      dependencies.addSignalListener("SIGINT", onInterrupt);
+      dependencies.addSignalListener("SIGTERM", onTerminate);
+      try {
+        return await importScanCsv(
+          resolve(dependencies.currentDirectory(), options.csv),
+          dependencies,
+          controller.signal,
+        );
+      } catch (error) {
+        const signal = controller.signal.reason;
+        exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 2;
+        errorOutput.write(`codex-security: ${errorMessage(error)}\n`);
+        return undefined;
+      } finally {
+        dependencies.removeSignalListener("SIGINT", onInterrupt);
+        dependencies.removeSignalListener("SIGTERM", onTerminate);
+      }
+    },
+  });
   const cli = Cli.create("codex-security", {
     description:
       "Draft security policies; run, import, validate, patch, verify fixes, export, and publish Codex Security findings.",
@@ -3096,6 +3139,7 @@ export async function main(
     })
     .command("scan", {
       description: "Run a Codex Security scan.",
+      hint: "Import saved findings: codex-security scan import --csv FILE",
       destructive: true,
       mcp: false,
       args: z.object({
@@ -4873,6 +4917,12 @@ export async function main(
       },
     });
 
+  // Incur mounts a root handler or a command group, so select the group for import.
+  const commandIndex = cliCommandIndex(argv);
+  if (argv[commandIndex] === "scan" && argv[commandIndex + 1] === "import") {
+    cli.command(scanImports);
+  }
+
   let notice: UpdateNotice | undefined;
   try {
     await cli.serve(
@@ -4958,6 +5008,11 @@ function scanArgumentsFromRecipe(
   if (recipe === undefined || !isJsonObject(recipe)) {
     throw new CodexSecurityError(
       "This scan does not have a saved launch recipe.",
+    );
+  }
+  if (recipe["importCsv"] === true) {
+    throw new CodexSecurityError(
+      "This scan was imported from CSV. Use scan import --csv FILE to import it again.",
     );
   }
   if (
