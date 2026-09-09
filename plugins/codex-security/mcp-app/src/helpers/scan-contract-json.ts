@@ -15,7 +15,7 @@ import { readScanLocalBytes, writeScanLocalBytes } from "./scan-local-files";
 import { decodePythonUtf8, UnicodeDecodeError } from "./utf8";
 
 type JsonObject = Record<string, unknown>;
-class JsonValueError extends Error {}
+export class JsonValueError extends Error {}
 
 export function loadsJson(value: string | Buffer): unknown {
   const integer = (source: string): bigint => {

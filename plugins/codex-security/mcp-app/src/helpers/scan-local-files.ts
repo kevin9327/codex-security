@@ -94,6 +94,8 @@ function absolute(path: string): string {
   return parsedPath(windowsJoin(cwd, path));
 }
 
+export { absolute as absoluteScanPath, normcase as scanPathNormcase };
+
 export function requireSafeRelativePath(
   value: string,
   context: string,
