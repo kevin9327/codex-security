@@ -1141,6 +1141,10 @@ export class CodexSecurity {
         options.maxCostUsd,
         deepScanOptions(options),
       );
+      if (options.safetyIdentifier !== undefined)
+        recipe["safetyIdentifier"] = options.safetyIdentifier;
+      if (options.postScanPrompt !== undefined)
+        recipe["postScanPrompt"] = options.postScanPrompt;
       if (options.validationPrompt !== undefined)
         recipe["validationMode"] = "custom";
       const workbenchOptions: WorkbenchCommandOptions = {

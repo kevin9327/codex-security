@@ -1005,6 +1005,7 @@ interface ScanArguments extends DeepScanOptions {
   scanPromptFile?: string;
   validationPromptFile?: string;
   postScanPromptFile?: string;
+  postScanPrompt?: string;
   diff?: string;
   workingTree: boolean;
   head?: string;
@@ -4016,7 +4017,9 @@ export async function main(
                         maxTimeHours: recipe.maxTimeHours,
                         maxCostUsd: recipe.maxCostUsd,
                         failureSeverity: recipe.failOnSeverity,
-                        postScanPrompt: prompts.postScanPrompt,
+                        safetyIdentifier: recipe.safetyIdentifier,
+                        postScanPrompt:
+                          recipe.postScanPrompt ?? prompts.postScanPrompt,
                         signal: controller.signal,
                       });
                     } finally {
@@ -5027,11 +5030,23 @@ function scanArgumentsFromRecipe(
       "The saved scan recipe contains deep scan settings for a standard scan.",
     );
   }
+  const safetyIdentifier = recipe["safetyIdentifier"];
+  const postScanPrompt = recipe["postScanPrompt"];
+  if (
+    (safetyIdentifier !== undefined && typeof safetyIdentifier !== "string") ||
+    (postScanPrompt !== undefined && typeof postScanPrompt !== "string")
+  ) {
+    throw new CodexSecurityError(
+      "The saved scan recipe contains invalid launch settings.",
+    );
+  }
   return {
     repository,
     paths,
     knowledgeBasePaths,
     validationPromptFile,
+    safetyIdentifier,
+    postScanPrompt,
     diff: kind === "refs" ? reference : undefined,
     workingTree: kind === "working_tree",
     head: kind === "refs" ? head ?? "HEAD" : undefined,
@@ -7049,6 +7064,7 @@ async function executeScan(
       target,
       knowledgeBasePaths: arguments_.knowledgeBasePaths,
       ...prompts,
+      postScanPrompt: arguments_.postScanPrompt ?? prompts.postScanPrompt,
       mode: arguments_.mode,
       workers: arguments_.workers,
       subagents: arguments_.subagents,
