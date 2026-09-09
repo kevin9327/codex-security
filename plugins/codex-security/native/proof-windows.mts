@@ -176,6 +176,104 @@ function copyMetadataProof(root: string) {
   }
 }
 
+function publicationPathProof(root: string) {
+  const files = windowsFileSystem(native);
+  const source = join(root, "publication-source-\ud800"),
+    link = join(root, "publication-link-\udfff"),
+    destination = join(root, "publication-destination-\ud800"),
+    replacement = join(root, "publication-source-\ufffd"),
+    directory = join(root, "publication-directory"),
+    directoryLink = join(root, "publication-directory-link"),
+    junction = join(root, "publication-junction"),
+    missing = join(root, "publication-missing");
+  const payload = Buffer.from([0, 255, 10, 13, 128]);
+  try {
+    files.writeFile(pathBytes(source), payload);
+    writeFileSync(replacement, "replacement untouched");
+    success(native.createWindowsHardLink(pathBytes(source), pathBytes(link)));
+    assert(files.sameFile(pathBytes(source), pathBytes(link)));
+    assert.deepEqual(files.readFile(pathBytes(link)), payload);
+    assert.equal(
+      native.createWindowsHardLink(pathBytes(source), pathBytes(link)),
+      183,
+    );
+    assert.equal(
+      native.createWindowsHardLink(pathBytes(missing), pathBytes(destination)),
+      2,
+    );
+    files.writeFile(pathBytes(destination), Buffer.from("old output"));
+    success(native.replaceWindowsPath(pathBytes(link), pathBytes(destination)));
+    assert(files.sameFile(pathBytes(source), pathBytes(destination)));
+    assert.equal(native.unlinkWindowsPath(pathBytes(link)), 2);
+    assert.equal(
+      native.replaceWindowsPath(pathBytes(missing), pathBytes(destination)),
+      2,
+    );
+    assert.deepEqual(files.readFile(pathBytes(destination)), payload);
+    files.writeFile(pathBytes(link), Buffer.from("replacement candidate"));
+    const held = open(
+      destination,
+      flags.GENERIC_READ,
+      flags.FILE_SHARE_READ | flags.FILE_SHARE_WRITE,
+    );
+    try {
+      assert.equal(
+        native.replaceWindowsPath(pathBytes(link), pathBytes(destination)),
+        32,
+      );
+    } finally {
+      success(held.close());
+    }
+    success(native.setWindowsWritable(pathBytes(destination), false));
+    assert.equal(native.unlinkWindowsPath(pathBytes(destination)), 5);
+    success(native.setWindowsWritable(pathBytes(destination), true));
+    success(native.unlinkWindowsPath(pathBytes(destination)));
+    assert.deepEqual(files.readFile(pathBytes(source)), payload);
+    mkdirSync(directory);
+    writeFileSync(join(directory, "sentinel"), "target retained");
+    assert.equal(native.unlinkWindowsPath(pathBytes(directory)), 5);
+    success(
+      native.createWindowsSymlink(
+        Buffer.from(basename(directory), "utf16le"),
+        pathBytes(directoryLink),
+        flags.SYMBOLIC_LINK_FLAG_DIRECTORY |
+          flags.SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE,
+      ),
+    );
+    success(native.unlinkWindowsPath(pathBytes(directoryLink)));
+    symlinkSync(directory, junction, "junction");
+    success(native.unlinkWindowsPath(pathBytes(junction)));
+    assert.equal(
+      readFileSync(join(directory, "sentinel"), "utf8"),
+      "target retained",
+    );
+    assert.equal(readFileSync(replacement, "utf8"), "replacement untouched");
+    for (const invalid of [
+      Buffer.from([0]),
+      Buffer.from("bad\0path", "utf16le"),
+    ]) {
+      assert.throws(() =>
+        native.createWindowsHardLink(invalid, pathBytes(destination)),
+      );
+      assert.throws(() =>
+        native.replaceWindowsPath(pathBytes(source), invalid),
+      );
+      assert.throws(() => native.unlinkWindowsPath(invalid));
+    }
+    return {
+      rawNamesAndHardLinks: true,
+      replacementAndSharing: true,
+      unlinkFilesAndDirectoryLinks: true,
+      numericErrors: true,
+    };
+  } finally {
+    for (const path of [source, link, destination, directoryLink, junction]) {
+      native.setWindowsWritable(pathBytes(path), true);
+      remove(path);
+    }
+  }
+}
+
 function privateDirectoryProof(root: string) {
   const files = windowsFileSystem(native);
   const paths = [join(root, "private-directory"), join(root, "private-\ud800")];
@@ -1206,6 +1304,7 @@ if (process.argv[2] === "worker") {
           rawProcess: rawProcessProof(root),
           copyMetadata: copyMetadataProof(root),
           privateDirectories: privateDirectoryProof(root),
+          publicationPaths: publicationPathProof(root),
           copyPrimitives: copyPrimitivesProof(root),
           completionFiles: await completionFileProof(root),
           exclusiveFiles: await exclusiveFileProof(root),

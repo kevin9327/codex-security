@@ -63,6 +63,9 @@ export interface WindowsBinding {
     disposition: number,
     flags: number,
   ): { error: number; handle?: WindowsHandle | null };
+  createWindowsHardLink(source: Buffer, destination: Buffer): number;
+  replaceWindowsPath(source: Buffer, destination: Buffer): number;
+  unlinkWindowsPath(path: Buffer): number;
   createWindowsDirectory(path: Buffer): number;
   createWindowsDirectories(path: Buffer): number;
   createWindowsPrivateDirectory(path: Buffer): {

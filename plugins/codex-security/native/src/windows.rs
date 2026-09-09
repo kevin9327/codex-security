@@ -458,6 +458,66 @@ pub fn open_windows_file(
 }
 
 #[napi]
+pub fn create_windows_hard_link(source: Buffer, destination: Buffer) -> napi::Result<u32> {
+    let source = wide_path(source)?;
+    let destination = wide_path(destination)?;
+    Ok(status(unsafe {
+        CreateHardLinkW(destination.as_ptr(), source.as_ptr(), null())
+    }))
+}
+
+#[napi]
+pub fn replace_windows_path(source: Buffer, destination: Buffer) -> napi::Result<u32> {
+    let source = wide_path(source)?;
+    let destination = wide_path(destination)?;
+    Ok(status(unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING,
+        )
+    }))
+}
+
+#[napi]
+pub fn unlink_windows_path(path: Buffer) -> napi::Result<u32> {
+    let path = wide_path(path)?;
+    let mut attributes = WIN32_FILE_ATTRIBUTE_DATA::default();
+    // Match Py_DeleteFileW: remove directory symlinks and junctions, while an
+    // ordinary directory still reaches DeleteFileW and returns its error.
+    let mut directory_link = false;
+    if unsafe {
+        GetFileAttributesExW(
+            path.as_ptr(),
+            GetFileExInfoStandard,
+            (&mut attributes as *mut WIN32_FILE_ATTRIBUTE_DATA).cast(),
+        )
+    } != 0
+        && attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
+        && attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        let mut data = WIN32_FIND_DATAW::default();
+        let handle = unsafe { FindFirstFileW(path.as_ptr(), &mut data) };
+        if handle != INVALID_HANDLE_VALUE {
+            const IO_REPARSE_TAG_SYMLINK: u32 = 0xa000000c;
+            const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xa0000003;
+            directory_link = matches!(
+                data.dwReserved0,
+                IO_REPARSE_TAG_SYMLINK | IO_REPARSE_TAG_MOUNT_POINT
+            );
+            unsafe { FindClose(handle) };
+        }
+    }
+    Ok(status(unsafe {
+        if directory_link {
+            RemoveDirectoryW(path.as_ptr())
+        } else {
+            DeleteFileW(path.as_ptr())
+        }
+    }))
+}
+
+#[napi]
 pub fn create_windows_directory(path: Buffer) -> napi::Result<u32> {
     let path = wide_path(path)?;
     Ok(status(unsafe { CreateDirectoryW(path.as_ptr(), null()) }))

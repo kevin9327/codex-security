@@ -277,6 +277,9 @@ export class WindowsScanModel {
     windowsReadLink: unavailable,
     openWindowsFile: (path, access, share, disposition, flags) =>
       this.open(plain(path), access, share, disposition, flags),
+    createWindowsHardLink: unavailable,
+    replaceWindowsPath: unavailable,
+    unlinkWindowsPath: unavailable,
     createWindowsDirectory: (path) => {
       const name = plain(path);
       if (this.entries.has(key(name))) return 183;
