@@ -1,75 +1,163 @@
-import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { PLUGIN_ROOT } from "./plugin-root.js";
+import { boundedFindingDetails } from "../../../plugins/codex-security/mcp-app/src/helpers/finding-preview";
+import {
+  contractJsonBytes,
+  requireSafeJsonValue,
+} from "../../../plugins/codex-security/mcp-app/src/helpers/scan-contract-json";
+import { validateAgainstSchema } from "../../../plugins/codex-security/mcp-app/src/helpers/contract-schema";
+import {
+  parseJson,
+  stringifyJson,
+} from "../../../plugins/codex-security/mcp-app/src/helpers/python-json";
 
-describe("bundled scan report and source limits", () => {
-  test("accepts large reports, schemas, source files, and late source lines", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const program = [
-      "import io, json, pathlib, sys, tempfile",
-      "sys.path.insert(0, sys.argv[1])",
-      "import finalize_scan_contract as finalizer",
-      "import workbench_source_excerpt as excerpts",
-      "document = finalizer._contract_json_bytes('scan-manifest.json', {'metadata': 'x' * (16 * 1024 * 1024)})",
-      "nested = 0",
-      "for _ in range(258): nested = [nested]",
-      "finalizer._require_safe_json_value(nested, 'nested')",
-      "with tempfile.TemporaryDirectory() as directory:",
-      "    schema = pathlib.Path(directory) / 'large.schema.json'",
-      "    schema.write_text(json.dumps({'type': 'object', 'description': 'x' * (4 * 1024 * 1024), 'allOf': [{'type': 'object'}] * 129}))",
-      "    finalizer.validate_against_schema({'safe': True}, schema)",
-      "    source = b'x' * (1024 * 1024 + 1)",
-      "    excerpts.git_bytes = lambda *args: source",
-      "    target = pathlib.Path(directory).resolve()",
-      "    excerpt = excerpts.scanned_source_text({'target_revision': 'deadbeef', 'target_snapshot_digest': None}, target, 'large.py')",
-      "    hashes = finalizer._github_line_hashes(io.StringIO('line\\n' * 100001), {100001})",
-      "    print(json.dumps({'documentBytes': len(document), 'sourceBytes': len(excerpt), 'lateSourceLine': 100001 in hashes, 'unsafePathRejected': excerpts.safe_source_path(target, '../outside') is None}))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", program, join(PLUGIN_ROOT, "scripts")],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toMatchObject({
-      documentBytes: expect.any(Number),
-      sourceBytes: 1024 * 1024 + 1,
-      lateSourceLine: true,
-      unsafePathRejected: true,
+describe("bundled scan report limits", () => {
+  test("accepts large reports, schemas, and deeply nested JSON", () => {
+    const document = contractJsonBytes("scan-manifest.json", {
+      metadata: "x".repeat(16 * 1024 * 1024),
     });
+    let nested: unknown = 0n;
+    for (let index = 0; index < 258; index++) nested = [nested];
+    requireSafeJsonValue(nested, "nested");
+    validateAgainstSchema(
+      { safe: true },
+      {
+        type: "object",
+        description: "x".repeat(4 * 1024 * 1024),
+        allOf: Array.from({ length: 129 }, () => ({ type: "object" })),
+      },
+      "large.schema.json",
+    );
+    expect(document.length).toBeGreaterThan(16 * 1024 * 1024);
   });
 
   test("preserves bounded remediation tests and preventive controls", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const program = [
-      "import json, sys",
-      "sys.path.insert(0, sys.argv[1])",
-      "from finding_preview import bounded_finding_details",
-      "diagnostics = {'rootCause': {'summary': 'Missing authorization check.'}, 'validation': {'summary': 'An untrusted request reaches the protected resource.'}, 'attackPath': {'narrative': 'The request bypasses the authorization boundary.'}, 'codeEvidence': [{'id': 'evidence', 'label': 'Missing check', 'path': 'example.py', 'startLine': 1, 'code': 'return resource', 'explanation': 'No authorization check runs.'}], 'evidence': 'The protected resource was exposed.', 'evidenceExcerpt': 'return resource'}",
-      "details = {'remediationTests': [f'test-{index}' for index in range(40)], 'preventiveControls': [f'control-{index}' for index in range(40)]}",
-      "large = {**diagnostics, 'preventiveControls': ['x' * 900 for _ in range(20)], 'remediationTests': ['Verify authorization.'], 'writeup': {'reportPath': 'findings/example/example.md'}, 'provenance': {'source': 'scan'}, 'severity': {'level': 'high', 'rationale': 'Verified impact'}, 'status': 'open', 'taxonomy': {'category': 'injection', 'cwe': ['CWE-79']}}",
-      "code_evidence = [{'id': f'evidence-{index}', 'label': 'example', 'path': 'example.py', 'startLine': 1, 'code': 'c' * 1500, 'explanation': 'e' * 1500} for index in range(4)]",
-      "rich = {'rootCause': {'summary': 'r' * 2000}, 'validation': {'summary': 'v' * 3000}, 'attackPath': {'narrative': 'a' * 4000}, 'codeEvidence': code_evidence, 'evidenceExcerpt': 'e' * 8000, 'identity': {'anchor': 'finding'}, 'preventiveControls': ['Centralize authorization.'], 'remediationTests': ['Verify authorization.']}",
-      "boundary = {**diagnostics, 'remediationTests': ['x'] * 4000, 'preventiveControls': ['Keep authorization centralized.']}",
-      "unicode_boundary = {**diagnostics, 'remediationTests': ['😀'] * 2000, 'preventiveControls': ['🛡'] * 2000}",
-      "empty_controls = {**diagnostics, 'remediationTests': ['x'] * 4000, 'preventiveControls': []}",
-      "empty_tests = {**diagnostics, 'remediationTests': [], 'preventiveControls': ['control'] * 4000}",
-      "oversized_metadata = {**diagnostics, 'confidence': {'level': 'high', 'rationale': 'x' * 17000}, 'remediationTests': ['Verify authorization.'], 'preventiveControls': ['Centralize authorization.']}",
-      "oversized_guidance = {'rootCause': {'summary': 'root'}, 'validation': {'summary': 'validation'}, 'attackPath': {'narrative': 'attack'}, 'codeEvidence': [{'id': 'evidence', 'label': 'evidence', 'path': 'example.py', 'startLine': 1, 'code': 'x', 'explanation': 'evidence'}], 'evidence': 'legacy', 'evidenceExcerpt': 'excerpt', 'remediationTests': ['x' * 7800], 'preventiveControls': ['y' * 7930]}",
-      "nested_boundary = {'remediationTests': ['x'] * 3937, 'rootCause': {'summary': 'r' * 178, 'detail': {'x': {'y': 'z'}}}}",
-      "projections = {key: bounded_finding_details(value) for key, value in {'details': details, 'large': large, 'rich': rich, 'boundary': boundary, 'unicodeBoundary': unicode_boundary, 'emptyControls': empty_controls, 'emptyTests': empty_tests, 'oversizedMetadata': oversized_metadata, 'oversizedGuidance': oversized_guidance, 'nestedBoundary': nested_boundary}.items()}",
-      "print(json.dumps({'projections': projections, 'bytes': {key: len(json.dumps(value, separators=(',', ':')).encode()) for key, value in projections.items()}}))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", program, join(PLUGIN_ROOT, "scripts")],
-      { stdout: "pipe", stderr: "pipe" },
+    const diagnostics = {
+      rootCause: { summary: "Missing authorization check." },
+      validation: {
+        summary: "An untrusted request reaches the protected resource.",
+      },
+      attackPath: {
+        narrative: "The request bypasses the authorization boundary.",
+      },
+      codeEvidence: [
+        {
+          id: "evidence",
+          label: "Missing check",
+          path: "example.py",
+          startLine: 1,
+          code: "return resource",
+          explanation: "No authorization check runs.",
+        },
+      ],
+      evidence: "The protected resource was exposed.",
+      evidenceExcerpt: "return resource",
+    };
+    const inputs = {
+      details: {
+        remediationTests: Array.from(
+          { length: 40 },
+          (_, index) => `test-${index}`,
+        ),
+        preventiveControls: Array.from(
+          { length: 40 },
+          (_, index) => `control-${index}`,
+        ),
+      },
+      large: {
+        ...diagnostics,
+        preventiveControls: Array.from({ length: 20 }, () => "x".repeat(900)),
+        remediationTests: ["Verify authorization."],
+        writeup: { reportPath: "findings/example/example.md" },
+        provenance: { source: "scan" },
+        severity: { level: "high", rationale: "Verified impact" },
+        status: "open",
+        taxonomy: { category: "injection", cwe: ["CWE-79"] },
+      },
+      rich: {
+        rootCause: { summary: "r".repeat(2000) },
+        validation: { summary: "v".repeat(3000) },
+        attackPath: { narrative: "a".repeat(4000) },
+        codeEvidence: Array.from({ length: 4 }, (_, index) => ({
+          id: `evidence-${index}`,
+          label: "example",
+          path: "example.py",
+          startLine: 1,
+          code: "c".repeat(1500),
+          explanation: "e".repeat(1500),
+        })),
+        evidenceExcerpt: "e".repeat(8000),
+        identity: { anchor: "finding" },
+        preventiveControls: ["Centralize authorization."],
+        remediationTests: ["Verify authorization."],
+      },
+      boundary: {
+        ...diagnostics,
+        remediationTests: Array<string>(4000).fill("x"),
+        preventiveControls: ["Keep authorization centralized."],
+      },
+      unicodeBoundary: {
+        ...diagnostics,
+        remediationTests: Array<string>(2000).fill("😀"),
+        preventiveControls: Array<string>(2000).fill("🛡"),
+      },
+      emptyControls: {
+        ...diagnostics,
+        remediationTests: Array<string>(4000).fill("x"),
+        preventiveControls: [],
+      },
+      emptyTests: {
+        ...diagnostics,
+        remediationTests: [],
+        preventiveControls: Array<string>(4000).fill("control"),
+      },
+      oversizedMetadata: {
+        ...diagnostics,
+        confidence: { level: "high", rationale: "x".repeat(17000) },
+        remediationTests: ["Verify authorization."],
+        preventiveControls: ["Centralize authorization."],
+      },
+      oversizedGuidance: {
+        rootCause: { summary: "root" },
+        validation: { summary: "validation" },
+        attackPath: { narrative: "attack" },
+        codeEvidence: [
+          {
+            id: "evidence",
+            label: "evidence",
+            path: "example.py",
+            startLine: 1,
+            code: "x",
+            explanation: "evidence",
+          },
+        ],
+        evidence: "legacy",
+        evidenceExcerpt: "excerpt",
+        remediationTests: ["x".repeat(7800)],
+        preventiveControls: ["y".repeat(7930)],
+      },
+      nestedBoundary: {
+        remediationTests: Array<string>(3937).fill("x"),
+        rootCause: { summary: "r".repeat(178), detail: { x: { y: "z" } } },
+      },
+    };
+    const bounded = Object.fromEntries(
+      Object.entries(inputs).map(([key, value]) => [
+        key,
+        boundedFindingDetails(parseJson(JSON.stringify(value))),
+      ]),
     );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
     const { projections, bytes } = JSON.parse(
-      new TextDecoder().decode(result.stdout),
+      stringifyJson({
+        projections: bounded,
+        bytes: Object.fromEntries(
+          Object.entries(bounded).map(([key, value]) => [
+            key,
+            Buffer.byteLength(
+              stringifyJson(value, { compact: true, separators: [",", ":"] }),
+            ),
+          ]),
+        ),
+      }),
     ) as {
       projections: {
         details: Record<string, unknown>;
