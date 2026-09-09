@@ -20,8 +20,24 @@ export function objectEntries(value: Row): [string, unknown][] {
   return [...keys].map((key) => [key, value[key]]);
 }
 
-// json.dumps(..., ensure_ascii=True, indent=2), including parsed number types.
-export function stringifyJson(value: unknown): string {
+export function objectFromEntries(
+  entries: Iterable<readonly [string, unknown]>,
+): Row {
+  const row = Object.create(null) as Row;
+  const keys = new Set<string>();
+  for (const [key, value] of entries) {
+    row[key] = value;
+    keys.add(key);
+  }
+  keyOrder.set(row, [...keys]);
+  return row;
+}
+
+// json.dumps(..., ensure_ascii=True, indent=2), with compact persistence support.
+export function stringifyJson(
+  value: unknown,
+  options: { compact?: boolean; allowNan?: boolean } = {},
+): string {
   const quote = (text: string) =>
     JSON.stringify(text).replace(
       /[\u007f-\uffff]/g,
@@ -32,11 +48,23 @@ export function stringifyJson(value: unknown): string {
     if (typeof item === "string") return quote(item);
     if (item instanceof JsonFloat) {
       const number = Number(item.source);
+      if (options.allowNan === false && !Number.isFinite(number))
+        throw new Error(
+          `Out of range float values are not JSON compliant: ${pythonRepr(item)}`,
+        );
       if (Number.isNaN(number)) return "NaN";
       if (!Number.isFinite(number))
         return number < 0 ? "-Infinity" : "Infinity";
       return pythonRepr(item);
     }
+    if (
+      options.allowNan === false &&
+      typeof item === "number" &&
+      !Number.isFinite(item)
+    )
+      throw new Error(
+        `Out of range float values are not JSON compliant: ${pythonRepr(new JsonFloat(String(item)))}`,
+      );
     if (typeof item === "bigint") return String(item);
     if (Array.isArray(item) || object(item)) {
       const array = Array.isArray(item);
@@ -47,6 +75,7 @@ export function stringifyJson(value: unknown): string {
           );
       const [open, close] = array ? ["[", "]"] : ["{", "}"];
       if (entries.length === 0) return open + close;
+      if (options.compact) return open + entries.join(", ") + close;
       const prefix = "  ".repeat(depth + 1);
       return `${open}\n${prefix}${entries.join(`,\n${prefix}`)}\n${"  ".repeat(depth)}${close}`;
     }
@@ -153,7 +182,7 @@ export function parseJson(source: string, rejectDuplicates = false): unknown {
     const contents = unterminated ? source.slice(start) : token;
     const end = contents.length - (unterminated ? 0 : 1);
     for (let offset = 1; offset < end; offset++) {
-      const character = contents[offset];
+      const character = contents[offset]!;
       if (character.charCodeAt(0) < 0x20)
         error("Invalid control character at", start + offset);
       if (character !== "\\") continue;
