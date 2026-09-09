@@ -516,7 +516,8 @@ def merge_saved_results(
             source_digests.update(parent_preserved_sources)
     paths: dict[str, str | None] = {}
     reducer_paths: set[str] = set()
-    current_results: set[str] = set(current_checkpoint_paths or [])
+    accepted_checkpoints = set(current_checkpoint_paths or [])
+    current_results: set[str] = accepted_checkpoints.copy()
     reducer_outputs: list[tuple[Any, str, list[str], int]] = []
     reducer = _latest_successful_reducer(workers)
     latest_reducer: str | None = None
@@ -745,22 +746,30 @@ def merge_saved_results(
         + ([(None, parent)] if parent else [])
         + list(current_sources.values())
     )
-    resolved: dict[tuple[str | None, str], str] = {}
+    latest_decisions: dict[tuple[str | None, str], str] = {}
     for owner, draft in current_drafts:
-        deferred = draft["coverage"].get("deferred", [])
-        deferred_candidates = {
-            (_candidate_owner(item, owner), item["candidateId"])
-            for item in (deferred if isinstance(deferred, list) else [])
-            if isinstance(item, dict) and isinstance(item.get("candidateId"), str)
-        }
+        # A pending candidate may retain a finding as evidence. Reserve its latest
+        # decision before findings or older snapshots can claim it was resolved.
+        for field in ("deferred", "surfaces", "explicitExclusions"):
+            items = draft["coverage"].get(field, [])
+            for item in items if isinstance(items, list) else []:
+                if (
+                    isinstance(item, dict)
+                    and isinstance(item.get("candidateId"), str)
+                    and (field == "deferred" or item.get("disposition") == "needs_follow_up")
+                ):
+                    latest_decisions.setdefault(
+                        (_candidate_owner(item, owner), item["candidateId"]), "pending"
+                    )
         for finding in draft["findings"]:
             if (
                 isinstance(finding, dict)
                 and valid_finding(finding)
                 and (candidate_id := finding_candidate_id(finding))
-                and (_candidate_owner(finding, owner), candidate_id) not in deferred_candidates
             ):
-                resolved.setdefault((_candidate_owner(finding, owner), candidate_id), "reported")
+                latest_decisions.setdefault(
+                    (_candidate_owner(finding, owner), candidate_id), "reported"
+                )
         for field in ("surfaces", "explicitExclusions"):
             items = draft["coverage"].get(field, [])
             for item in items if isinstance(items, list) else []:
@@ -769,7 +778,7 @@ def merge_saved_results(
                     and isinstance(item.get("candidateId"), str)
                     and item.get("disposition") in {"reported", "rejected", "not_applicable"}
                 ):
-                    resolved.setdefault(
+                    latest_decisions.setdefault(
                         (_candidate_owner(item, owner), item["candidateId"]), item["disposition"]
                     )
     # Only the current parent may claim that another worker finding was absorbed.
@@ -812,7 +821,9 @@ def merge_saved_results(
                             represented_candidate_history.setdefault(candidate_key, set()).add(
                                 _digest(_finding_content(original["finding"]))
                             )
-                            resolved.setdefault((candidate_key[0], candidate_id), "reported")
+                            latest_decisions.setdefault(
+                                (candidate_key[0], candidate_id), "reported"
+                            )
     for relative, draft, worker_id in all_sources:
         superseded = (
             worker_id is None
@@ -829,7 +840,7 @@ def merge_saved_results(
                 for saved_path, current, saved_worker in sources
             )
         )
-        if relative in preserve_sources:
+        if relative in preserve_sources or relative in accepted_checkpoints:
             superseded = False
         if (
             (relative != "parent" or not parent_manifest)
@@ -861,7 +872,8 @@ def merge_saved_results(
                     stopped_parent_seal
                     and isinstance(owner, str)
                     and candidate_id
-                    and resolved.get((owner, candidate_id)) in {"rejected", "not_applicable"}
+                    and latest_decisions.get((owner, candidate_id))
+                    in {"rejected", "not_applicable"}
                 ):
                     rejected_history.setdefault((owner, candidate_id), []).append(finding)
                     continue
@@ -878,7 +890,7 @@ def merge_saved_results(
             finding = copy.deepcopy(value)
             candidate_id = finding_candidate_id(finding)
             owner = _candidate_owner(finding, worker_id)
-            if relative != "parent" and resolved.get((owner, candidate_id)) in {
+            if relative != "parent" and latest_decisions.get((owner, candidate_id)) in {
                 "rejected",
                 "not_applicable",
             }:
@@ -1032,12 +1044,6 @@ def merge_saved_results(
                             for previous in history
                         ):
                             history.append(copy.deepcopy(finding))
-                if (
-                    isinstance(item, dict)
-                    and (owner, item.get("candidateId")) in resolved
-                    and (field == "deferred" or item.get("disposition") == "needs_follow_up")
-                ):
-                    continue
                 if isinstance(item, dict) and "id" not in item:
                     semantic_item = dict(item)
                     if field == "surfaces":
@@ -1067,10 +1073,42 @@ def merge_saved_results(
         identities[key] = variant
     for field in ("surfaces", "explicitExclusions", "deferred"):
         used: set[str] = set()
+        semantic_rows: set[bytes] = set()
         items = coverage.setdefault(field, [])
-        for item in items if isinstance(items, list) else []:
+        if not isinstance(items, list):
+            continue
+        retained_items = []
+        for item in items:
             if not isinstance(item, dict):
+                retained_items.append(item)
                 continue
+            decision = latest_decisions.get((_candidate_owner(item, None), item.get("candidateId")))
+            disposition = (
+                "pending"
+                if field == "deferred" or item.get("disposition") == "needs_follow_up"
+                else item.get("disposition")
+            )
+            if (
+                decision is not None
+                and disposition in {"pending", "reported", "rejected", "not_applicable"}
+                and disposition != decision
+            ):
+                continue
+            if (
+                accepted_checkpoints
+                and isinstance(item.get("candidateId"), str)
+                and _candidate_owner(item, None) is not None
+            ):
+                # Repeated continuation can supply the same worker decision through
+                # both its aggregate and its checkpoint, with regenerated row IDs.
+                semantic_item = {key: value for key, value in item.items() if key != "id"}
+                if field == "surfaces":
+                    semantic_item.setdefault("receiptRefs", [])
+                encoded_item = _encoded(semantic_item)
+                if encoded_item in semantic_rows:
+                    continue
+                semantic_rows.add(encoded_item)
+            retained_items.append(item)
             if id(item) in canonical_rows:
                 if isinstance(item.get("id"), str):
                     used.add(item["id"])
@@ -1081,6 +1119,7 @@ def merge_saved_results(
             used.add(item["id"])
             if field == "surfaces":
                 item.setdefault("receiptRefs", [])
+        coverage[field] = retained_items
     if (
         stopped
         or any(warning not in initial_warnings for warning in warnings)

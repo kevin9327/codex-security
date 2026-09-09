@@ -160,8 +160,8 @@ raise AssertionError("The injected interruption did not fire")
     )
     assert json.loads((child / "coverage.json").read_text())["deferred"] == []
 
-    # An existing root receipt is a no-op, but a repeated seed must still commit
-    # its supplied cost binding instead of relying on a new receipt to commit it.
+    # Repeating the same semantic seed must still commit its cost binding and
+    # identify the exact acceptance that owns the inherited baseline.
     revised_cost = {**cost, "estimatedUsd": 13.0}
     run_workbench(state, *arguments, "--cost-json", json.dumps(revised_cost))
     recovered = run_workbench(state, "get-cli-scan-resume", "--scan-id", child_id)
@@ -173,3 +173,79 @@ raise AssertionError("The injected interruption did not fire")
         assert connection.execute(
             "SELECT COUNT(*) FROM deep_scan_workers WHERE scan_id = ?", (child_id,)
         ).fetchone() == (5,)
+        acceptance_id = connection.execute(
+            "SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ?", (child_id,)
+        ).fetchone()[0]
+        assert (
+            acceptance_id
+            == json.loads((child / "checkpoint-head.json").read_text())["acceptanceId"]
+        )
+        assert connection.execute(
+            "SELECT checkpoint_path FROM scan_checkpoints WHERE scan_id = ? AND acceptance_id = ?",
+            (child_id, acceptance_id),
+        ).fetchone() == (baseline,)
+
+
+def test_fresh_baseline_content_is_a_current_decision_in_the_next_continuation(tmp_path: Path):
+    state, repository, _, _, child, child_id, worker_id, finding = continued_candidate(tmp_path)
+    baseline_head = json.loads((child / "checkpoint-head.json").read_text())
+    baseline = child / "checkpoints" / baseline_head["checkpoint"]
+    baseline_bytes = baseline.read_bytes()
+    # The worker resolves the inherited pending candidate, then the parent accepts
+    # the exact inherited bytes again as a new pending decision.
+    worker = child / "artifacts/deep_discovery/workers/discovery-0004/output"
+    save(
+        state,
+        child_id,
+        write_checkpoint(
+            worker / "checkpoints", decision(child_id, worker_id, finding, "rejected")
+        ),
+    )
+    receipt = save(state, child_id, baseline)
+    assert baseline.read_bytes() == baseline_bytes
+    assert receipt["acceptanceId"] != baseline_head["acceptanceId"]
+    recovered = run_workbench(state, "get-cli-scan-resume", "--scan-id", child_id)["checkpoint"]
+    matching = [
+        source
+        for source in recovered["sources"]
+        if source["checkpointPath"] == baseline.relative_to(child).as_posix()
+    ]
+    assert {source["acceptanceId"] for source in matching} == {
+        baseline_head["acceptanceId"],
+        receipt["acceptanceId"],
+    }
+    recipe = run_workbench(state, "get-scan-recipe", "--scan-id", child_id)["recipe"]
+    grandchild = tmp_path / "grandchild"
+    grandchild.mkdir(mode=0o700)
+    grandchild_id = run_workbench(
+        state,
+        "register-cli-scan",
+        "--repository",
+        str(repository),
+        "--scan-dir",
+        str(grandchild),
+        "--recipe-json",
+        json.dumps(recipe),
+        "--parent-scan-id",
+        child_id,
+    )["scanId"]
+    run_workbench(
+        state,
+        "continue-scan-checkpoint",
+        "--scan-id",
+        grandchild_id,
+        "--parent-scan-id",
+        child_id,
+    )
+    findings = json.loads((grandchild / "findings.json").read_text())["findings"]
+    coverage = json.loads((grandchild / "coverage.json").read_text())
+    assert len(findings) == 1
+    assert findings[0]["codeEvidence"] == finding["codeEvidence"]
+    assert len(coverage["deferred"]) == 1
+    assert coverage["deferred"][0]["candidateId"] == "candidate-1"
+    assert not [item for item in coverage["surfaces"] if item.get("disposition") == "rejected"]
+    worker = grandchild / "artifacts/deep_discovery/workers/discovery-0004/output"
+    head = json.loads((worker / "checkpoint-head.json").read_text())
+    pending = json.loads((worker / "checkpoints" / head["checkpoint"]).read_text())
+    assert len(pending["coverage"]["deferred"]) == 1
+    assert pending["coverage"]["deferred"][0]["candidateId"] == "candidate-1"

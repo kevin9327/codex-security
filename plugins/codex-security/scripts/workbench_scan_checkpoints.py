@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import stat
+import uuid
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -18,11 +19,8 @@ from finalize_scan_contract import (
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
-from workbench_target import (
-    git_directory_snapshot_paths,
-    require_scan_target_identity,
-    source_directory_snapshot_paths,
-)
+from generate_rank_input import repo_scope_paths
+from workbench_target import require_scan_target_identity
 from workbench_validation import path_within_scope
 
 
@@ -36,15 +34,7 @@ def freeze_review_files(
         metadata = selected.lstat()
         if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0) & 0x20000000:
             continue
-        if selected.is_file():
-            paths.add(selected)
-        else:
-            selected_paths = git_directory_snapshot_paths(selected)
-            paths.update(
-                source_directory_snapshot_paths(selected)
-                if selected_paths is None
-                else selected_paths
-            )
+        paths.update(repo_scope_paths(repository, selected))
     for path in sorted(paths):
         if not stat.S_ISREG(path.lstat().st_mode) or not path.resolve().is_relative_to(repository):
             continue
@@ -94,8 +84,9 @@ def record_checkpoint(
     *,
     commit: bool = True,
     publish_head: bool = True,
+    acceptance_id: str | None = None,
 ) -> dict[str, Any]:
-    """Index a bound immutable artifact; replay is safe after an interrupted projection."""
+    """Accept a bound artifact, or replay the exact acceptance named by its durable head."""
     root = Path(scan["scan_dir"])
     try:
         relative = checkpoint_path.relative_to(root)
@@ -157,16 +148,27 @@ def record_checkpoint(
             or file_digest(target) != row["content_sha256"]
         ):
             raise SystemExit(f"Reviewed file is outside the saved inventory or changed: {path}")
-    result = {"scanId": scan["id"], "checkpointPath": relative.as_posix(), "digest": digest}
-    if connection.execute(
-        "SELECT 1 FROM scan_checkpoints WHERE scan_id = ? AND source_path = ? AND content_sha256 = ?",
-        (scan["id"], source, digest),
-    ).fetchone():
+    acceptance_id = acceptance_id or uuid.uuid4().hex
+    result = {
+        "scanId": scan["id"],
+        "checkpointPath": relative.as_posix(),
+        "digest": digest,
+        "acceptanceId": acceptance_id,
+    }
+    existing = connection.execute(
+        "SELECT content_sha256 FROM scan_checkpoints "
+        "WHERE scan_id = ? AND source_path = ? AND acceptance_id = ?",
+        (scan["id"], source, acceptance_id),
+    ).fetchone()
+    if existing:
+        if existing["content_sha256"] != digest:
+            raise SystemExit("The checkpoint acceptance refers to different saved content.")
         return result
-    # The durable head closes the artifact/SQLite crash window. Only validated cumulative
-    # snapshots advance it; replay never makes an older receipt current again.
+    # Content can recur after a different decision. The head identifies this acceptance,
+    # so a crash before its SQLite commit can be replayed without confusing it with an
+    # older receipt for identical bytes.
     if publish_head:
-        _write_checkpoint_head(root, relative)
+        _write_checkpoint_head(root, relative, acceptance_id)
     # A transaction commits both the semantic projection and completed source coverage.
     with connection if commit else nullcontext():
         for path in set(reviewed):
@@ -177,17 +179,25 @@ def record_checkpoint(
             )
         connection.execute(
             "INSERT INTO scan_checkpoints (scan_id, source_path, checkpoint_path, content_sha256, "
-            "snapshot_json, recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (scan["id"], source, relative.as_posix(), digest, json.dumps(snapshot), timestamp),
+            "snapshot_json, recorded_at, acceptance_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                scan["id"],
+                source,
+                relative.as_posix(),
+                digest,
+                json.dumps(snapshot),
+                timestamp,
+                acceptance_id,
+            ),
         )
     return result
 
 
-def _write_checkpoint_head(root: Path, relative: Path) -> None:
+def _write_checkpoint_head(root: Path, relative: Path, acceptance_id: str) -> None:
     write_scan_local_bytes(
         root,
         (relative.parent.parent / "checkpoint-head.json").as_posix(),
-        (json.dumps({"checkpoint": relative.name}) + "\n").encode(),
+        (json.dumps({"checkpoint": relative.name, "acceptanceId": acceptance_id}) + "\n").encode(),
     )
 
 
@@ -195,7 +205,8 @@ def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, 
     rows = connection.execute(
         "SELECT * FROM scan_checkpoints WHERE sequence IN (SELECT MAX(sequence) "
         "FROM scan_checkpoints WHERE scan_id = ? GROUP BY source_path) OR "
-        "(scan_id = ? AND checkpoint_path = (SELECT continuation_checkpoint_path FROM scans WHERE id = ?)) "
+        "(scan_id = ? AND acceptance_id = "
+        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ?)) "
         "ORDER BY source_path, sequence",
         (scan_id, scan_id, scan_id),
     ).fetchall()
@@ -213,6 +224,7 @@ def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, 
             {
                 "source": row["source_path"],
                 "checkpointPath": row["checkpoint_path"],
+                "acceptanceId": row["acceptance_id"],
                 "digest": row["content_sha256"],
                 "savedAt": row["recorded_at"],
                 "complete": snapshot.get("complete", True),
@@ -240,7 +252,8 @@ def checkpoint_summary(connection: sqlite3.Connection, scan_id: str) -> dict[str
         "json_extract(snapshot_json, '$.coverage.completeness') = 'complete' AS complete "
         "FROM scan_checkpoints WHERE sequence IN (SELECT MAX(sequence) FROM scan_checkpoints "
         "WHERE scan_id = ? GROUP BY source_path) OR "
-        "(scan_id = ? AND checkpoint_path = (SELECT continuation_checkpoint_path FROM scans WHERE id = ?)) "
+        "(scan_id = ? AND acceptance_id = "
+        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ?)) "
         "ORDER BY source_path, sequence",
         (scan_id, scan_id, scan_id),
     ).fetchall()
@@ -295,10 +308,30 @@ def reconcile_checkpoints(
             root, head.relative_to(root).as_posix(), "scan checkpoint head"
         )
         with os.fdopen(descriptor, "rb") as handle:
-            name = json.load(handle).get("checkpoint")
+            saved_head = json.load(handle)
+        name = saved_head.get("checkpoint")
         if not isinstance(name, str) or not re.fullmatch(r"[0-9a-f]{64}\.json", name):
             raise SystemExit("The saved checkpoint head does not name a semantic checkpoint.")
-        record_checkpoint(connection, scan, source / "checkpoints" / name, timestamp)
+        acceptance_id = saved_head.get("acceptanceId")
+        if acceptance_id is None:
+            # Legacy heads only identify content. An already indexed snapshot is a replay,
+            # never a new decision; otherwise accept it once and upgrade its head.
+            existing = connection.execute(
+                "SELECT acceptance_id FROM scan_checkpoints WHERE scan_id = ? AND checkpoint_path = ? "
+                "ORDER BY sequence DESC LIMIT 1",
+                (scan["id"], (source / "checkpoints" / name).relative_to(root).as_posix()),
+            ).fetchone()
+            if existing:
+                acceptance_id = existing["acceptance_id"]
+        elif not isinstance(acceptance_id, str) or not acceptance_id:
+            raise SystemExit("The saved checkpoint head has an invalid acceptance identity.")
+        record_checkpoint(
+            connection,
+            scan,
+            source / "checkpoints" / name,
+            timestamp,
+            acceptance_id=acceptance_id,
+        )
 
 
 def checkpoint_completion_ready(checkpoint: dict[str, Any], mode: str) -> bool:
@@ -439,15 +472,15 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
         hardening = copy_checkpoint_artifacts(db, parent, root, checkpoint)
         sequence = {
-            row["checkpoint_path"]: row["sequence"]
+            row["acceptance_id"]: row["sequence"]
             for row in connection.execute(
-                "SELECT checkpoint_path, sequence FROM scan_checkpoints WHERE scan_id = ?",
+                "SELECT acceptance_id, sequence FROM scan_checkpoints WHERE scan_id = ?",
                 (parent["id"],),
             )
         }
         sources = sorted(
             checkpoint["sources"],
-            key=lambda source: sequence[source["checkpointPath"]],
+            key=lambda source: sequence[source["acceptanceId"]],
             reverse=True,
         )
         current_checkpoints = []
@@ -472,7 +505,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             contents = (json.dumps(snapshot, indent=2) + "\n").encode()
             relative = f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json"
             write_scan_local_bytes(root, relative, contents)
-            if source["checkpointPath"] != parent["continuation_checkpoint_path"]:
+            if source["acceptanceId"] != parent["continuation_checkpoint_acceptance_id"]:
                 current_checkpoints.append(relative)
         workers = connection.execute(
             "SELECT * FROM deep_scan_workers WHERE scan_id = ?", (child["id"],)
@@ -546,15 +579,19 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         contents = (json.dumps(snapshot, indent=2) + "\n").encode()
         path = root / "checkpoints" / f"{hashlib.sha256(contents).hexdigest()}.json"
         write_scan_local_bytes(root, path.relative_to(root).as_posix(), contents)
+        receipt = record_checkpoint(
+            connection, child, path, db.now(), commit=False, publish_head=False
+        )
         connection.execute(
-            "UPDATE scans SET continuation_cost_json = ?, continuation_checkpoint_path = ? WHERE id = ?",
+            "UPDATE scans SET continuation_cost_json = ?, continuation_checkpoint_path = ?, "
+            "continuation_checkpoint_acceptance_id = ? WHERE id = ?",
             (
                 db.parse_scan_cost(args.cost_json),
                 path.relative_to(root).as_posix() if child["mode"] == "deep" else None,
+                receipt["acceptanceId"] if child["mode"] == "deep" else None,
                 child["id"],
             ),
         )
-        record_checkpoint(connection, child, path, db.now(), commit=False, publish_head=False)
         for filename, document in (
             ("findings.json", findings),
             ("coverage.json", coverage),
@@ -565,7 +602,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         # together. Until then, no root head may expose this child to reconciliation.
         # Commit explicitly even when record_checkpoint replayed an existing receipt.
         connection.commit()
-        _write_checkpoint_head(root, path.relative_to(root))
+        _write_checkpoint_head(root, path.relative_to(root), receipt["acceptanceId"])
         if parent["status"] == "running":
             timestamp = db.now()
             message = f"Interrupted; continued from saved checkpoints in scan {child['id']}."
@@ -605,8 +642,9 @@ def continued_deep_documents(
     if scan["mode"] != "deep" or relative is None:
         return None
     saved = connection.execute(
-        "SELECT snapshot_json FROM scan_checkpoints WHERE scan_id = ? AND checkpoint_path = ?",
-        (scan["id"], relative),
+        "SELECT snapshot_json FROM scan_checkpoints WHERE scan_id = ? AND checkpoint_path = ? "
+        "AND acceptance_id = ?",
+        (scan["id"], relative, scan["continuation_checkpoint_acceptance_id"]),
     ).fetchone()
     if saved is None:
         raise SystemExit("The continuation's inherited checkpoint is missing from saved state.")

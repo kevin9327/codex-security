@@ -670,7 +670,7 @@ try {
   assert.deepEqual(resolvedRejection.coverage.deferred, []);
   assert.deepEqual(resolvedRejection.coverage.surfaces[0].candidate, candidate);
 
-  for (const disposition of ["rejected", "reported"]) {
+  for (const disposition of ["rejected", "reported", "pending"]) {
     const continuationRoot = path.join(root, `accepted-${disposition}-continuation`);
     await mkdir(continuationRoot);
     const continuationContext = { ...workerContext, root: continuationRoot };
@@ -684,9 +684,12 @@ try {
       provenance: { workerId: finding.provenance.workerId },
     };
     await saveScanDraftCheckpoint(continuationContext, {
-      ...pending, findings: disposition === "reported" ? [finding] : [],
+      ...pending, findings: disposition === "rejected" ? [] : [finding],
       coverage: {
-        ...pending.coverage, surfaces: [decision], deferred: [], reviewedFiles: ["clean.ts"],
+        ...pending.coverage,
+        surfaces: disposition === "pending" ? [] : [decision],
+        deferred: disposition === "pending" ? pending.coverage.deferred : [],
+        reviewedFiles: ["clean.ts"],
       },
     });
     await recordCodexSecurityWorkerScanDraft(continuationContext, {
@@ -694,9 +697,9 @@ try {
     });
     const continued = JSON.parse(await readFile(path.join(continuationRoot, "result.json"), "utf8"));
     assert.equal(continued.complete, false);
-    assert.deepEqual(continued.coverage.deferred, [], "an accepted continuation decision must not reopen older deferred work");
+    assert.equal(continued.coverage.deferred.length, disposition === "pending" ? 1 : 0, "an empty partial draft must preserve the accepted continuation decision");
     assert.deepEqual(continued.coverage.reviewedFiles, ["clean.ts"]);
-    assert.equal(continued.findings.length, disposition === "reported" ? 1 : 0);
+    assert.equal(continued.findings.length, disposition === "rejected" ? 0 : 1);
     if (disposition === "rejected") {
       assert.ok(continued.coverage.surfaces.some((surface) => (
         surface.candidateId === finding.provenance.candidateId && surface.disposition === disposition
@@ -704,6 +707,24 @@ try {
     } else {
       assert.equal(continued.findings[0].provenance.candidateId, finding.provenance.candidateId);
       assert.equal(continued.findings[0].provenance.workerId, finding.provenance.workerId);
+    }
+    if (disposition === "pending") {
+      assert.deepEqual(continued.coverage.deferred[0].candidate, candidate);
+      // The retained pending state also survives another empty update after result.json exists.
+      await recordCodexSecurityWorkerScanDraft(continuationContext, {
+        ...pending, coverage: { ...pending.coverage, deferred: [] },
+      });
+      assert.equal(JSON.parse(await readFile(path.join(continuationRoot, "result.json"), "utf8")).coverage.deferred.length, 1);
+      for (const resolution of ["reported", "rejected"]) {
+        await recordCodexSecurityWorkerScanDraft(continuationContext, {
+          ...pending,
+          findings: resolution === "reported" ? [finding] : [],
+          coverage: { ...pending.coverage, deferred: [], surfaces: resolution === "reported" ? [] : [rejection] },
+        });
+        const resolved = JSON.parse(await readFile(path.join(continuationRoot, "result.json"), "utf8"));
+        assert.deepEqual(resolved.coverage.deferred, [], "a fresh validation decision resolves retained pending work");
+        assert.equal(resolved.findings.length, resolution === "reported" ? 1 : 0);
+      }
     }
   }
 

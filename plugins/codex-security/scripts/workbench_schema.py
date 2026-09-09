@@ -873,6 +873,7 @@ MIGRATIONS = (
         """
         ALTER TABLE scans ADD COLUMN continuation_cost_json TEXT;
         ALTER TABLE scans ADD COLUMN continuation_checkpoint_path TEXT;
+        ALTER TABLE scans ADD COLUMN continuation_checkpoint_acceptance_id TEXT;
         CREATE TABLE scan_checkpoints (
             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
             scan_id TEXT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
@@ -881,7 +882,8 @@ MIGRATIONS = (
             content_sha256 TEXT NOT NULL,
             snapshot_json TEXT NOT NULL,
             recorded_at TEXT NOT NULL,
-            UNIQUE (scan_id, source_path, content_sha256)
+            acceptance_id TEXT NOT NULL,
+            UNIQUE (scan_id, source_path, acceptance_id)
         );
         CREATE TABLE scan_review_files (
             scan_id TEXT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,

@@ -763,11 +763,15 @@ def restore_checkpoint_workers(
         contents = (json.dumps(result, indent=2) + "\n").encode()
         if not completed:
             digest = hashlib.sha256(contents).hexdigest()
+            acceptance_id = uuid.uuid4().hex
             result_relative = f"{artifact_relative}/checkpoints/{digest}.json"
             write_scan_local_bytes(
                 child_root,
                 f"{artifact_relative}/checkpoint-head.json",
-                (json.dumps({"checkpoint": f"{digest}.json"}) + "\n").encode(),
+                (
+                    json.dumps({"checkpoint": f"{digest}.json", "acceptanceId": acceptance_id})
+                    + "\n"
+                ).encode(),
             )
             restored_checkpoints.append(
                 (
@@ -777,6 +781,7 @@ def restore_checkpoint_workers(
                     digest,
                     json.dumps(result),
                     timestamp,
+                    acceptance_id,
                 )
             )
         write_scan_local_bytes(child_root, result_relative, contents)
@@ -848,7 +853,7 @@ def restore_checkpoint_workers(
         insert("deep_scan_workers", worker)
     connection.executemany(
         "INSERT INTO scan_checkpoints (scan_id, source_path, checkpoint_path, content_sha256, "
-        "snapshot_json, recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "snapshot_json, recorded_at, acceptance_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
         restored_checkpoints,
     )
     for row in inputs:

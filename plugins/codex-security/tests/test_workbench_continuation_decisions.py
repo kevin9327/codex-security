@@ -56,15 +56,18 @@ def continued_candidate(tmp_path: Path, *, other_pending: bool = False):
 
 def decision(scan_id: str, worker_id: str, finding: dict, outcome: str):
     value = semantic(scan_id, ["clean.ts", "pending.ts"])
-    value["findings"] = [finding] if outcome == "reported" else []
+    value["findings"] = [finding] if outcome in {"reported", "pending"} else []
+    if outcome == "pending":
+        value["coverage"]["deferred"][0]["provenance"] = {"workerId": worker_id}
+        return value
     value["coverage"].update(completeness="complete", deferred=[])
-    if outcome == "rejected":
-        value["coverage"]["surfaces"] = [
+    if outcome in {"rejected", "not_applicable"}:
+        value["coverage"]["explicitExclusions" if outcome == "not_applicable" else "surfaces"] = [
             {
                 "id": "saved-validation",
                 "label": "Saved candidate validation",
                 "candidateId": "candidate-1",
-                "disposition": "rejected",
+                "disposition": outcome,
                 "reason": "The existing control prevents the candidate.",
                 "receiptRefs": [],
                 "provenance": {"workerId": worker_id},
@@ -73,15 +76,35 @@ def decision(scan_id: str, worker_id: str, finding: dict, outcome: str):
     return value
 
 
-@pytest.mark.parametrize("owner", ["worker", "root"])
-@pytest.mark.parametrize("outcome", ["rejected", "reported"])
+@pytest.mark.parametrize(
+    ("previous_outcome", "outcome", "previous_owner", "owner"),
+    [
+        ("pending", "reported", "worker", "root"),
+        ("pending", "rejected", "root", "worker"),
+        ("pending", "not_applicable", "worker", "worker"),
+        ("reported", "pending", "worker", "root"),
+        ("rejected", "pending", "root", "worker"),
+        ("not_applicable", "pending", "root", "root"),
+        ("reported", "rejected", "root", "worker"),
+        ("rejected", "reported", "worker", "root"),
+        ("not_applicable", "reported", "worker", "worker"),
+    ],
+)
 def test_next_continuation_keeps_latest_validation_decision(
-    tmp_path: Path, owner: str, outcome: str
+    tmp_path: Path, previous_outcome: str, outcome: str, previous_owner: str, owner: str
 ):
     state, repository, _, _, child, child_id, worker_id, finding = continued_candidate(
         tmp_path, other_pending=True
     )
     output = child / "artifacts/deep_discovery/workers/discovery-0004/output"
+    save(
+        state,
+        child_id,
+        write_checkpoint(
+            (output if previous_owner == "worker" else child) / "checkpoints",
+            decision(child_id, worker_id, finding, previous_outcome),
+        ),
+    )
     resolved = decision(child_id, worker_id, finding, outcome)
     save(
         state,
@@ -109,10 +132,23 @@ def test_next_continuation_keeps_latest_validation_decision(
     coverage = json.loads((grandchild / "coverage.json").read_text())
     findings = json.loads((grandchild / "findings.json").read_text())["findings"]
     continued_worker_id = str(uuid.uuid5(uuid.UUID(grandchild_id), worker_id))
-    assert len(coverage["deferred"]) == 1
-    assert coverage["deferred"][0]["candidateId"] == "candidate-1"
-    assert coverage["deferred"][0]["provenance"]["workerId"] != continued_worker_id
-    assert len(findings) == (1 if outcome == "reported" else 0)
+    deferred = coverage["deferred"]
+    pending_owners = {item["provenance"]["workerId"] for item in deferred}
+    assert len(pending_owners) == (2 if outcome == "pending" else 1)
+    assert (continued_worker_id in pending_owners) == (outcome == "pending")
+    assert all(item["candidateId"] == "candidate-1" for item in deferred)
+    assert any(item["provenance"]["workerId"] != continued_worker_id for item in deferred)
+    assert len(findings) == (1 if outcome in {"reported", "pending"} else 0)
+    if findings:
+        assert findings[0]["codeEvidence"] == finding["codeEvidence"]
+    dispositions = {
+        item["disposition"]
+        for field in ("surfaces", "explicitExclusions")
+        for item in coverage[field]
+        if item.get("candidateId") == "candidate-1"
+        and item.get("provenance", {}).get("workerId") == continued_worker_id
+    }
+    assert dispositions == ({outcome} if outcome in {"rejected", "not_applicable"} else set())
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         assert connection.execute(
             "SELECT status, completion_sequence FROM deep_scan_workers WHERE id = ?",
@@ -126,19 +162,27 @@ def test_next_continuation_keeps_latest_validation_decision(
         )
     head = json.loads((worker_path / "checkpoint-head.json").read_text())
     worker_checkpoint = json.loads((worker_path / "checkpoints" / head["checkpoint"]).read_text())
-    assert worker_checkpoint["coverage"]["deferred"] == []
+    pending = worker_checkpoint["coverage"]["deferred"]
+    assert bool(pending) == (outcome == "pending")
+    if pending:
+        assert pending[0]["candidate"] == resolved["coverage"]["deferred"][0]["candidate"]
+        assert worker_checkpoint["findings"][0]["codeEvidence"] == finding["codeEvidence"]
     assert worker_checkpoint["coverage"]["reviewedFiles"] == (
-        ["clean.ts", "pending.ts"] if owner == "worker" else ["clean.ts"]
+        ["clean.ts", "pending.ts"] if "worker" in {owner, previous_owner} else ["clean.ts"]
     )
     assert worker_checkpoint["complete"] is False
 
 
-def test_finalization_uses_completed_worker_rejection_with_empty_coordinator_coverage(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("worker_outcome", "root_pending"),
+    [("rejected", False), ("reported", True), ("not_applicable", True)],
+)
+def test_finalization_keeps_current_root_or_completed_worker_decision(
+    tmp_path: Path, worker_outcome: str, root_pending: bool
 ):
     state, repository, _, _, child, child_id, worker_id, finding = continued_candidate(tmp_path)
     output = child / "artifacts/deep_discovery/workers/discovery-0004/output"
-    resolved = decision(child_id, worker_id, finding, "rejected")
+    resolved = decision(child_id, worker_id, finding, worker_outcome)
     resolved["complete"] = True
     save(state, child_id, write_checkpoint(output / "checkpoints", resolved))
     result = output / "result.json"
@@ -169,10 +213,13 @@ def test_finalization_uses_completed_worker_rejection_with_empty_coordinator_cov
     )
     write_completed_contract(child, child_id, repository, relative_path="clean.ts")
     findings = json.loads((child / "findings.json").read_text())
-    findings["findings"] = []
+    findings["findings"] = [finding] if root_pending else []
     (child / "findings.json").write_text(json.dumps(findings))
     coverage = json.loads((child / "coverage.json").read_text())
     coverage.update(completeness="complete", surfaces=[], explicitExclusions=[], deferred=[])
+    if root_pending:
+        coverage.update(decision(child_id, worker_id, finding, "pending")["coverage"])
+        coverage["deferred"][0]["id"] = "saved-pending"
     (child / "coverage.json").write_text(json.dumps(coverage))
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         connection.execute(
@@ -180,11 +227,22 @@ def test_finalization_uses_completed_worker_rejection_with_empty_coordinator_cov
             (str(child / "scan-manifest.json"), child_id),
         )
     run_workbench(state, "prepare-scan-completion", "--scan-id", child_id)
-    assert json.loads((child / "findings.json").read_text())["findings"] == []
+    findings = json.loads((child / "findings.json").read_text())["findings"]
     coverage = json.loads((child / "coverage.json").read_text())
-    assert coverage["completeness"] == "complete"
-    assert coverage["deferred"] == []
-    assert any(item.get("disposition") == "rejected" for item in coverage["surfaces"])
+    if root_pending:
+        assert findings[0]["codeEvidence"] == finding["codeEvidence"]
+        assert coverage["completeness"] == "partial"
+        assert {item["candidateId"] for item in coverage["deferred"]} == {"candidate-1"}
+        assert not any(
+            item.get("disposition") in {"reported", "rejected", "not_applicable"}
+            for field in ("surfaces", "explicitExclusions")
+            for item in coverage[field]
+        )
+    else:
+        assert findings == []
+        assert coverage["completeness"] == "complete"
+        assert coverage["deferred"] == []
+        assert any(item.get("disposition") == "rejected" for item in coverage["surfaces"])
 
 
 def test_archived_deep_checkpoint_rebases_worker_paths_and_can_continue(tmp_path: Path):

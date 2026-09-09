@@ -27,8 +27,8 @@ def test_deep_resume_uses_sealed_coverage_with_coverage_less_reducer(
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         connection.execute(
             "INSERT INTO scan_checkpoints "
-            "(scan_id, source_path, checkpoint_path, content_sha256, snapshot_json, recorded_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(scan_id, source_path, checkpoint_path, content_sha256, snapshot_json, recorded_at, acceptance_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 scan["scanId"],
                 str(source),
@@ -36,6 +36,7 @@ def test_deep_resume_uses_sealed_coverage_with_coverage_less_reducer(
                 checkpoint.stem,
                 json.dumps(snapshot),
                 "2026-09-01T00:00:00Z",
+                "fixture-acceptance",
             ),
         )
     if completeness == "complete":

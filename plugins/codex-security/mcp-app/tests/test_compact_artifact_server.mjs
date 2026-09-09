@@ -1257,6 +1257,66 @@ with sqlite3.connect(sys.argv[1]) as connection:
   assert.equal(resumed.reviewedFileCount, 2);
   assert.equal(resumed.pendingCount, 0);
   assert.equal(JSON.parse(await readFile(path.join(artifactRoot, "result.json"), "utf8")).complete, true);
+
+  const finding = JSON.parse(await readFile(path.join(workerPluginRoot, "examples", "completed-scan", "findings.json"), "utf8")).findings[0];
+  delete finding.findingId;
+  delete finding.occurrenceId;
+  delete finding.fingerprints;
+  finding.locations = [{ path: "clean.ts", startLine: 1 }];
+  finding.provenance.candidateId = "candidate-reaccepted";
+  finding.extensions.candidateId = "candidate-reaccepted";
+  const headPath = path.join(artifactRoot, "checkpoint-head.json");
+  client = await startClient(bundle, workerEnvironment);
+  let accepted;
+  let firstHead;
+  try {
+    requireSuccessfulTool(await client.callTool({
+      name: "record_codex_security_scan_draft",
+      arguments: {
+        ...input,
+        complete: true,
+        findings: [finding],
+        coverage: { ...input.coverage, deferred: [], reviewedFiles: ["clean.ts", "pending.ts"] }
+      }
+    }), `${runtimeLabel}: accept the finding before revalidation`);
+    firstHead = JSON.parse(await readFile(headPath, "utf8"));
+    accepted = JSON.parse(await readFile(path.join(artifactRoot, "checkpoints", firstHead.checkpoint), "utf8"));
+    requireSuccessfulTool(await client.callTool({
+      name: "record_codex_security_scan_draft",
+      arguments: {
+        ...accepted,
+        findings: [],
+        coverage: {
+          ...accepted.coverage,
+          surfaces: [
+            ...accepted.coverage.surfaces,
+            { candidateId: "candidate-reaccepted", label: "Revalidation", disposition: "rejected", reason: "Synthetic counterevidence." }
+          ]
+        }
+      }
+    }), `${runtimeLabel}: checkpoint the intervening rejection`);
+    assert.equal(JSON.parse(await readFile(path.join(artifactRoot, "result.json"), "utf8")).findings.length, 0);
+    assert.notEqual(JSON.parse(await readFile(headPath, "utf8")).checkpoint, firstHead.checkpoint);
+  } finally {
+    await client.close();
+  }
+  client = await startClient(bundle, workerEnvironment);
+  try {
+    requireSuccessfulTool(await client.callTool({
+      name: "record_codex_security_scan_draft", arguments: accepted
+    }), `${runtimeLabel}: reaccept identical saved finding bytes after restart`);
+  } finally {
+    await client.close();
+  }
+  const currentHead = JSON.parse(await readFile(headPath, "utf8"));
+  assert.deepEqual(JSON.parse(await readFile(path.join(artifactRoot, "checkpoints", currentHead.checkpoint), "utf8")), accepted);
+  assert.equal(currentHead.checkpoint, firstHead.checkpoint);
+  assert.notEqual(currentHead.acceptanceId, firstHead.acceptanceId);
+  for (let replay = 0; replay < 2; replay++) {
+    const recovered = workbench("get-cli-scan-resume", "--scan-id", scanId).checkpoint;
+    assert.deepEqual(recovered.sources[0].findings.map((item) => item.provenance.candidateId), ["candidate-reaccepted"]);
+    assert.deepEqual(JSON.parse(await readFile(headPath, "utf8")), currentHead);
+  }
 }
 
 async function testReducerWorkerToolList(bundle) {

@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
 import pytest
 from test_workbench_standard_deep_results import accepted_standard_worker, deep_scan_fixture
-from workbench_test_support import run_workbench, write_checkpoint, write_completed_contract
+from workbench_test_support import SCRIPT, run_workbench, write_checkpoint, write_completed_contract
 
 
 def scan_fixture(tmp_path: Path, mode: str = "standard") -> tuple[Path, Path, Path, str]:
@@ -92,7 +94,7 @@ def test_checkpoint_survives_new_process_with_clean_coverage_and_pending_evidenc
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         stored = connection.execute("SELECT snapshot_json FROM scan_checkpoints").fetchone()[0]
         assert json.loads(stored) == payload
-    save(state, scan_id, checkpoint)
+    run_workbench(state, "get-cli-scan-resume", "--scan-id", scan_id)
     assert (
         run_workbench(state, "get-scan", "--scan-id", scan_id)["scan"]["checkpoint"]
         == result["checkpoint"]
@@ -216,22 +218,181 @@ def test_checkpoint_binding_rejects_wrong_scan_unknown_worker_and_changed_conten
     assert "saved content" in save(state, scan_id, changed, check=False)["stderr"]
 
 
-def test_checkpoint_order_uses_receipts_and_old_replay_cannot_regress_it(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy_head", [False, True])
+def test_checkpoint_acceptance_distinguishes_replay_from_fresh_identical_content(
+    tmp_path: Path, legacy_head: bool
+) -> None:
     state, _, scan_dir, scan_id = scan_fixture(tmp_path)
     first = write_checkpoint(scan_dir / "checkpoints", semantic(scan_id, ["clean.ts"]))
     save(state, scan_id, first)
+    first_head = json.loads((scan_dir / "checkpoint-head.json").read_text())
     payload = semantic(scan_id, ["clean.ts", "pending.ts"])
     payload["coverage"]["deferred"] = []
     second = write_checkpoint(scan_dir / "checkpoints", payload)
     os.utime(second, ns=(1, 1))
     save(state, scan_id, second)
-    save(state, scan_id, first)
+    second_head = json.loads((scan_dir / "checkpoint-head.json").read_text())
+    # A delayed replay of the original acceptance cannot overtake the newer decision.
+    replay_head = {"checkpoint": first.name} if legacy_head else first_head
+    (scan_dir / "checkpoint-head.json").write_text(json.dumps(replay_head))
     result = run_workbench(state, "get-cli-scan-resume", "--scan-id", scan_id)["checkpoint"]
     assert result["remainingFiles"] == []
     assert result["sources"][0]["coverage"] == payload["coverage"]
-    assert json.loads((scan_dir / "checkpoint-head.json").read_text())["checkpoint"] == second.name
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         assert connection.execute("SELECT COUNT(*) FROM scan_checkpoints").fetchone() == (2,)
+    # A new live submission of those exact same bytes is a new decision.
+    (scan_dir / "checkpoint-head.json").write_text(json.dumps(second_head))
+    receipt = save(state, scan_id, first)
+    head = json.loads((scan_dir / "checkpoint-head.json").read_text())
+    assert head["checkpoint"] == first.name
+    assert head["acceptanceId"] == receipt["acceptanceId"]
+    assert head["acceptanceId"] not in {first_head["acceptanceId"], second_head["acceptanceId"]}
+    for _ in range(2):
+        result = run_workbench(state, "get-cli-scan-resume", "--scan-id", scan_id)["checkpoint"]
+        assert result["sources"][0]["coverage"] == semantic(scan_id, ["clean.ts"])["coverage"]
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM scan_checkpoints").fetchone() == (3,)
+
+
+@pytest.mark.parametrize("interruption", ["head", "receipt"])
+def test_identical_content_acceptance_recovers_once_after_process_exit(
+    tmp_path: Path, interruption: str
+) -> None:
+    state, _, scan_dir, scan_id = scan_fixture(tmp_path)
+    first = write_checkpoint(scan_dir / "checkpoints", semantic(scan_id, ["clean.ts"]))
+    first_receipt = save(state, scan_id, first)
+    resolved = semantic(scan_id, ["clean.ts"])
+    resolved["coverage"]["deferred"] = []
+    save(state, scan_id, write_checkpoint(scan_dir / "checkpoints", resolved))
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import os, sqlite3, sys
+from pathlib import Path
+scripts, state, scan_id, checkpoint, interruption = sys.argv[1:]
+sys.path.insert(0, scripts)
+import workbench_scan_checkpoints as checkpoints
+connection = sqlite3.connect(Path(state) / "workbench.sqlite3")
+connection.row_factory = sqlite3.Row
+scan = connection.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()
+write = checkpoints._write_checkpoint_head
+def interrupted_write(*args):
+    write(*args)
+    os._exit(72)
+if interruption == "head":
+    checkpoints._write_checkpoint_head = interrupted_write
+checkpoints.record_checkpoint(connection, scan, Path(checkpoint), "2026-09-09T00:00:00Z")
+os._exit(72)
+""",
+            str(SCRIPT.parent),
+            str(state),
+            scan_id,
+            str(first),
+            interruption,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert process.returncode == 72, process.stderr
+    head = json.loads((scan_dir / "checkpoint-head.json").read_text())
+    assert head["checkpoint"] == first.name
+    assert head["acceptanceId"] != first_receipt["acceptanceId"]
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM scan_checkpoints").fetchone() == (
+            2 if interruption == "head" else 3,
+        )
+    for _ in range(2):
+        recovered = run_workbench(state, "get-cli-scan-resume", "--scan-id", scan_id)
+        assert (
+            recovered["checkpoint"]["sources"][0]["coverage"]
+            == semantic(scan_id, ["clean.ts"])["coverage"]
+        )
+        assert json.loads((scan_dir / "checkpoint-head.json").read_text()) == head
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM scan_checkpoints").fetchone() == (3,)
+        assert connection.execute(
+            "SELECT acceptance_id FROM scan_checkpoints ORDER BY sequence DESC LIMIT 1"
+        ).fetchone() == (head["acceptanceId"],)
+
+
+def test_scoped_checkpoint_inventory_matches_ignore_aware_review_input(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    (repository / "src").mkdir(parents=True)
+    for relative, contents in {
+        ".gitignore": "src/*.ignored\nexplicit.ignored\n",
+        ".ignore": "src/*.cache\n",
+        ".rgignore": "src/*.generated\n",
+        "src/.gitignore": "*.tmp\n!keep.tmp\n",
+        "src/main.ts": "export const count = 1;\n",
+        "src/excluded.ignored": "ignored\n",
+        "src/excluded.cache": "ignored\n",
+        "src/excluded.generated": "ignored\n",
+        "src/excluded.tmp": "ignored\n",
+        "src/keep.tmp": "selected by negation\n",
+        "explicit.ignored": "explicit selection\n",
+        "outside.ts": "outside scope\n",
+    }.items():
+        (repository / relative).write_text(contents)
+    scopes = ["src", "explicit.ignored"]
+    scopes_file = tmp_path / "scopes.json"
+    scopes_file.write_text(json.dumps(scopes))
+    ranked = tmp_path / "scope.jsonl"
+    process = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT.parent / "generate_rank_input.py"),
+            "make-repo-scope-input",
+            "--repo",
+            str(repository),
+            "--scopes-file",
+            str(scopes_file),
+            "--out",
+            str(ranked),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert process.returncode == 0, process.stderr
+    expected = [json.loads(line)["path"] for line in ranked.read_text().splitlines()]
+    assert expected == ["explicit.ignored", "src/.gitignore", "src/keep.tmp", "src/main.ts"]
+    state = tmp_path / "state"
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir(mode=0o700)
+    scan_id = run_workbench(
+        state,
+        "register-cli-scan",
+        "--repository",
+        str(repository),
+        "--scan-dir",
+        str(scan_dir),
+        "--recipe-json",
+        json.dumps(
+            {
+                "repository": str(repository),
+                "target": {"kind": "paths", "paths": scopes},
+                "mode": "standard",
+                "config": {},
+            }
+        ),
+    )["scanId"]
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert [
+            row[0]
+            for row in connection.execute(
+                "SELECT relative_path FROM scan_review_files ORDER BY relative_path"
+            )
+        ] == expected
+    payload = semantic(scan_id, expected)
+    payload["complete"] = True
+    payload["coverage"].update(completeness="complete", deferred=[])
+    save(state, scan_id, write_checkpoint(scan_dir / "checkpoints", payload))
+    recovered = run_workbench(state, "get-cli-scan-resume", "--scan-id", scan_id)["checkpoint"]
+    assert recovered["reviewedFiles"] == expected
+    assert recovered["remainingFiles"] == []
 
 
 def test_child_inherits_saved_findings_coverage_and_cost_without_changing_parent_seal(

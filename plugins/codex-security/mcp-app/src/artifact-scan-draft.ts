@@ -357,6 +357,13 @@ async function preserveScanDraft(
         && typeof surface.candidateId === "string"
     ));
     const candidateRows = [...deferred, ...dispositions];
+    const resolvedIds = new Set([
+      ...result.findings.map(findingCandidateId),
+      ...candidateRows.map((item) => item.candidateId ?? item.id),
+    ].filter((value): value is string => typeof value === "string"));
+    const sourcePendingIds = new Set((source.coverage.deferred as JsonObject[]).map(
+      (item) => item.candidateId ?? item.id,
+    ));
     for (const pending of source.coverage.deferred as JsonObject[]) {
       const candidateId = pending.candidateId ?? pending.id;
       if (typeof candidateId !== "string") continue;
@@ -380,6 +387,11 @@ async function preserveScanDraft(
     }
     for (const finding of source.findings) {
       const candidateId = findingCandidateId(finding);
+      // An incomplete source can retain finding evidence while validation remains
+      // pending. Importing that evidence does not itself finish its deferred work.
+      if (candidateId !== undefined && (result.complete !== false || !sourcePendingIds.has(candidateId))) {
+        resolvedIds.add(candidateId);
+      }
       const disposition = candidateId === undefined ? undefined : dispositions.find((item) => (
         item.candidateId === candidateId || item.id === candidateId
       ));
@@ -396,10 +408,6 @@ async function preserveScanDraft(
         if (!matches.some((current) => containsSavedFinding(current, finding))) result.findings.push(structuredClone(finding));
       }
     }
-    const resolvedIds = new Set([
-      ...result.findings.map(findingCandidateId),
-      ...candidateRows.map((item) => item.candidateId ?? item.id),
-    ].filter((value): value is string => typeof value === "string"));
     const previousCoverage = {
       ...source.coverage,
       deferred: (source.coverage.deferred as JsonObject[]).filter((item) => {
