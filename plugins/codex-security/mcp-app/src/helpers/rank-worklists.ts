@@ -176,6 +176,7 @@ export function argumentsFor(
   required: readonly string[],
   integerOptions: readonly string[] = [],
   optional: Readonly<Record<string, readonly string[] | undefined>> = {},
+  onOption?: (name: string, value: string | bigint, raw: string) => void,
 ): Record<string, string | bigint | true> {
   const names = [
     ...new Set([
@@ -237,7 +238,9 @@ export function argumentsFor(
       throw new ArgumentError(
         `argument --${name}: invalid choice: ${pythonRepr(value)} (choose from ${choices.join(", ")})`,
       );
-    values[name] = integerOptions.includes(name) ? integer(value, name) : value;
+    const parsed = integerOptions.includes(name) ? integer(value, name) : value;
+    onOption?.(name, parsed, value);
+    values[name] = parsed;
   }
   const missing = required.filter((name) => values[name] === undefined);
   if (missing.length)

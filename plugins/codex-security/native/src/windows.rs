@@ -14,10 +14,14 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        GetLastError, SetLastError, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER,
+        GetLastError, LocalFree, SetLastError, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER,
         ERROR_LOCK_VIOLATION, HANDLE, INVALID_HANDLE_VALUE,
     },
     Storage::FileSystem::*,
+    System::Diagnostics::Debug::{
+        FormatMessageW, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,
+        FORMAT_MESSAGE_IGNORE_INSERTS,
+    },
 };
 
 fn invalid(message: &str) -> napi::Error {
@@ -74,6 +78,93 @@ fn wide_bytes(units: impl IntoIterator<Item = u16>) -> Buffer {
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>()
         .into()
+}
+
+extern "C" {
+    fn _wopen(path: *const u16, flags: i32, ...) -> i32;
+    fn _read(fd: i32, buffer: *mut std::ffi::c_void, length: u32) -> i32;
+    fn _close(fd: i32) -> i32;
+    fn _errno() -> *mut i32;
+}
+
+#[napi(object)]
+pub struct CrtReadResult {
+    pub errno: i32,
+    pub value: Buffer,
+}
+
+#[napi]
+pub fn windows_read_file_crt(path: Buffer) -> napi::Result<CrtReadResult> {
+    let path = wide_path(path)?;
+    // FileIO uses the CRT so open/read failures retain its errno classification.
+    const O_BINARY: i32 = 0x8000;
+    const O_NOINHERIT: i32 = 0x0080;
+    let fd = unsafe { _wopen(path.as_ptr(), O_BINARY | O_NOINHERIT) };
+    let failure = || CrtReadResult {
+        errno: unsafe { *_errno() },
+        value: Vec::new().into(),
+    };
+    if fd < 0 {
+        return Ok(failure());
+    }
+    struct Descriptor(i32);
+    impl Drop for Descriptor {
+        fn drop(&mut self) {
+            unsafe { _close(self.0) };
+        }
+    }
+    let fd = Descriptor(fd);
+    let mut value = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let count = unsafe { _read(fd.0, chunk.as_mut_ptr().cast(), chunk.len() as u32) };
+        if count < 0 {
+            if unsafe { *_errno() } == 4 {
+                continue;
+            }
+            return Ok(failure());
+        }
+        if count == 0 {
+            return Ok(CrtReadResult {
+                errno: 0,
+                value: value.into(),
+            });
+        }
+        value.extend_from_slice(&chunk[..count as usize]);
+    }
+}
+
+#[napi]
+pub fn windows_error_message(error: u32) -> Buffer {
+    let mut buffer = null_mut::<u16>();
+    let length = unsafe {
+        FormatMessageW(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER
+                | FORMAT_MESSAGE_FROM_SYSTEM
+                | FORMAT_MESSAGE_IGNORE_INSERTS,
+            null(),
+            error,
+            0x400,
+            (&mut buffer as *mut *mut u16).cast(),
+            0,
+            null(),
+        )
+    };
+    let message = if length == 0 {
+        Buffer::from(Vec::new())
+    } else {
+        wide_bytes(
+            unsafe { std::slice::from_raw_parts(buffer, length as usize) }
+                .iter()
+                .copied(),
+        )
+    };
+    if !buffer.is_null() {
+        unsafe {
+            LocalFree(buffer.cast());
+        }
+    }
+    message
 }
 
 fn os_string(bytes: Buffer) -> napi::Result<OsString> {

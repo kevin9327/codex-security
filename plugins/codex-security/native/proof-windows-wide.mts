@@ -287,6 +287,10 @@ function worker(root: string): Record<string, boolean> {
   files.writeFile(rawOutput, Buffer.from("a longer initial output"));
   files.writeFile(rawOutput, Buffer.alloc(128 * 1024 + 1, 7));
   assert.deepEqual(files.readFile(rawOutput), Buffer.alloc(128 * 1024 + 1, 7));
+  assert.deepEqual(
+    files.readFileCrt(rawOutput),
+    Buffer.alloc(128 * 1024 + 1, 7),
+  );
   files.writeFile(rawOutput, Buffer.from("short"));
   const contents = Buffer.alloc(64);
   assert.equal(files.readInto(rawOutput, contents), 5);
@@ -357,6 +361,7 @@ function worker(root: string): Record<string, boolean> {
   assert.throws(() => files.mkdir(widePath(`${names[0]}\\child`)));
   const longFile = widePath(win32.join(longDirectory, "file-\udc80"));
   files.writeFile(longFile, Buffer.from("long raw path"));
+  assert.deepEqual(files.readFileCrt(longFile), Buffer.from("long raw path"));
   const longLength = files.readInto(longFile, contents);
   assert.equal(contents.subarray(0, longLength).toString(), "long raw path");
   samePath(files.realpath(longFile), pathText(longFile));

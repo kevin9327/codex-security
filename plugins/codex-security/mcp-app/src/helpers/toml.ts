@@ -3,15 +3,10 @@
 // Adapted from CPython 3.12.13 Lib/tomllib (_parser.py and _re.py).
 // See scripts/licenses/TOMLI-MIT.txt. Preserve TOML 1.0 and its diagnostics.
 import { JsonFloat, objectFromEntries, pythonRepr } from "./python-json.js";
+import { TomlDate } from "./toml-date.js";
+export { TomlDate } from "./toml-date.js";
 
 export class TomlDecodeError extends Error {}
-
-export class TomlDate {
-  constructor(
-    readonly kind: "date" | "datetime" | "time",
-    readonly iso: string,
-  ) {}
-}
 
 type Table = Map<string, Value>;
 type Value = string | boolean | bigint | JsonFloat | TomlDate | Value[] | Table;

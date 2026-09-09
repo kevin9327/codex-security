@@ -28,6 +28,9 @@ export interface WindowsHandle {
 
 /** Paths are UTF-16LE code units without a terminator, including lone surrogates. */
 export interface WindowsBinding {
+  errnoMessage(error: number): Buffer;
+  windowsErrorMessage(error: number): Buffer;
+  windowsReadFileCrt(path: Buffer): { errno: number; value: Buffer };
   windowsArguments(): Buffer[];
   windowsEnvironment(name: Buffer): Buffer | null;
   windowsAbsolutePath(path: Buffer): WindowsResult<Buffer>;

@@ -270,9 +270,10 @@ describe("CodexSecurity orchestration", () => {
               expect(input).toContain("--effective-config");
               const shellEnvironment = options.env as Record<string, string>;
               const helper = execFileSync(
-                interpreter!,
+                Bun.which("node")!,
                 [
-                  join(PLUGIN_ROOT, "scripts", "config_preflight.py"),
+                  join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+                  "config-preflight",
                   "--skill",
                   "security-scan",
                   "--config",

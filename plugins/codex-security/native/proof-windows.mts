@@ -680,6 +680,25 @@ if (process.argv[2] === "worker") {
     mkdtempSync(join(tmpdir(), "codex-security-windows-")),
   );
   try {
+    const config = join(root, "config-é.toml");
+    const contents = Buffer.from("[features]\r\ngoals = true\r\n\x1a");
+    writeFileSync(config, contents);
+    assert.deepEqual(
+      native.windowsReadFileCrt(Buffer.from(config, "utf16le")),
+      { errno: 0, value: contents },
+    );
+    assert.equal(
+      native.windowsReadFileCrt(Buffer.from(config + "-missing", "utf16le"))
+        .errno,
+      2,
+    );
+    assert.equal(
+      native.windowsReadFileCrt(Buffer.from(root, "utf16le")).errno,
+      13,
+    );
+    assert.equal(native.errnoMessage(13).toString(), "Permission denied");
+    assert(native.windowsErrorMessage(5).toString("utf16le").length > 0);
+    assert.equal(native.windowsErrorMessage(0xdeadbeef).length, 0);
     console.log(
       JSON.stringify(
         {

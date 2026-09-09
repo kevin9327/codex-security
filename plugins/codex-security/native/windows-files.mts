@@ -64,7 +64,7 @@ export function windowsFileSystem(native: WindowsBinding) {
     ]).get(error);
     throw Object.assign(
       new Error(`Windows filesystem error ${error}: ${pathText(path)}`),
-      { code, winerror: error },
+      { code, winerror: error, path: pathText(path) },
     );
   }
 
@@ -387,6 +387,17 @@ export function windowsFileSystem(native: WindowsBinding) {
     check(native.setWindowsWritable(path, (mode & 0o200) !== 0), path);
   }
 
+  function readFileCrt(path: Buffer): Buffer {
+    const result = native.windowsReadFileCrt(operationPath(path));
+    if (result.errno !== 0)
+      throw Object.assign(new Error("Unable to read config file"), {
+        errno: result.errno,
+        path: pathText(path),
+        code: result.errno === 2 ? "ENOENT" : undefined,
+      });
+    return result.value;
+  }
+
   return {
     chmod,
     absolute,
@@ -400,6 +411,7 @@ export function windowsFileSystem(native: WindowsBinding) {
     readInto,
     openRead,
     readFile,
+    readFileCrt,
     writeFile,
     rename,
     unlink,

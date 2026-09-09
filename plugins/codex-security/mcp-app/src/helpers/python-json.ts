@@ -1,6 +1,7 @@
 import otherCategory from "@unicode/unicode-15.0.0/General_Category/Other/regex.js";
 import separatorCategory from "@unicode/unicode-15.0.0/General_Category/Separator/regex.js";
 import { decodeUtf8 } from "./utf8";
+import { TomlDate } from "./toml-date.js";
 
 // Preserve Python's integer/float distinction and arbitrary-size JSON integers.
 export class JsonFloat {
@@ -14,7 +15,8 @@ export function object(value: unknown): value is Row {
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value) &&
-    !(value instanceof JsonFloat)
+    !(value instanceof JsonFloat) &&
+    !(value instanceof TomlDate)
   );
 }
 export function objectEntries(value: Row): [string, unknown][] {
@@ -38,7 +40,7 @@ export function objectFromEntries(
 // json.dumps(..., ensure_ascii=True, indent=2), with compact persistence support.
 export function stringifyJson(
   value: unknown,
-  options: { compact?: boolean; allowNan?: boolean } = {},
+  options: { compact?: boolean; allowNan?: boolean; sortKeys?: boolean } = {},
 ): string {
   const quote = (text: string) =>
     JSON.stringify(text).replace(
@@ -47,6 +49,10 @@ export function stringifyJson(
         `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
     );
   function encode(item: unknown, depth: number): string {
+    if (item instanceof TomlDate)
+      throw new TypeError(
+        `Object of type ${item.kind} is not JSON serializable`,
+      );
     if (typeof item === "string") return quote(item);
     if (item instanceof JsonFloat) {
       const number = Number(item.source);
@@ -72,9 +78,16 @@ export function stringifyJson(
       const array = Array.isArray(item);
       const entries = array
         ? item.map((child) => encode(child, depth + 1))
-        : objectEntries(item).map(
-            ([key, child]) => `${quote(key)}: ${encode(child, depth + 1)}`,
-          );
+        : (options.sortKeys
+            ? objectEntries(item).sort(([a], [b]) => {
+                const left = Array.from(a, (c) => c.codePointAt(0)!);
+                const right = Array.from(b, (c) => c.codePointAt(0)!);
+                for (let i = 0; i < Math.min(left.length, right.length); i++)
+                  if (left[i] !== right[i]) return left[i]! - right[i]!;
+                return left.length - right.length;
+              })
+            : objectEntries(item)
+          ).map(([key, child]) => `${quote(key)}: ${encode(child, depth + 1)}`);
       const [open, close] = array ? ["[", "]"] : ["{", "}"];
       if (entries.length === 0) return open + close;
       if (options.compact) return open + entries.join(", ") + close;
@@ -273,6 +286,7 @@ export function parseJson(
 }
 
 export function pythonRepr(value: unknown): string {
+  if (value instanceof TomlDate) return value.repr();
   if (typeof value === "string") {
     const quote = value.includes("'") && !value.includes('"') ? '"' : "'";
     return (

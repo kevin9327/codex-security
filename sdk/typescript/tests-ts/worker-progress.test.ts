@@ -57,7 +57,7 @@ describe("worker progress events", () => {
         type: "item.completed",
         item: {
           type: "command_execution",
-          command: ["config_preflight.py"],
+          command: ["launch_codex_security_mcp --helper config-preflight"],
           aggregated_output: preflight,
         },
       },
@@ -65,7 +65,7 @@ describe("worker progress events", () => {
         type: "item.completed",
         item: {
           type: "command_execution",
-          command: "config_preflight.py",
+          command: "launch_codex_security_mcp --helper config-preflight",
           aggregated_output: [preflight],
         },
       },
@@ -92,7 +92,7 @@ describe("worker progress events", () => {
     const preflight = (results: unknown[]) =>
       workerStatusFromEvent(
         commandEvent(
-          "config_preflight.py",
+          "launch_codex_security_mcp --helper config-preflight",
           JSON.stringify({ profile: "security_scan", results }),
         ),
       );
@@ -121,7 +121,7 @@ describe("worker progress events", () => {
     expect(
       workerStatusFromEvent(
         commandEvent(
-          '"/managed/python" "$CODEX_SECURITY_PLUGIN_ROOT/scripts/config_preflight.py" --profile security_scan',
+          '"$CODEX_SECURITY_PLUGIN_ROOT/scripts/launch_codex_security_mcp" --helper config-preflight --profile security_scan',
           output,
         ),
       ),
@@ -140,7 +140,7 @@ describe("worker progress events", () => {
       expect(
         workerStatusFromEvent(
           commandEvent(
-            "python3 /plugin/scripts/config_preflight.py --profile security_scan",
+            "/plugin/scripts/launch_codex_security_mcp --helper config-preflight --profile security_scan",
             JSON.stringify({
               profile: "security_scan",
               status: "ready",
@@ -163,7 +163,7 @@ describe("worker progress events", () => {
     expect(
       workerStatusFromEvent(
         commandEvent(
-          "python3 C:\\plugin\\scripts\\config_preflight.py --profile security_diff_scan",
+          "C:\\plugin\\scripts\\launch_codex_security_mcp.cmd --helper config-preflight --profile security_diff_scan",
           JSON.stringify({
             profile: "security_diff_scan",
             status: "ready",
@@ -277,7 +277,7 @@ describe("worker progress events", () => {
     expect(
       workerStatusFromEvent(
         commandEvent(
-          "python3 /plugin/scripts/config_preflight.py",
+          "/plugin/scripts/launch_codex_security_mcp --helper config-preflight",
           JSON.stringify({
             profile: "security_scan",
             details: "x".repeat(65 * 1024),
@@ -361,24 +361,27 @@ describe("worker progress events", () => {
       results: [{ capability: "delegated_workers", status: "pass" }],
     });
     for (const event of [
-      commandEvent("rg config_preflight.py /repository", preflight),
-      commandEvent("python3 /plugin/scripts/config_preflight.py", "not json"),
+      commandEvent("rg config-preflight /repository", preflight),
       commandEvent(
-        "python3 /plugin/scripts/config_preflight.py",
+        "/plugin/scripts/launch_codex_security_mcp --helper config-preflight",
+        "not json",
+      ),
+      commandEvent(
+        "/plugin/scripts/launch_codex_security_mcp --helper config-preflight",
         JSON.stringify({
           profile: "deep_security_scan",
           results: [{ capability: "delegated_workers", status: "pass" }],
         }),
       ),
       commandEvent(
-        "python3 /plugin/scripts/config_preflight.py",
+        "/plugin/scripts/launch_codex_security_mcp --helper config-preflight",
         JSON.stringify({
           profile: ["security_scan"],
           results: [{ capability: "delegated_workers", status: "pass" }],
         }),
       ),
       commandEvent(
-        "python3 /plugin/scripts/config_preflight.py",
+        "/plugin/scripts/launch_codex_security_mcp --helper config-preflight",
         JSON.stringify({
           profile: "security_scan",
           results: [

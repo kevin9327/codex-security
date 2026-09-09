@@ -32,6 +32,7 @@ export interface DirectoryEntry {
 
 /** Paths are uninterpreted POSIX bytes. */
 export interface UnixBinding {
+  errnoMessage(error: number): Buffer;
   environment(name: Buffer): Buffer | null;
   /**
    * Filesystem order; known types are cached and symlinks are not followed.

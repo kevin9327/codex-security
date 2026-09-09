@@ -616,6 +616,14 @@ if (process.argv[2] === "lock-worker") {
   );
   const root = mkdtempSync(join(tmpdir(), "codex-security-native-"));
   try {
+    assert.equal(
+      native.errnoMessage(errno.ENOENT!).toString(),
+      "No such file or directory",
+    );
+    assert.equal(
+      native.errnoMessage(errno.EACCES!).toString(),
+      "Permission denied",
+    );
     const descriptors = descriptorProof(root);
     const accounts = accountProof();
     const directories = directoryProof(root);

@@ -5,6 +5,7 @@ import {
   objectFromEntries,
   pythonRepr,
 } from "./python-json.js";
+import { TomlDate } from "./toml-date.js";
 
 type Table = Record<string, unknown>;
 export type PreflightLayer = readonly [source: string, config: Table];
@@ -55,8 +56,9 @@ export interface PreflightResult extends Table {
   status: "pass" | "fail" | "unknown";
 }
 type Lookup = [found: boolean, actual: unknown, source: string | null];
-const has = (table: Table, key: string) => Object.hasOwn(table, key);
-function required(table: Table, key: string): unknown {
+const has = (table: object, key: unknown) =>
+  typeof key === "string" && Object.hasOwn(table, key);
+function required<T extends object, K extends keyof T>(table: T, key: K): T[K] {
   if (!has(table, key)) throw new Error(pythonRepr(key));
   return table[key];
 }
@@ -73,6 +75,8 @@ function numeric(value: unknown): number | bigint | undefined {
   return undefined;
 }
 function equal(left: unknown, right: unknown): boolean {
+  if (left instanceof TomlDate && right instanceof TomlDate)
+    return left.equals(right);
   const a = numeric(left),
     b = numeric(right);
   if (a !== undefined && b !== undefined) return a == b;
@@ -105,13 +109,15 @@ export function compareCapability(
     if (value === undefined)
       throw new TypeError(
         "'>=' not supported between instances of 'int' and '" +
-          (expected === null
-            ? "NoneType"
-            : typeof expected === "string"
-              ? "str"
-              : Array.isArray(expected)
-                ? "list"
-                : "dict") +
+          (expected instanceof TomlDate
+            ? expected.kind
+            : expected === null
+              ? "NoneType"
+              : typeof expected === "string"
+                ? "str"
+                : Array.isArray(expected)
+                  ? "list"
+                  : "dict") +
           "'",
       );
     return actual >= value;
@@ -369,19 +375,42 @@ export function profileRequiresMultiAgentConfig(
   );
 }
 export function validatePreflightRegistry(registry: PreflightRegistry): void {
-  for (const [id] of objectEntries(registry.profiles)) {
-    const profile = registry.profiles[id]!;
-    for (const requirement of profile.requirements) {
-      if (!has(registry.capabilities, requirement.capability))
+  const capabilities = required(registry, "capabilities");
+  const profiles = required(registry, "profiles");
+  for (const [id] of objectEntries(profiles)) {
+    const profile = profiles[id]!;
+    for (const requirement of required(profile, "requirements")) {
+      const capability = required(requirement, "capability");
+      if (!has(capabilities, capability))
         throw new Error(
-          `profile ${pythonRepr(id)} references unknown capability ${pythonRepr(requirement.capability)}`,
+          `profile ${pythonRepr(id)} references unknown capability ${pythonRepr(capability)}`,
         );
-      if (!["block", "warn", "suggest"].includes(requirement.severity))
+      const severity = required(requirement, "severity");
+      if (!["block", "warn", "suggest"].includes(severity))
         throw new Error(
-          `profile ${pythonRepr(id)} has unsupported severity ${pythonRepr(requirement.severity)}`,
+          `profile ${pythonRepr(id)} has unsupported severity ${pythonRepr(severity)}`,
         );
     }
   }
+}
+export function resolvePreflightProfileId(
+  registry: PreflightRegistry,
+  profile: string | null,
+  skill: string | null,
+): unknown {
+  if (profile) return profile;
+  const routes = new Map<unknown, unknown>(
+    required(registry, "routes").map((route) => [
+      required(route, "skill"),
+      required(route, "profile"),
+    ]),
+  );
+  const key = skill === null ? "None" : skill;
+  if (!routes.has(key))
+    throw new Error(
+      `no capability profile route for skill ${pythonRepr(skill)}`,
+    );
+  return routes.get(key);
 }
 function evaluateCapacity(
   result: Pick<PreflightResult, "capability" | "severity" | "reason">,
@@ -453,9 +482,9 @@ export function evaluatePreflightRequirement(
 ): PreflightResult {
   const capability = required(capabilities, requirement.capability) as Table;
   const result = {
-    capability: requirement.capability,
-    severity: requirement.severity,
-    reason: requirement.reason,
+    capability: required(requirement, "capability"),
+    severity: required(requirement, "severity"),
+    reason: required(requirement, "reason"),
   };
   const kind = required(capability, "kind");
   if (kind === "runtime") {
@@ -606,9 +635,9 @@ export function evaluatePreflightProfile(
       ? "incomplete"
       : "ready";
   return {
-    version: registry.version,
+    version: required(registry, "version"),
     profile: profileId,
-    description: profile.description,
+    description: required(profile, "description"),
     multi_agent_mode: context.mode,
     multi_agent_context: context,
     status,

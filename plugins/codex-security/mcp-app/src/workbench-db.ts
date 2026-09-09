@@ -2,10 +2,9 @@ import { createHash } from "node:crypto";
 import { dirname, parse, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Connection, type SqliteBinding } from "../../native/sqlite.mjs";
-import { widePath, windowsJoin } from "../../native/windows-files.mjs";
-import { unixBinding, windowsBinding } from "./native";
+import { windowsJoin } from "../../native/windows-files.mjs";
 import { chmod, mkdir } from "./helpers/helper-files";
-import { decodePosixBytes } from "./helpers/posix-path";
+import { environment } from "./helpers/environment";
 import { resolvedPath } from "./helpers/resolve-path";
 import { expandHome, parsedPath } from "./helpers/resolve-security-md";
 import { MIGRATIONS } from "./workbench-migrations";
@@ -14,17 +13,6 @@ import { applyMigrations as applySchemaMigrations } from "./workbench-schema";
 const windows = process.platform === "win32";
 const joinPath = (left: string, right: string) =>
   parsedPath(windows ? windowsJoin(left, right) : `${left}/${right}`);
-
-function environment(name: string): string | undefined {
-  const value = windows
-    ? windowsBinding().windowsEnvironment(widePath(name))
-    : unixBinding().environment(Buffer.from(name));
-  return value === null
-    ? undefined
-    : windows
-      ? value.toString("utf16le")
-      : decodePosixBytes(value);
-}
 
 export function stateDir(): string {
   const configured = environment("CODEX_SECURITY_STATE_DIR");
