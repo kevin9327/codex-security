@@ -87,14 +87,16 @@ for (const share of ["\\\\server\\share", "//server/share"]) {
   });
 }
 
-test("non-strict realpath retains a whitespace-only relative component", () => {
+test("non-strict realpath resolves a whitespace-only relative path from cwd", () => {
   const native = {
     windowsAbsolutePath(path: Buffer) {
       return pathText(path).trim() === ""
         ? { error: 123, value: Buffer.alloc(0) }
         : {
             error: 0,
-            value: widePath(win32.resolve("C:\\work", pathText(path))),
+            value: widePath(
+              win32.resolve("C:\\work", pathText(path).replace(/ +$/u, "")),
+            ),
           };
     },
     windowsReadLink: () => ({ error: 2, value: Buffer.alloc(0) }),
@@ -109,7 +111,7 @@ test("non-strict realpath retains a whitespace-only relative component", () => {
   } as unknown as WindowsBinding;
   assert.equal(
     pathText(windowsFileSystem(native).realpath(widePath("  "), false)),
-    "C:\\work\\  ",
+    "C:\\work",
   );
 });
 

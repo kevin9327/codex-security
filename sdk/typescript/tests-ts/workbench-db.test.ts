@@ -115,7 +115,9 @@ describe("native workbench connection and target persistence", () => {
     ).toBe(join(home, "custom", ...base));
     const whitespace = run({ action: "paths" }, "  ");
     expect(whitespace.error).toBeUndefined();
-    expect(whitespace.stateDir).toBe(join(directory, "  "));
+    expect(whitespace.stateDir).toBe(
+      process.platform === "win32" ? directory : join(directory, "  "),
+    );
     expect(
       run({ action: "paths" }, "relative/./nested/../state").stateDir,
     ).toBe(join(directory, "relative", "state"));
