@@ -60,17 +60,6 @@ function writeSource(
   writeFileSync(destination, content);
 }
 
-function python(script: string, ...args: string[]) {
-  const command =
-    Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-  expect(command).not.toBeNull();
-  return spawnSync(
-    command!,
-    ["-B", join(PLUGIN_ROOT, "scripts", script), ...args],
-    { encoding: "utf8" },
-  );
-}
-
 function inventory(...args: string[]) {
   return spawnSync(
     Bun.which("node")!,
@@ -923,10 +912,18 @@ describe("compact diff scan", () => {
         { encoding: "utf8" },
       );
       expect(finalized.status, finalized.stderr).toBe(0);
-      const validated = python(
-        "validate_scan_contract.py",
-        "--scan-dir",
-        terminalDir,
+      const validated = spawnSync(
+        Bun.which("node")!,
+        [
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "validate-scan-contract",
+          "--scan-dir",
+          terminalDir,
+        ],
+        {
+          encoding: "utf8",
+          env: { ...process.env, PATH: "", PYTHON: "/missing/python" },
+        },
       );
       expect(validated.status, validated.stderr).toBe(0);
       const terminalResult = JSON.parse(

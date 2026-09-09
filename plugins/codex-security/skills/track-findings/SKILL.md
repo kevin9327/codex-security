@@ -17,7 +17,7 @@ Jira mode uses Atlassian Rovo to create, reuse, or update one Jira Cloud issue p
 
 The tracking helper is at the plugin root:
 
-- `scripts/validate_tracking_source.py`
+- `scripts/launch_codex_security_mcp` (`scripts/launch_codex_security_mcp.cmd` on Windows), with `--helper validate-tracking-source`
 
 This skill lives at `<plugin-root>/skills/track-findings/SKILL.md`, so `<plugin-root>` is two directories up. Do not look for the helper inside the skill directory.
 
@@ -45,10 +45,10 @@ Do not substitute browser automation, Computer Use, copied search results, anoth
 
 Before provider calls, memory, rendered reports, browser use, or destination discovery, run:
 
-Resolve `<python_command>` to the configured Python interpreter (`"$PYTHON"` in POSIX shells or `& "$env:PYTHON"` in PowerShell), otherwise use `python` on Windows and `python3` on Unix-like hosts. The command is written on one line so it works in PowerShell, Command Prompt, and POSIX shells:
+Use `launch_codex_security_mcp.cmd` on Windows and `launch_codex_security_mcp` on Unix-like hosts. The launcher selects the existing Codex Node runtime; `CODEX_MCP_NODE_PATH` can select an explicit Node executable.
 
 ```text
-<python_command> <plugin-root>/scripts/validate_tracking_source.py <user-supplied-scan-dir> [--finding-id <id> | --fingerprint <fingerprint>]
+<plugin-root>/scripts/launch_codex_security_mcp[.cmd] --helper validate-tracking-source <user-supplied-scan-dir> [--finding-id <id> | --fingerprint <fingerprint>]
 ```
 
 With a selector, the command prints the one canonical finding id. Without one, it prints every canonical finding id in the sealed scan. A nonzero exit stops the workflow.
@@ -170,7 +170,7 @@ Never include credentials, signed URLs, local file URLs, or unreviewed links. A 
 
 Immediately before each create, update, or reuse:
 
-1. rerun `validate_tracking_source.py` with the exact finding id
+1. rerun `--helper validate-tracking-source` with the exact finding id
 2. reread provider access, destination identity, and visibility; for GitHub, recheck the transport and authenticated account
 3. reverify every repository, revision, and path used by an approved source link; for Linear, Jira, and GitHub issue runs, return to preview with the plain-path fallback if a link no longer verifies; for GitHub advisory runs, any failed source revalidation blocks the run
 4. repeat the duplicate search and read back any selected existing item

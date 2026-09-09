@@ -15,6 +15,7 @@ import { generateRankInputCommand } from "./src/helpers/generate-rank-input";
 import { configPreflightCommand } from "./src/helpers/config-preflight-command";
 import { scanArtifactRestorerCommand } from "./src/helpers/scan-artifact-restorer";
 import { finalizeScanContractCommand } from "./src/helpers/finalize-scan-contract";
+import { scanValidationCommand } from "./src/helpers/validate-scan-contract";
 
 let commandLine = process.argv.slice(2);
 if (process.platform === "win32") {
@@ -46,6 +47,11 @@ if (command === "resolve-security-md") {
   process.exitCode = normalizeCandidatesCommand(args, posixHome);
 } else if (command === "validate-patch-risk-assessment") {
   process.exitCode = validatePatchRiskAssessmentCommand(args);
+} else if (
+  command === "validate-scan-contract" ||
+  command === "validate-tracking-source"
+) {
+  process.exitCode = scanValidationCommand(command, args, posixHome);
 } else if (
   command === "copy-deep-review-input" ||
   command === "select-deep-review-input"
@@ -100,7 +106,7 @@ if (command === "resolve-security-md") {
   process.exitCode = finalizeScanContractCommand(args);
 } else {
   console.error(
-    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | list-global-findings | list-repositories | list-scans | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight | finalize-scan-contract> [options]",
+    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | validate-scan-contract | validate-tracking-source | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | list-global-findings | list-repositories | list-scans | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight | finalize-scan-contract> [options]",
   );
   process.exitCode = 2;
 }

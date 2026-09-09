@@ -182,6 +182,7 @@ export function argumentsFor(
   onOption?: (name: string, value: string | bigint | true, raw: string) => void,
   booleanOptions: readonly string[] = [],
   integerMaxDigits?: number,
+  positionalNames: readonly string[] = [],
 ): Record<string, string | bigint | true> {
   const names = [
     ...new Set([
@@ -194,15 +195,22 @@ export function argumentsFor(
   ];
   const values: Record<string, string | bigint | true> = {};
   const extra: string[] = [];
+  let position = 0;
+  const positional = (value: string) => {
+    const name = positionalNames[position++];
+    if (name === undefined) extra.push(value);
+    else values[name] = value;
+  };
   const looksOptional = (arg: string) =>
     arg.startsWith("-") &&
     arg !== "-" &&
-    !arg.includes(" ") &&
+    (!arg.includes(" ") || arg.startsWith("-h")) &&
     !negativeNumber.test(arg);
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
     if (arg === "--") {
-      extra.push(...args.slice(index));
+      if (positionalNames.length) args.slice(index + 1).forEach(positional);
+      else extra.push(...args.slice(index));
       break;
     }
     const equals = arg.indexOf("=");
@@ -222,7 +230,8 @@ export function argumentsFor(
         `ambiguous option: ${arg} could match ${matches.map((name) => `--${name}`).join(", ")}`,
       );
     if (!name) {
-      extra.push(arg);
+      if (looksOptional(arg)) extra.push(arg);
+      else positional(arg);
       continue;
     }
     if (name === "help") {
@@ -259,10 +268,15 @@ export function argumentsFor(
     onOption?.(name, parsed, value);
     values[name] = parsed;
   }
-  const missing = required.filter((name) => values[name] === undefined);
+  const missing = [
+    ...positionalNames.filter((name) => values[name] === undefined),
+    ...required
+      .filter((name) => values[name] === undefined)
+      .map((name) => `--${name}`),
+  ];
   if (missing.length)
     throw new ArgumentError(
-      `the following arguments are required: ${missing.map((name) => `--${name}`).join(", ")}`,
+      `the following arguments are required: ${missing.join(", ")}`,
     );
   if (extra.length)
     throw new ArgumentError(`unrecognized arguments: ${extra.join(" ")}`);

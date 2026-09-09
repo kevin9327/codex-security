@@ -203,13 +203,16 @@ describe("canonical scan contract", () => {
   test("ships a completed example that passes tracking preflight", () => {
     const result = Bun.spawnSync(
       [
-        Bun.which("python3") ?? "python",
-        "-I",
-        "-B",
-        join(PLUGIN_ROOT, "scripts", "validate_tracking_source.py"),
+        Bun.which("node")!,
+        join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+        "validate-tracking-source",
         EXAMPLE,
       ],
-      { stdout: "pipe", stderr: "pipe" },
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, PATH: "", PYTHON: "/missing/python" },
+      },
     );
     expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
   });

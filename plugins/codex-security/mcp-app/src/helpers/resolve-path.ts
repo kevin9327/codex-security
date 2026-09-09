@@ -12,10 +12,18 @@ import {
   SymlinkLoopError,
 } from "./posix-path";
 
-export function resolvedPath(value: string, strict = true): string {
+export function resolvedPath(
+  value: string,
+  strict = true,
+  options: { preserveRelativeErrors?: boolean } = {},
+): string {
   if (process.platform !== "win32")
     return decodePosixBytes(
-      resolvePosixPath(encodePosixPath(parsedPath(value)), strict),
+      resolvePosixPath(
+        encodePosixPath(parsedPath(value)),
+        strict,
+        options.preserveRelativeErrors,
+      ),
     );
   try {
     return pathText(

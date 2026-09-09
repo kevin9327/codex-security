@@ -1,4 +1,5 @@
 import { isUtf8 } from "node:buffer";
+import { pythonRepr } from "./python-json";
 
 export function decodePosixBytes(bytes: Buffer): string {
   // Node 20's fatal TextDecoder can replace invalid bytes in longer inputs.
@@ -38,29 +39,53 @@ export function encodePosixPath(value: string): Buffer {
 
 export class SymlinkLoopError extends Error {}
 
-export function resolvePosixPath(value: Buffer, strict = true): Buffer {
+export function resolvePosixPath(
+  value: Buffer,
+  strict = true,
+  preserveRelativeErrors = false,
+): Buffer {
   // GNU Linux native realpath rejects file/.. and links targeting it with
   // ENOTDIR. Retain the shipped pathlib contract for those inputs.
   const seen = new Map<string, string | null>();
   // Latin-1 is a lossless internal representation of pathname bytes.
   const append = (directory: string, rest: string) =>
-    rest.startsWith("/") ? rest : `${directory}/${rest}`;
+    rest.startsWith("/") || directory === "" ? rest : `${directory}/${rest}`;
+  const loop = (path: Buffer) => {
+    const text = decodePosixBytes(path);
+    return new SymlinkLoopError(
+      `Symlink loop from ${preserveRelativeErrors ? pythonRepr(text) : text}`,
+    );
+  };
   function follow(directory: string, path: string): [string, boolean] {
     if (path.startsWith("/")) directory = "/";
     const parts = path.split("/");
     for (const [index, name] of parts.entries()) {
       if (name === "" || name === ".") continue;
       if (name === "..") {
-        directory = directory.slice(0, directory.lastIndexOf("/")) || "/";
+        if (directory === "" || directory === ".." || directory.endsWith("/.."))
+          directory = append(directory, "..");
+        else {
+          const separator = directory.lastIndexOf("/");
+          directory =
+            separator === -1 ? "" : directory.slice(0, separator) || "/";
+        }
         continue;
       }
-      const candidate = `${directory === "/" ? "" : directory}/${name}`;
+      const candidate =
+        directory === ""
+          ? name
+          : `${directory === "/" ? "" : directory}/${name}`;
       const bytes = Buffer.from(candidate, "latin1");
       let link: boolean;
       try {
         link = lstatSync(bytes).isSymbolicLink();
       } catch (error) {
-        if (strict) throw error;
+        if (strict) {
+          // Node otherwise decodes Buffer filenames as UTF-8 in filesystem errors.
+          if (preserveRelativeErrors)
+            (error as { path?: string | Buffer }).path = bytes;
+          throw error;
+        }
         link = false;
       }
       if (!link) {
@@ -71,9 +96,7 @@ export function resolvePosixPath(value: Buffer, strict = true): Buffer {
       if (cached === null) {
         if (!strict)
           return [append(candidate, parts.slice(index + 1).join("/")), false];
-        throw new SymlinkLoopError(
-          `Symlink loop from ${decodePosixBytes(bytes)}`,
-        );
+        throw loop(bytes);
       }
       if (cached !== undefined) {
         directory = cached;
@@ -91,20 +114,19 @@ export function resolvePosixPath(value: Buffer, strict = true): Buffer {
     }
     return [directory, true];
   }
-  const cwd =
-    value[0] === 0x2f
-      ? Buffer.from("/")
-      : realpathSync.native(".", { encoding: "buffer" });
-  const [path] = follow(cwd.toString("latin1"), value.toString("latin1"));
-  const result = Buffer.from(posix.resolve(path), "latin1");
+  const cwd = () =>
+    realpathSync.native(".", { encoding: "buffer" }).toString("latin1");
+  const initial = preserveRelativeErrors ? "" : value[0] === 0x2f ? "/" : cwd();
+  const [path] = follow(initial, value.toString("latin1"));
+  const result = Buffer.from(
+    posix.resolve(path.startsWith("/") ? path : append(cwd(), path)),
+    "latin1",
+  );
   if (!strict) {
     try {
       statSync(result);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ELOOP")
-        throw new SymlinkLoopError(
-          `Symlink loop from ${decodePosixBytes(result)}`,
-        );
+      if ((error as NodeJS.ErrnoException).code === "ELOOP") throw loop(result);
     }
   }
   return result;
