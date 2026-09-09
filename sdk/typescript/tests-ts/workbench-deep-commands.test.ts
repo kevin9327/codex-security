@@ -1,5 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import {
+  existsSync,
+  readFileSync,
+  readdirSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -9,7 +12,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildSync } from "esbuild";
+import { promisify } from "node:util";
+import { build, buildSync } from "esbuild";
+import { withWorkbenchDatabase } from "./support/workbench-database";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root";
 import { stringifyJson } from "../../../plugins/codex-security/mcp-app/src/helpers/python-json";
@@ -18,7 +23,8 @@ const root = realpathSync(
   mkdtempSync(join(tmpdir(), "workbench-deep-commands-")),
 );
 const node = Bun.which("node")!,
-  fixture = join(root, "sdk.cjs");
+  fixture = join(root, "sdk.cjs"),
+  crashFixture = join(root, "crash.cjs");
 const nodeMajor = Number(
   spawnSync(node, ["-p", "process.versions.node.split('.')[0]"], {
     encoding: "utf8",
@@ -28,7 +34,7 @@ const first = "11111111-1111-4111-8111-111111111111",
   second = "22222222-2222-4222-8222-222222222222",
   reducer = "33333333-3333-4333-8333-333333333333";
 const environment = { ...process.env, PATH: "", PYTHON: "/unavailable/python" };
-beforeAll(() =>
+beforeAll(async () => {
   buildSync({
     entryPoints: [
       fileURLToPath(
@@ -45,8 +51,68 @@ beforeAll(() =>
         pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
       ),
     },
-  }),
-);
+  });
+  await build({
+    entryPoints: [
+      fileURLToPath(
+        new URL(
+          "../../../plugins/codex-security/mcp-app/helpers-main.ts",
+          import.meta.url,
+        ),
+      ),
+    ],
+    outfile: crashFixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    loader: { ".md": "text" },
+    external: ["fsevents"],
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+    plugins: [
+      {
+        name: "interrupt-reducer-publication",
+        setup(builder) {
+          builder.onLoad(
+            { filter: /[/\\]workbench-deep-dedup-commit\.ts$/ },
+            ({ path }) => {
+              let contents = readFileSync(path, "utf8");
+              for (const marker of [
+                "const timestamp = context.now();",
+                "if (promotion !== null) finishStagedFile(promotion);",
+                "createPublicationCopy(candidateLedgerPath, publicationCopy, false, true);",
+              ])
+                if (!contents.includes(marker))
+                  throw new Error("Missing reducer crash marker: " + marker);
+              contents = contents
+                .replace(
+                  "const timestamp = context.now();",
+                  'if (process.env.TEST_REDUCER_CRASH === "before") process.kill(process.pid, "SIGKILL");\nconst timestamp = context.now();',
+                )
+                .replace(
+                  "if (promotion !== null) finishStagedFile(promotion);",
+                  'if (process.env.TEST_REDUCER_CRASH === "after") process.kill(process.pid, "SIGKILL");\nif (promotion !== null) finishStagedFile(promotion);',
+                )
+                .replace(
+                  "createPublicationCopy(candidateLedgerPath, publicationCopy, false, true);",
+                  'if (process.env.TEST_REDUCER_COPY === "1") copyFileSync(candidateLedgerPath, publicationCopy); else createPublicationCopy(candidateLedgerPath, publicationCopy, false, true);',
+                );
+              return {
+                loader: "ts",
+                contents:
+                  'import { copyFileSync } from "node:fs";\n' + contents,
+              };
+            },
+          );
+        },
+      },
+    ],
+  });
+});
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 function setup(sdk = false) {
   const directory = mkdtempSync(join(root, "case-")),
@@ -110,6 +176,7 @@ function setup(sdk = false) {
   return {
     directory,
     target,
+    env,
     state,
     scanRoot,
     run,
@@ -147,7 +214,7 @@ function worker(s: Setup, id: string) {
     ],
   };
 }
-function reduceAndFinish(s: Setup) {
+function claimReducer(s: Setup) {
   expect(s.begin).toMatchObject({ startDisposition: "created" });
   expect(
     deep(
@@ -212,6 +279,10 @@ function reduceAndFinish(s: Setup) {
     { discoveryWorkerId: first, inputOrder: 0 },
     { discoveryWorkerId: second, inputOrder: 1 },
   ]);
+  return r;
+}
+function reduceAndFinish(s: Setup) {
+  const r = claimReducer(s);
   const completed = deep(
     s.result([
       "commit-deep-scan-dedup",
@@ -380,3 +451,153 @@ test.skipIf(nodeMajor < 22)(
   },
   30000,
 );
+
+test
+  .skipIf(process.platform === "win32")
+  .each(["before_with_baseline", "before_without_baseline", "after"] as const)(
+  "coordinator adoption recovers reducer publication after process death at %s",
+  (point) => {
+    for (const copied of [false, true]) {
+      const s = setup(),
+        r = claimReducer(s);
+      const discovery = join(s.scanDir, "artifacts", "02_discovery"),
+        ledger = join(discovery, "candidate_ledger.jsonl");
+      if (point === "before_without_baseline") rmSync(ledger);
+      const canonical = join(r.directory, "canonical");
+      mkdirSync(canonical);
+      const staged = join(canonical, "candidate_ledger.jsonl");
+      writeFileSync(staged, "newly published\n");
+      const crashed = spawnSync(
+        node,
+        [
+          crashFixture,
+          "commit-deep-scan-dedup",
+          "--scan-id",
+          s.scanId,
+          "--worker-id",
+          reducer,
+          "--result-manifest-path",
+          r.manifest,
+          "--candidate-ledger-path",
+          staged,
+          "--new-findings-count",
+          "1",
+          "--coordinator-generation",
+          "2",
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...s.env,
+            TEST_REDUCER_CRASH: point === "after" ? "after" : "before",
+            TEST_REDUCER_COPY: copied ? "1" : "0",
+          },
+        },
+      );
+      expect(crashed.signal, crashed.stderr).toBe("SIGKILL");
+      expect(readFileSync(ledger, "utf8")).toBe("newly published\n");
+      withWorkbenchDatabase(join(s.state, "workbench.sqlite3"), (db) =>
+        db.transaction(() =>
+          db
+            .prepare(
+              "UPDATE deep_scan_runs SET updated_at='2000-01-01T00:00:00Z' WHERE scan_id=?",
+            )
+            .run([s.scanId]),
+        ),
+      );
+      const recovery = s.result([
+        "claim-deep-scan-coordinator",
+        "--scan-id",
+        s.scanId,
+        "--thread-id",
+        "owner",
+      ]);
+      expect(recovery["coordinatorDisposition"]).toBe("adopted");
+      const recovered = deep(recovery);
+      expect(recovered).toMatchObject({
+        coordinatorGeneration: 3,
+      });
+      const workers = recovered["workers"] as Record<string, unknown>[];
+      expect(workers.find((w) => w["id"] === reducer)).toMatchObject({
+        status: point === "after" ? "succeeded" : "canceled",
+      });
+      for (const id of [first, second])
+        expect(workers.find((w) => w["id"] === id)).toMatchObject({
+          status: "succeeded",
+          mergeState: point === "after" ? "merged" : "buffered",
+        });
+      if (point === "before_without_baseline")
+        expect(existsSync(ledger)).toBe(false);
+      else
+        expect(readFileSync(ledger, "utf8")).toBe(
+          point === "after" ? "newly published\n" : "candidate\n",
+        );
+      expect(readFileSync(staged, "utf8")).toBe("newly published\n");
+      expect(
+        readdirSync(discovery).filter((name) => name.endsWith(".backup")),
+      ).toEqual([]);
+    }
+  },
+  30000,
+);
+
+test("concurrent Deep startup and expired coordinator adoption each have one owner", async () => {
+  const s = setup(),
+    target = join(s.directory, "concurrent-target");
+  mkdirSync(target);
+  writeFileSync(join(target, "source.ts"), "synthetic source\n");
+  const run = async (args: string[]) => {
+    const child = await promisify(execFile)(
+      node,
+      [join(PLUGIN_ROOT, "mcp/helpers.mjs"), ...args],
+      { env: s.env },
+    );
+    expect(child.stderr).toBe("");
+    return JSON.parse(child.stdout) as Record<string, unknown>;
+  };
+  const begin = [
+    "begin-deep-scan",
+    "--thread-id",
+    "owner",
+    "--target-path",
+    target,
+    "--scan-root",
+    s.scanRoot,
+  ];
+  const starts = await Promise.all([run(begin), run(begin)]);
+  expect(starts.map((value) => value["startDisposition"]).sort()).toEqual([
+    "created",
+    "joined",
+  ]);
+  const scanId = deep(starts[0]!)["scanId"] as string;
+  expect(deep(starts[1]!)["scanId"]).toBe(scanId);
+  const claim = [
+    "claim-deep-scan-coordinator",
+    "--scan-id",
+    scanId,
+    "--thread-id",
+    "owner",
+  ];
+  expect(deep(await run(claim))["coordinatorGeneration"]).toBe(2);
+  withWorkbenchDatabase(join(s.state, "workbench.sqlite3"), (db) =>
+    db.transaction(() =>
+      db
+        .prepare(
+          "UPDATE deep_scan_runs SET updated_at='2000-01-01T00:00:00Z' WHERE scan_id=?",
+        )
+        .run([scanId]),
+    ),
+  );
+  const adopted = await Promise.all([
+    run(claim),
+    run(claim),
+    run(claim),
+    run(claim),
+  ]);
+  expect(
+    adopted.map((value) => value["coordinatorDisposition"]).sort(),
+  ).toEqual(["adopted", "observing", "observing", "observing"]);
+  expect(adopted.map((value) => deep(value)["coordinatorGeneration"])).toEqual([
+    3, 3, 3, 3,
+  ]);
+});
