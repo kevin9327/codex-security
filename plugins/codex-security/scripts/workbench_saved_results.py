@@ -772,6 +772,12 @@ def merge_saved_results(
         if allow_frozen_legacy_parent and stopped_parent_seal
         else parent_drafts + worker_drafts
     )
+
+    def candidate_owner(value: Any, source_worker_id: str | None) -> str | None:
+        # Standard drafts share one candidate namespace, including model-authored
+        # worker provenance. Only registered Deep workers have separate owners.
+        return _candidate_owner(value, source_worker_id) if workers else None
+
     latest_decisions: dict[tuple[str | None, str], str] = {}
     for owner, draft in current_drafts:
         # A pending candidate may retain a finding as evidence. Reserve its latest
@@ -785,7 +791,7 @@ def merge_saved_results(
                     and (field == "deferred" or item.get("disposition") == "needs_follow_up")
                 ):
                     latest_decisions.setdefault(
-                        (_candidate_owner(item, owner), item["candidateId"]), "pending"
+                        (candidate_owner(item, owner), item["candidateId"]), "pending"
                     )
         for finding in draft["findings"]:
             if (
@@ -794,7 +800,7 @@ def merge_saved_results(
                 and (candidate_id := finding_candidate_id(finding))
             ):
                 latest_decisions.setdefault(
-                    (_candidate_owner(finding, owner), candidate_id), "reported"
+                    (candidate_owner(finding, owner), candidate_id), "reported"
                 )
         for field in ("surfaces", "explicitExclusions"):
             items = draft["coverage"].get(field, [])
@@ -805,7 +811,7 @@ def merge_saved_results(
                     and item.get("disposition") in {"reported", "rejected", "not_applicable"}
                 ):
                     latest_decisions.setdefault(
-                        (_candidate_owner(item, owner), item["candidateId"]), item["disposition"]
+                        (candidate_owner(item, owner), item["candidateId"]), item["disposition"]
                     )
     # Only the current parent may claim that another worker finding was absorbed.
     # A superseded checkpoint must not suppress a newer independent result.
@@ -891,7 +897,7 @@ def merge_saved_results(
             if relative == "parent" and parent_manifest:
                 finding = copy.deepcopy(value)
                 _ensure_finding_identity(finding, candidate_only=True)
-                owner = _candidate_owner(finding, None)
+                owner = candidate_owner(finding, None)
                 candidate_id = finding_candidate_id(finding) if isinstance(finding, dict) else None
                 if (
                     (stopped_parent_seal or accepted_checkpoints)
@@ -918,7 +924,7 @@ def merge_saved_results(
             source_value = copy.deepcopy(value)
             finding = copy.deepcopy(value)
             candidate_id = finding_candidate_id(finding)
-            owner = _candidate_owner(finding, worker_id)
+            owner = candidate_owner(finding, worker_id)
             if relative != "parent" and latest_decisions.get((owner, candidate_id)) in {
                 "rejected",
                 "not_applicable",
@@ -928,7 +934,7 @@ def merge_saved_results(
                     if (
                         isinstance(item, dict)
                         and item.get("candidateId") == candidate_id
-                        and _candidate_owner(item, None) == owner
+                        and candidate_owner(item, None) == owner
                     ):
                         if not isinstance(item.get("previousFindings"), list):
                             item["previousFindings"] = []
@@ -1048,7 +1054,7 @@ def merge_saved_results(
             for item in items:
                 if field == "openQuestions" and isinstance(item, str):
                     item = {"question": item.strip()}
-                owner = _candidate_owner(item, worker_id)
+                owner = candidate_owner(item, worker_id)
                 if isinstance(item, dict) and worker_id is not None:
                     item = copy.deepcopy(item)
                     provenance = item.setdefault("provenance", {})
@@ -1111,7 +1117,7 @@ def merge_saved_results(
             if not isinstance(item, dict):
                 retained_items.append(item)
                 continue
-            decision = latest_decisions.get((_candidate_owner(item, None), item.get("candidateId")))
+            decision = latest_decisions.get((candidate_owner(item, None), item.get("candidateId")))
             disposition = (
                 "pending"
                 if field == "deferred" or item.get("disposition") == "needs_follow_up"
@@ -1126,7 +1132,7 @@ def merge_saved_results(
             if (
                 accepted_checkpoints
                 and isinstance(item.get("candidateId"), str)
-                and _candidate_owner(item, None) is not None
+                and candidate_owner(item, None) is not None
             ):
                 # Repeated continuation can supply the same worker decision through
                 # both its aggregate and its checkpoint, with regenerated row IDs.

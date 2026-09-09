@@ -16,6 +16,7 @@ from typing import Any
 from finalize_scan_contract import (
     ContractError,
     _read_scan_local_json,
+    _read_sealed_scan,
     _recover_unsealed_coverage,
     _recover_unsealed_findings,
     _require_scan_directory,
@@ -774,9 +775,6 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         completion_ready = checkpoint_completion_ready(checkpoint, parent["mode"])
         worker_ids = db.deep_scan.restore_checkpoint_workers(connection, parent, child, db.now())
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
-        hardening, missing_receipts, sealed_artifacts = copy_checkpoint_artifacts(
-            db, parent, root, checkpoint
-        )
         missing_reports = False
         worker_report_paths = {}
         workers = connection.execute(
@@ -799,7 +797,39 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             key=lambda source: sequence[source["acceptanceId"]],
             reverse=True,
         )
+        if parent["seal_manifest_digest"] is not None:
+            parent_manifest, retained, retained_coverage, _ = _read_sealed_scan(
+                Path(parent["scan_dir"]), None, "Checkpoint continuation"
+            )
+            # Stopped-scan publication can retain findings from files written
+            # before acceptance. Keep that evidence without promoting its work
+            # to a current validation decision or credited source coverage.
+            sources.append(
+                {
+                    "source": ".",
+                    "findings": retained["findings"],
+                    "coverage": {
+                        **retained_coverage,
+                        "completeness": "partial",
+                        "reviewedFiles": [],
+                        "deferred": [
+                            item
+                            for item in retained_coverage.get("deferred", [])
+                            if item.get("id") != "scan-stopped"
+                        ],
+                    },
+                    **{
+                        key: parent_manifest["scan"][key]
+                        for key in ("scope", "threatModel")
+                        if key in parent_manifest["scan"]
+                    },
+                }
+            )
+        hardening, missing_receipts, sealed_artifacts = copy_checkpoint_artifacts(
+            db, parent, root, {"sources": sources}
+        )
         current_checkpoints = []
+        retained_checkpoints = set()
         for source in sources:
             snapshot = {
                 "scanId": child["id"],
@@ -824,7 +854,9 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 root,
                 snapshot,
                 source["source"],
-                locations=checkpoint_artifact_sources(
+                locations=[Path(parent["scan_dir"])]
+                if source.get("acceptanceId") is None
+                else checkpoint_artifact_sources(
                     Path(parent["scan_dir"]),
                     source["source"],
                     source["checkpointPath"],
@@ -840,8 +872,13 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             contents = (json.dumps(snapshot, indent=2) + "\n").encode()
             relative = f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json"
             write_scan_local_bytes(root, relative, contents)
-            if source["acceptanceId"] != parent["continuation_checkpoint_acceptance_id"]:
+            if (
+                source.get("acceptanceId") is not None
+                and source["acceptanceId"] != parent["continuation_checkpoint_acceptance_id"]
+            ):
                 current_checkpoints.append(relative)
+            elif source.get("acceptanceId") is None:
+                retained_checkpoints.add(relative)
         warnings: list[str] = []
         merged = merge_saved_results(
             root,
@@ -852,6 +889,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             stopped=False,
             reason="Continue saved source work",
             include_parent=False,
+            preserve_sources=retained_checkpoints,
             current_checkpoint_paths=current_checkpoints,
             rebase_receipts=True,
         )
@@ -923,6 +961,14 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             manifest["scan"]["threatModel"] = root_source["threatModel"]
         if hardening is not None:
             manifest["scan"]["hardening"] = hardening
+        completion_ready = (
+            completion_ready
+            and not coverage.get("deferred")
+            and not any(
+                item.get("disposition") == "needs_follow_up"
+                for item in coverage.get("surfaces", [])
+            )
+        )
         manifest["scan"]["complete"] = completion_ready
         coverage["completeness"] = "complete" if completion_ready else "partial"
         coverage["reviewedFiles"] = checkpoint["reviewedFiles"]
