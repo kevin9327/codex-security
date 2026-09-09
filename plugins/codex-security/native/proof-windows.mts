@@ -23,6 +23,7 @@ import { windowsFileSystem } from "./windows-files.mjs";
 import {
   loadWindowsBinding,
   windowsFlags as flags,
+  type WindowsCompletionFile,
   type WindowsHandle,
 } from "./windows-binding.mjs";
 
@@ -292,6 +293,124 @@ function copyPrimitivesProof(root: string) {
       replacement,
     ])
       remove(path);
+  }
+}
+
+async function completionFileProof(root: string) {
+  assert(global.gc, "Run the Windows proof with --expose-gc");
+  const path = join(root, "completion-\ud800.lock");
+  const replacement = join(root, "completion-\ufffd.lock");
+  const readonly = join(root, "completion-readonly.lock");
+  const files = windowsFileSystem(native);
+  const held = new Set<WindowsCompletionFile>();
+  const completion = (path: Buffer): WindowsCompletionFile => {
+    const result = native.openWindowsCompletionFile(path);
+    assert.equal(result.errno, 0);
+    assert(result.file);
+    return result.file;
+  };
+  const keep = (file: WindowsCompletionFile) => {
+    held.add(file);
+    return file;
+  };
+  const close = (file: WindowsCompletionFile) => {
+    assert.equal(file.close(), 0);
+    held.delete(file);
+  };
+  let probe: WindowsHandle | undefined;
+  writeFileSync(replacement, "replacement sentinel");
+  writeFileSync(readonly, "readonly sentinel");
+  try {
+    const first = keep(completion(pathBytes(path)));
+    assert.deepEqual(first.size(), { error: 0, value: "0" });
+    assert.deepEqual(first.writeZero(), { errno: 0, value: 1 });
+    assert.deepEqual(first.size(), { error: 0, value: "1" });
+    const second = keep(completion(pathBytes(path)));
+    assert.deepEqual(second.size(), { error: 0, value: "1" });
+    probe = open(path, readWrite | flags.FILE_READ_ATTRIBUTES, shareAll);
+
+    // writeZero advanced the CRT offset; locking uses that byte without seeking.
+    assert.equal(first.locking(false), 0);
+    assert.equal(second.locking(false), 0);
+    assert.equal(probe.lock(true), 33);
+    assert.equal(second.locking(true), 0);
+    assert.deepEqual(second.writeZero(), { errno: 0, value: 1 });
+    assert.equal(second.locking(false), 13);
+    assert.equal(first.locking(true), 0);
+    assert.deepEqual(first.writeZero(), { errno: 0, value: 1 });
+    assert.deepEqual(first.size(), { error: 0, value: "2" });
+    assert.deepEqual(files.readFile(pathBytes(path)), Buffer.from([0, 0]));
+
+    success(probe.lock(true));
+    assert.equal(first.seekStart(), 0);
+    assert.deepEqual(first.writeZero(), { errno: 13, value: -1 });
+    assert.equal(first.locking(false), 13);
+    success(probe.unlock());
+    assert.equal(first.seekStart(), 0);
+    assert.equal(first.locking(false), 0);
+    assert.equal(second.seekStart(), 0);
+    assert.equal(second.locking(false), 13);
+    assert.equal(probe.lock(true), 33);
+    close(first);
+    assert.equal(first.close(), 0);
+    assert.deepEqual(first.size(), { error: 6, value: "0" });
+    assert.equal(first.seekStart(), 9);
+    assert.deepEqual(first.writeZero(), { errno: 9, value: -1 });
+    assert.equal(first.locking(false), 9);
+    assert.equal(first.locking(true), 9);
+    assert.equal(second.locking(false), 0);
+    assert.equal(second.locking(true), 0);
+    close(second);
+
+    const abandoned = () => {
+      const file = completion(pathBytes(path));
+      assert.equal(file.seekStart(), 0);
+      assert.equal(file.locking(false), 0);
+    };
+    abandoned();
+    await setImmediate();
+    global.gc();
+    await setImmediate();
+    success(probe.lock(true));
+    success(probe.unlock());
+    success(probe.close());
+    probe = undefined;
+
+    success(native.setWindowsWritable(pathBytes(readonly), false));
+    assert.deepEqual(native.openWindowsCompletionFile(pathBytes(readonly)), {
+      errno: 13,
+      file: null,
+    });
+    assert.deepEqual(native.openWindowsCompletionFile(pathBytes(root)), {
+      errno: 13,
+      file: null,
+    });
+    assert.deepEqual(
+      native.openWindowsCompletionFile(
+        pathBytes(join(root, "missing-completion-parent", "file")),
+      ),
+      {
+        errno: 2,
+        file: null,
+      },
+    );
+    const device = keep(completion(Buffer.from("NUL", "utf16le")));
+    assert.deepEqual(device.size(), { error: 0, value: "0" });
+    close(device);
+    assert.equal(readFileSync(replacement, "utf8"), "replacement sentinel");
+    assert.equal(readFileSync(readonly, "utf8"), "readonly sentinel");
+    return {
+      rawNamesAndNontruncatingOpen: true,
+      seedByteAndOffset: true,
+      crtAndWin32Contention: true,
+      closeAndGarbageCollectionRelease: true,
+      closedErrorsAndNonDiskSize: true,
+    };
+  } finally {
+    probe?.close();
+    for (const file of held) file.close();
+    native.setWindowsWritable(pathBytes(readonly), true);
+    remove(path);
   }
 }
 
@@ -918,6 +1037,7 @@ if (process.argv[2] === "worker") {
           rawProcess: rawProcessProof(root),
           copyMetadata: copyMetadataProof(root),
           copyPrimitives: copyPrimitivesProof(root),
+          completionFiles: await completionFileProof(root),
           handles: handleProof(root),
           wideProcessAndPaths: wideProcessProof(root),
           garbageCollectionClosesHandle: await ownershipProof(root),

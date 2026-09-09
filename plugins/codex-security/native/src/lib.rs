@@ -8,6 +8,8 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+mod windows_completion_file;
+#[cfg(windows)]
 mod windows_copy;
 
 #[napi_derive::napi]

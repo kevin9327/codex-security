@@ -290,6 +290,7 @@ export class WindowsScanModel {
     copyFile2: unavailable,
     createWindowsSymlink: unavailable,
     copyFileCrt: unavailable,
+    openWindowsCompletionFile: unavailable,
   };
   contents(path: string): string | null {
     return this.entries.get(key(path))?.bytes.toString("base64") ?? null;

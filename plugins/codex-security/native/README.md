@@ -59,6 +59,8 @@ Five additional operations preserve Windows strings at the Node boundary. `windo
 
 `createWindowsSymlink` passes raw UTF-16LE target and destination paths and caller-supplied flags to `CreateSymbolicLinkW`, returning its numeric Windows error. The caller owns directory-target inference and retry decisions. `copyFileCrt` copies binary bytes through `_wopen`, `_read`, and `_write` with a 1 MiB buffer and non-inheritable descriptors. It opens the source before truncating the destination, closes destination then source, and returns CRT `errno`. Open errors include the failing path; read, write, and close errors return a null path. A close error replaces an earlier error, matching nested FileIO context managers. Same-file checks, metadata, and `CopyFile2` fallback decisions remain with the typed copy owner.
 
+`openWindowsCompletionFile` opens a UTF-16LE path through `_wopen` with read/write, create, binary, and non-inheritable flags and mode `0600`, returning CRT `errno`. The owned `WindowsCompletionFile` exposes only `size`, `seekStart`, `writeZero`, one-byte `locking`, and idempotent `close`. Size follows Python's Windows fstat queries and Windows errors, including size zero for non-disk handles; other operations report CRT errors. Locking uses the current offset with `LK_NBLCK` or `LK_UNLCK`. Scoped thread-local invalid-parameter suppression lets closed operations report errors without terminating the process. Explicit close and garbage collection release the descriptor. The caller owns seeding, seek order, contention handling, retries, and callback cleanup.
+
 Build on Windows after compiling the TypeScript tools, then run:
 
 ```sh

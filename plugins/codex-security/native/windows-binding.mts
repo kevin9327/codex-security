@@ -6,6 +6,15 @@ export interface WindowsResult<T = number> {
   value: T;
 }
 
+/** Owns a non-inheritable CRT descriptor used only by completion-file locking. */
+export interface WindowsCompletionFile {
+  size(): WindowsResult<string>;
+  seekStart(): number;
+  writeZero(): { errno: number; value: number };
+  locking(unlock: boolean): number;
+  close(): number;
+}
+
 /** Owns a synchronous Windows file. close() is idempotent; GC also closes it. */
 export interface WindowsHandle {
   close(): number;
@@ -74,6 +83,10 @@ export interface WindowsBinding {
     source: Buffer,
     destination: Buffer,
   ): { errno: number; path: Buffer | null };
+  openWindowsCompletionFile(path: Buffer): {
+    errno: number;
+    file: WindowsCompletionFile | null;
+  };
 }
 
 export { windowsFlags } from "./windows-flags.mjs";
