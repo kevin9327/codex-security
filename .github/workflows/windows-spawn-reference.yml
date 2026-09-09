@@ -33,6 +33,24 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: ${{ matrix.bun }}
+      - name: Compare sync and async timeouts after idle
+        shell: bash
+        run: |
+          bun -e '
+          import { execFile, spawnSync } from "node:child_process";
+          import { promisify } from "node:util";
+          const node = Bun.which("node");
+          const first = spawnSync(node, ["-e", ""], { encoding: "utf8" });
+          if (first.status !== 0) throw first.error ?? new Error(first.stderr);
+          await Bun.sleep(2000);
+          const start = performance.now();
+          const sync = spawnSync(node, ["-p", "\"ok\""], { encoding: "utf8", timeout: 1500 });
+          console.log(JSON.stringify({ kind: "sync", elapsedMs: performance.now() - start, status: sync.status, error: sync.error?.message, stdout: sync.stdout, stderr: sync.stderr }));
+          const asyncStart = performance.now();
+          const asyncResult = await promisify(execFile)(node, ["-p", "\"ok\""], { encoding: "utf8", timeout: 1500 });
+          console.log(JSON.stringify({ kind: "async", elapsedMs: performance.now() - asyncStart, ...asyncResult }));
+          if (asyncResult.stdout.trim() !== "ok" || asyncResult.stderr !== "") throw new Error("Async fixture failed");
+          '
       - name: Download the verified native artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
