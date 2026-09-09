@@ -27,7 +27,7 @@ const metadata = JSON.parse(
   ),
 ) as { packages: Package[] };
 const packages = metadata.packages
-  .filter((entry) => entry.source?.startsWith("registry+"))
+  .filter((entry) => entry.source !== null)
   .sort((left, right) => {
     const leftName = `${left.name}@${left.version}`;
     const rightName = `${right.name}@${right.version}`;
@@ -56,6 +56,13 @@ for (const entry of packages) {
   if (files.length === 0 && napiLicense.has(name)) {
     files.push(join(root, "licenses", "napi.txt"));
   }
+  if (
+    files.length === 0 &&
+    entry.name === "rustpython-wtf8" &&
+    entry.source?.startsWith("git+https://github.com/RustPython/RustPython?")
+  ) {
+    files.push(join(directory, "../../LICENSE"));
+  }
   if (files.length === 0)
     throw new Error(`Missing native dependency license: ${name}`);
   notices.push(
@@ -65,6 +72,8 @@ for (const entry of packages) {
 
 notices.push(
   `SQLite 3.53.2\n\n${await readFile(join(root, "licenses", "sqlite.txt"), "utf8")}`,
+  `@unicode/unicode-15.0.0 2.0.2 (generated SRE data)\n\n${await readFile(join(root, "../mcp-app/scripts/licenses/UNICODE-DATA-MIT.txt"), "utf8")}`,
+  `Unicode data\n\n${await readFile(join(root, "../mcp-app/node_modules/py-ast/dist/LICENSE-UNICODE"), "utf8")}`,
 );
 
 const destination = join(root, "dist");
@@ -89,5 +98,5 @@ for (const license of ["MIT", "Apache-2.0", "Unicode-3.0", "BSD-2-Clause"]) {
   );
 }
 console.log(
-  `Prepared native notices for ${packages.length} registry packages and the Rust standard library.`,
+  `Prepared native notices for ${packages.length} dependencies, Unicode data, and the Rust standard library.`,
 );

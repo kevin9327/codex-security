@@ -47,6 +47,8 @@ jobs:
           pnpm --dir plugins/codex-security/mcp-app install --frozen-lockfile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm --dir sdk/typescript run build:ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node plugins/codex-security/native/generate-unicode.mjs
       - name: Set up temporary Python filename oracle
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -78,6 +80,8 @@ jobs:
           & $nativeNode proof-sqlite.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $nativeNode proof-policy-windows.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $nativeNode proof-regex.mjs
       - name: Compare the existing Python completion lock
         run: |
           $python = (Get-Command python -ErrorAction Stop).Source
@@ -100,6 +104,8 @@ jobs:
           & $nativeNode proof-sqlite.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $nativeNode proof-policy-windows.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $nativeNode proof-regex.mjs
       - name: Upload verified native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

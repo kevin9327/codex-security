@@ -1,5 +1,6 @@
 mod errors;
 mod process;
+mod regex;
 mod sqlite;
 #[cfg(unix)]
 mod unix;

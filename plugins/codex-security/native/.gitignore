@@ -2,3 +2,4 @@
 /dist/
 /prebuilt/
 /*.mjs
+/unicode15/src/tables.rs

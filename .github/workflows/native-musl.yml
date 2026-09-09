@@ -52,7 +52,9 @@ jobs:
         working-directory: .
         run: |
           pnpm --dir sdk/typescript install --frozen-lockfile
+          pnpm --dir plugins/codex-security/mcp-app install --frozen-lockfile
           pnpm --dir sdk/typescript run build:ci
+          node plugins/codex-security/native/generate-unicode.mjs
       - name: Fetch locked Rust dependencies
         run: |
           rustup toolchain install 1.97.1 --profile minimal
@@ -76,6 +78,7 @@ jobs:
             --volume "$PWD:/source" \
             --volume "$RUNNER_TEMP/native-musl-cargo:/cargo" \
             --volume "${CARGO_HOME:-$HOME/.cargo}/registry:/cargo/registry:ro" \
+            --volume "${CARGO_HOME:-$HOME/.cargo}/git:/cargo/git:ro" \
             --env CARGO_HOME=/cargo \
             --env CARGO_NET_OFFLINE=true \
             --env RUSTUP_TOOLCHAIN=1.97.1 \
@@ -95,6 +98,7 @@ jobs:
                 test -z "$(command -v python3 || true)"
                 PATH= /usr/local/bin/node proof.mjs
                 PATH= /usr/local/bin/node proof-sqlite.mjs
+                PATH= /usr/local/bin/node proof-regex.mjs
               '
           done
       - name: Upload verified native artifact

@@ -13,6 +13,11 @@ crate-type = ["cdylib"]
 libsqlite3-sys = { version = "=0.38.2", features = ["bundled"] }
 napi = { version = "=3.12.2", default-features = false, features = ["napi8"] }
 napi-derive = "=3.6.3"
+rustpython-sre_engine = { git = "https://github.com/RustPython/RustPython", rev = "287dcd91e9c64e302c9a6cd02f3f88f49ecf558b" }
+rustpython-wtf8 = { git = "https://github.com/RustPython/RustPython", rev = "287dcd91e9c64e302c9a6cd02f3f88f49ecf558b" }
+
+[patch."https://github.com/RustPython/RustPython"]
+rustpython-unicode = { path = "unicode15" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.189"

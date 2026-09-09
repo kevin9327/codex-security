@@ -16,7 +16,9 @@ Install the pinned Rust toolchain and the existing TypeScript dependencies, then
 
 ```sh
 pnpm --dir sdk/typescript install --frozen-lockfile
+pnpm --dir plugins/codex-security/mcp-app install --frozen-lockfile
 pnpm --dir sdk/typescript run build:ci
+node plugins/codex-security/native/generate-unicode.mjs
 node plugins/codex-security/native/build.mjs
 node plugins/codex-security/native/proof.mjs
 cargo +1.97.1 fmt --check --manifest-path plugins/codex-security/native/Cargo.toml
@@ -37,9 +39,9 @@ node plugins/codex-security/native/check.mjs
 
 GNU Linux artifacts must import no glibc version newer than 2.28. Musl artifacts must be ELF images for the current architecture, depend on that architecture's musl library, and have no version requirements from glibc. GCC's own `GLIBC_2.0` compatibility exports are attributed to `libgcc_s.so.1`, not the C library. Musl has no glibc-style symbol version floor, so its runtime compatibility also requires the load proofs below. macOS artifacts must declare a deployment target of 11.0 or earlier. A build from a newer GNU Linux workstation can pass the behavioral proof and still fail this distribution check.
 
-The `native-unix` workflow builds Linux artifacts in digest-pinned manylinux 2.28 images. It mounts the pinned Rust toolchain and fetched Cargo registry, builds offline, and blocks Python commands during compilation. macOS builds set `MACOSX_DEPLOYMENT_TARGET=11.0`. CI verifies separate x64 and arm64 artifacts on both platforms using Node 20.0.0 and 22.13.0.
+The `native-unix` workflow builds Linux artifacts in digest-pinned manylinux 2.28 images. It mounts the pinned Rust toolchain and fetched Cargo registry and Git caches, builds offline, and blocks Python commands during compilation. macOS builds set `MACOSX_DEPLOYMENT_TARGET=11.0`. CI verifies separate x64 and arm64 artifacts on both platforms using Node 20.0.0 and 22.13.0.
 
-The `native-musl` workflow uses native x64 and arm64 Ubuntu workers with digest-pinned Rust 1.97.1 Alpine compiler images. Musl builds disable static CRT linkage so Node can load the shared library. After the ELF and private-path checks, each unchanged artifact runs the full proof in pinned Node 20.0.0 Alpine 3.17 and Node 22.13.0 Alpine 3.21 images, with musl 1.2.3 and 1.2.5 respectively. Compilation uses the locked registry offline; runtime containers mount only the source and artifact read-only. Python is absent, and proof processes receive an empty `PATH`.
+The `native-musl` workflow uses native x64 and arm64 Ubuntu workers with digest-pinned Rust 1.97.1 Alpine compiler images. Musl builds disable static CRT linkage so Node can load the shared library. After the ELF and private-path checks, each unchanged artifact runs the full proof in pinned Node 20.0.0 Alpine 3.17 and Node 22.13.0 Alpine 3.21 images, with musl 1.2.3 and 1.2.5 respectively. Compilation uses the locked registry and Git caches offline; runtime containers mount only the source and artifact read-only. Python is absent, and proof processes receive an empty `PATH`.
 
 Windows uses `windows-binding.mts` and the same Rust crate. `WindowsHandle` owns a non-inheritable handle through Rust's `File`; explicit `close()` and garbage collection release it. Handles never cross into Node's CRT descriptor table. Paths and returned names are UTF-16LE buffers without a NUL terminator, preserving lone surrogates. Volume identities and file positions are decimal strings; file IDs retain all 128 bits in a buffer.
 
@@ -92,3 +94,11 @@ The ignored `prebuilt` directory must contain all eight platform directories and
 The addon bundles `libsqlite3-sys` 0.38.2 and SQLite 3.53.2 using the locked C compiler dependencies. Native builds need a C compiler but no Python, node-gyp, bindgen, or system SQLite. `.cargo/config.toml` fixes SQLite URI parsing to opt-in, matching Python's `uri=False`. The existing eight-artifact distribution and notices include the engine.
 
 `proof-sqlite.mts` runs on Node 20/22 with an empty PATH and covers typed values, transactions, statement/callback lifetime, foreign keys, busy contention, and live WAL online backups that replace destinations and preserve rowids. Windows CI temporarily prepares synthetic filename expectations using Python 3.12.10, then both Node proofs consume only that data. Replace this migration-only preparation with reviewed recorded expectations after actual Windows parity is established; final Python retirement must remove the preparation and its setup step.
+
+## Regex foundation
+
+`regex-binding.mts` exposes one internal `regexFullMatch(Uint32Array, Uint16Array): boolean` operation. The caller supplies trusted bytecode from the typed Python-pattern compiler. The addon owns a copy of the instructions and converts UTF-16 units to WTF-8 before executing a full match. Astral characters and lone surrogates survive the boundary. Pattern parsing, error diagnostics, and Python 3.12 anchor semantics belong to the typed compiler; no product command uses this primitive yet.
+
+Cargo pins the existing [RustPython SRE engine and WTF-8 crate](https://github.com/RustPython/RustPython/tree/287dcd91e9c64e302c9a6cd02f3f88f49ecf558b/crates) to that revision. A scoped Cargo override supplies only the engine's five Unicode lookup functions through `unicode15`. `generate-unicode.mts` rebuilds its ignored Rust tables from the existing `@unicode/unicode-15.0.0` 2.0.2 dependency before Cargo compilation. It uses Letter, Number, Decimal_Number, White_Space, simple lowercase, and simple uppercase plus the first unconditional full-uppercase code point, matching SRE's uppercase operation. The facade adds Python's four U+001C–U+001F whitespace characters. Engine code is fetched unchanged; ICU and Unicode 17 data are not linked.
+
+Run `node plugins/codex-security/native/proof-regex.mjs` after building. All eight native CI targets run the recorded full-match cases on Node 20/22 without Python. The cases cover capture backtracking, conditionals, lookbehind, atomic and possessive repeats, large repeat counts, Unicode 15 classification and casing, and raw UTF-16. Native notices include both Git dependencies' licenses and the generated Unicode data notices.

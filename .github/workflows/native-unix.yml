@@ -58,7 +58,9 @@ jobs:
         working-directory: .
         run: |
           pnpm --dir sdk/typescript install --frozen-lockfile
+          pnpm --dir plugins/codex-security/mcp-app install --frozen-lockfile
           pnpm --dir sdk/typescript run build:ci
+          node plugins/codex-security/native/generate-unicode.mjs
       - name: Set up Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
       - name: Check Rust source and fetch locked dependencies
@@ -80,6 +82,7 @@ jobs:
             --volume "$PWD:/source" \
             --volume "$RUNNER_TEMP/native-cargo:/cargo" \
             --volume "${CARGO_HOME:-$HOME/.cargo}/registry:/cargo/registry:ro" \
+            --volume "${CARGO_HOME:-$HOME/.cargo}/git:/cargo/git:ro" \
             --volume "$(rustc --print sysroot):/toolchain:ro" \
             --volume "$(dirname "$(dirname "$(command -v node)")"):/node:ro" \
             --volume "$RUNNER_TEMP/native-no-python:/no-python:ro" \
@@ -91,6 +94,7 @@ jobs:
               /node/bin/node check.mjs
               PATH= /node/bin/node proof.mjs
               PATH= /node/bin/node proof-sqlite.mjs
+              PATH= /node/bin/node proof-regex.mjs
             '
       - name: Build and verify macOS with Node.js 22
         if: matrix.platform == 'darwin'
@@ -100,6 +104,7 @@ jobs:
           native_node="$(command -v node)"
           PATH= "$native_node" proof.mjs
           PATH= "$native_node" proof-sqlite.mjs
+          PATH= "$native_node" proof-regex.mjs
       - name: Set up Node.js 20
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
@@ -114,6 +119,7 @@ jobs:
               /node/bin/node check.mjs
               PATH= /node/bin/node proof.mjs
               PATH= /node/bin/node proof-sqlite.mjs
+              PATH= /node/bin/node proof-regex.mjs
             '
       - name: Verify the same macOS artifact with Node.js 20
         if: matrix.platform == 'darwin'
@@ -122,6 +128,7 @@ jobs:
           native_node="$(command -v node)"
           PATH= "$native_node" proof.mjs
           PATH= "$native_node" proof-sqlite.mjs
+          PATH= "$native_node" proof-regex.mjs
       - name: Upload verified native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
