@@ -406,8 +406,13 @@ export async function runCustomValidation(options: {
       (value): value is string =>
         typeof value === "string" && value.trim().length > 0,
     );
+    const validationId = `custom-validation-${candidate.candidateId}`;
+    let surfaceId = validationId;
+    let suffix = 2;
+    while (surfaceIds.has(surfaceId)) surfaceId = `${validationId}-${suffix++}`;
+    surfaceIds.add(surfaceId);
     coverage.surfaces.push({
-      id: `custom-validation-${candidate.candidateId}`,
+      id: surfaceId,
       ...(sourceCandidateId === undefined
         ? {}
         : { candidateId: sourceCandidateId }),
@@ -431,7 +436,7 @@ export async function runCustomValidation(options: {
     if (validation.disposition === "deferred") {
       coverage.completeness = "partial";
       coverage.deferred.push({
-        id: `custom-validation-${candidate.candidateId}`,
+        id: surfaceId,
         ...(sourceCandidateId === undefined
           ? {}
           : { candidateId: sourceCandidateId }),

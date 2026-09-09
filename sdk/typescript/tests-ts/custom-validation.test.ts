@@ -139,6 +139,28 @@ async function fixture(count = 1) {
   };
 }
 
+async function addCollidingSurfaceIds(scanDir: string) {
+  const coverage = await json<CoverageDocument>(join(scanDir, "coverage.json"));
+  const findings = await json<FindingsDocument>(join(scanDir, "findings.json"));
+  const ids = [
+    "custom-validation-candidate-1",
+    "custom-validation-candidate-1-2",
+    "custom-validation-candidate-1-3",
+  ];
+  coverage.surfaces[0]!.id = ids[0]!;
+  findings.findings[0]!.extensions!["customValidationSurfaceIds"] = [ids[0]!];
+  for (const id of ids.slice(1))
+    coverage.surfaces.push({
+      id,
+      label: "Reviewed source",
+      disposition: "no_issue_found",
+      receiptRefs: [],
+    });
+  await save(join(scanDir, "coverage.json"), coverage);
+  await save(join(scanDir, "findings.json"), findings);
+  return ids;
+}
+
 async function* responseEvents(
   value: unknown,
   activity?: string,
@@ -156,6 +178,30 @@ async function* responseEvents(
 }
 
 describe("custom validation", () => {
+  test("surface ID collisions preserve deferred validation evidence", async () => {
+    const f = await fixture();
+    const retainedIds = await addCollidingSurfaceIds(f.scanDir);
+    await runCustomValidation({
+      ...f,
+      run: async () => JSON.stringify(result("deferred")),
+    });
+    const coverage = await json<CoverageDocument>(
+      join(f.scanDir, "coverage.json"),
+    );
+    expect(coverage.surfaces.slice(0, 3).map((surface) => surface.id)).toEqual(
+      retainedIds,
+    );
+    expect(new Set(coverage.surfaces.map((surface) => surface.id)).size).toBe(
+      4,
+    );
+    const added = coverage.surfaces[3]!;
+    expect(added.disposition).toBe("needs_follow_up");
+    expect(added["previousFindings"]).toHaveLength(1);
+    expect(coverage.deferred).toHaveLength(1);
+    expect(coverage.deferred[0]!["id"]).toBe(added.id);
+    expect(coverage.deferred[0]!["surfaceIds"]).toEqual([retainedIds[0]!]);
+  });
+
   test("applies dispositions and assessments without changing source identity", async () => {
     const f = await fixture(4);
     const output = result(
@@ -371,6 +417,7 @@ describe("custom validation", () => {
 
   test.each([
     "standard",
+    "surface-id-collision",
     "diff",
     "empty",
     "incomplete",
@@ -504,6 +551,8 @@ describe("custom validation", () => {
                       expect(prompt).not.toContain("run `$validation` once");
                       expect(turnOptions.outputSchema).toBeUndefined();
                       await draft(scanDir, scanId, count, diff);
+                      if (scenario === "surface-id-collision")
+                        await addCollidingSurfaceIds(scanDir);
                       if (interrupted) {
                         const findings = await json<FindingsDocument>(
                           join(scanDir, "findings.json"),
@@ -867,6 +916,19 @@ describe("custom validation", () => {
           return;
         }
         const completed = await pending;
+        if (scenario === "surface-id-collision") {
+          expect(completed.coverage.completeness).toBe("complete");
+          const rows = completed.coverage.surfaces;
+          expect(rows).toHaveLength(4);
+          expect(new Set(rows.map((row) => row.id)).size).toBe(4);
+          expect(rows.slice(0, 3).map((row) => row.id)).toEqual([
+            "custom-validation-candidate-1",
+            "custom-validation-candidate-1-2",
+            "custom-validation-candidate-1-3",
+          ]);
+          expect(rows[3]!["previousFindings"]).toHaveLength(1);
+          expect(rows[3]!.receiptRefs).toContain(resultName);
+        }
         if (scenario === "standard") {
           expect(
             activities.filter(
