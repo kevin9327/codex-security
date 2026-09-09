@@ -142,6 +142,29 @@ function listing(response: Response, index: number): Listing {
 }
 const ids = (value: Listing) => value.scans.map((scan) => scan.scanId);
 
+test("scan history reads legacy cost and warning JSON from SQLite blobs", () => {
+  const cost = Buffer.from(
+    '{"usage":{"inputTokens":7},"cost":{"usd":1.0}}',
+    "utf16le",
+  ).toString("hex");
+  const warnings = Buffer.from('["é🧭"]', "utf8").toString("hex");
+  const response = run([
+    ...target("target"),
+    ...scan("scan", "target", 1),
+    sql(
+      `UPDATE scans SET cost_json=x'${cost}',completion_warnings_json=x'${warnings}'`,
+    ),
+    query(),
+  ]);
+  expect(listing(response, response.results.length - 1).scans[0]).toMatchObject(
+    {
+      usage: { inputTokens: 7 },
+      cost: { usd: 1 },
+      warnings: ["é🧭"],
+    },
+  );
+});
+
 test("filters before pagination and preserves unpaginated envelopes and the existing page cap", () => {
   const operations: Operation[] = [...target("needle"), ...target("other")];
   for (let i = 0; i < 24; i++)

@@ -29,7 +29,7 @@ export interface ScanQuery {
 }
 
 export function storedScanCostFields(
-  value: string | null,
+  value: string | Buffer | null,
 ): Record<string, unknown> {
   const stored =
     value === null
@@ -420,7 +420,9 @@ export function listScans(connection: Connection, args?: ScanQuery) {
         ),
         ...(row["completion_warnings_json"] !== "[]"
           ? {
-              warnings: parseJson(row["completion_warnings_json"] as string),
+              warnings: parseJson(
+                row["completion_warnings_json"] as string | Buffer,
+              ),
             }
           : {}),
       };

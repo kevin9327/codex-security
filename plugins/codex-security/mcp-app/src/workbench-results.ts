@@ -46,7 +46,7 @@ export interface ResultCallbacks {
 const validationError = (error: unknown) =>
   error instanceof WorkbenchValidationError ||
   error instanceof TargetInspectionError;
-const recipe = (value: string) =>
+const recipe = (value: string | Buffer) =>
   parseJson(value, false, preflightInteger, (constant) => {
     throw new Error(`non-finite JSON number '${constant}' is not supported`);
   });
@@ -72,7 +72,7 @@ export function requestedScanPaths(scan: Row): unknown {
     scan.get("recipe_json") !== null
   ) {
     const target = jsonItem(
-      recipe(scan.get("recipe_json") as string),
+      recipe(scan.get("recipe_json") as string | Buffer),
       "target",
     );
     if (jsonItem(target, "kind") === "paths") return jsonItem(target, "paths");
@@ -128,7 +128,11 @@ export function expectedCoverageMode(scan: Row): string {
       scan.get("recipe_json") !== null &&
       jsonItem(
         jsonItem(
-          parseJson(scan.get("recipe_json") as string, false, preflightInteger),
+          parseJson(
+            scan.get("recipe_json") as string | Buffer,
+            false,
+            preflightInteger,
+          ),
           "target",
         ),
         "kind",
@@ -435,7 +439,7 @@ export function scanResult(
       total: column(progress, "preflight_checks_total"),
     },
     preflightIssues: parseJson(
-      column(progress, "preflight_issues_json") as string,
+      column(progress, "preflight_issues_json") as string | Buffer,
       false,
       preflightInteger,
     ),
@@ -458,7 +462,7 @@ export function scanResult(
   return {
     artifacts,
     canceledAt: scan.get("canceled_at"),
-    ...storedScanCostFields(scan.get("cost_json") as string | null),
+    ...storedScanCostFields(scan.get("cost_json") as string | Buffer | null),
     contract: scanContract(scan),
     continuationThreadId: scan.get("continuation_thread_id"),
     failureMessage: scan.get("failure_message"),
@@ -506,7 +510,7 @@ export function scanResult(
       .at(-1),
     userContext: scan.get("user_context"),
     warnings: parseJson(
-      scan.get("completion_warnings_json") as string,
+      scan.get("completion_warnings_json") as string | Buffer,
       false,
       preflightInteger,
     ),

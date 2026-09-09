@@ -235,16 +235,22 @@ export function parseJsonBytes(
       text += String.fromCodePoint(point);
     }
   }
+  // json.loads(bytes) decodes one BOM, then sends the text directly to its decoder.
+  if (text.startsWith("\ufeff"))
+    throw new JsonSyntaxError("Expecting value: line 1 column 1 (char 0)");
   return parseJson(text, rejectDuplicates, parseInteger, parseConstant);
 }
 
 export function parseJson(
-  source: string,
+  input: string | Buffer,
   rejectDuplicates = false,
   parseInteger: (source: string) => bigint = BigInt,
   parseConstant: (source: string) => unknown = (source) =>
     new JsonFloat(source),
 ): unknown {
+  if (Buffer.isBuffer(input))
+    return parseJsonBytes(input, rejectDuplicates, parseInteger, parseConstant);
+  const source = input;
   // Scan strings directly: repeated escapes can exhaust V8's regex stack.
   const lexer =
     /"|[{}\[\]:,]|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|-?Infinity|NaN|[^ \t\r\n]/gu;

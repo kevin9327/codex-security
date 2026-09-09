@@ -62,6 +62,41 @@ const value = (response: Response, index = 0) =>
   response.outcomes[index]!.result as Record<string, unknown>;
 const occurrence = (index: number) =>
   `${index.toString(16).padStart(8, "0")}-3333-4333-8333-333333333333`;
+test("scan results retain JSON stored as UTF-8 or UTF-16 SQLite blobs", () => {
+  const documents: Record<string, unknown> = {
+    recipe_json: { target: { kind: "paths", paths: ["src", "lib"] } },
+    preflight_issues_json: [{ title: "é🧭", count: 9007199254740993n }],
+    completion_warnings_json: ["é🧭"],
+    cost_json: {
+      usage: { inputTokens: 9007199254740993n },
+      cost: { usd: new JsonFloat("1.0") },
+    },
+  };
+  const responses = run(
+    ...(["utf8", "utf16le"] as const).map(
+      (encoding): Request => ({
+        setupSql: Object.entries(documents).map(([field, document]) => {
+          const bytes = Buffer.from(stringifyJson(document), encoding);
+          const table =
+            field === "preflight_issues_json" ? "scan_progress" : "scans";
+          return `UPDATE ${table} SET ${field} = x'${bytes.toString("hex")}'`;
+        }),
+        actions: [{ operation: "scan" }, { operation: "coverage" }],
+      }),
+    ),
+  );
+  for (const response of responses) {
+    expect(response.outcomes[0]!.error).toBeUndefined();
+    expect(value(response)).toMatchObject({
+      progress: { preflightIssues: documents["preflight_issues_json"] },
+      warnings: documents["completion_warnings_json"],
+      usage: { inputTokens: 9007199254740993n },
+      cost: { usd: new JsonFloat("1.0") },
+      contract: { scope: { requiredIncludePaths: ["src", "lib"] } },
+    });
+    expect(response.outcomes[1]!.result).toBe("scoped_path");
+  }
+});
 function records(count: number) {
   return {
     finding_occurrences: Array.from({ length: count }, (_, index) => ({

@@ -95,6 +95,8 @@ test("preserves UTF encodings, BOM rules, surrogatepass and precise decoding err
       { operation: "loads", hex: "fffe000000001100" },
       { operation: "decode", hex: "eda080" },
       { operation: "loads", source: "\ufeff{}" },
+      { operation: "loads", hex: "fffefffe7b007d00" },
+      { operation: "loads", hex: "efbbbfefbbbf7b7d" },
       { operation: "defaultUtf8", source: "é😀" },
       { operation: "defaultUtf8", hex: "ff" },
     ]),
@@ -141,6 +143,14 @@ test("preserves UTF encodings, BOM rules, surrogatepass and precise decoding err
       error: "JSONDecodeError",
       message:
         "Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)",
+    },
+    {
+      error: "JSONDecodeError",
+      message: "Expecting value: line 1 column 1 (char 0)",
+    },
+    {
+      error: "JSONDecodeError",
+      message: "Expecting value: line 1 column 1 (char 0)",
     },
     { text: "é😀" },
     {
