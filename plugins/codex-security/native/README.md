@@ -65,6 +65,8 @@ Five additional operations preserve Windows strings at the Node boundary. `windo
 
 `openWindowsCompletionFile` opens a UTF-16LE path through `_wopen` with read/write, create, binary, and non-inheritable flags and mode `0600`, returning CRT `errno`. The owned `WindowsCompletionFile` exposes only `size`, `seekStart`, `writeZero`, one-byte `locking`, and idempotent `close`. Size follows Python's Windows fstat queries and Windows errors, including size zero for non-disk handles; other operations report CRT errors. Locking uses the current offset with `LK_NBLCK` or `LK_UNLCK`. Scoped thread-local invalid-parameter suppression lets closed operations report errors without terminating the process. Explicit close and garbage collection release the descriptor. The caller owns seeding, seek order, contention handling, retries, and callback cleanup.
 
+`openWindowsExclusiveFile(path, mode, readWrite = false)` creates a binary, non-inheritable CRT descriptor with `O_EXCL`, returning CRT errno and an owned `WindowsExclusiveFile`. It opens write-only by default; the temporary-directory probe requests read/write access, matching [CPython's temporary-file flags](https://github.com/python/cpython/blob/v3.12.10/Lib/tempfile.py). It exposes one-write results and idempotent close; neither method adds a filename. The caller chooses `0666` for a reviewed patch or `0600` for a temporary-file probe and owns hashing, write completion, and cleanup. Completion files share its descriptor lifetime, invalid-parameter suppression, and [CPython `_Py_write` behavior](https://github.com/python/cpython/blob/v3.12.10/Python/fileutils.c), including partial writes and interrupted-call retries.
+
 Build on Windows after compiling the TypeScript tools, then run:
 
 ```sh

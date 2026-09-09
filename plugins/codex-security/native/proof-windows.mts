@@ -26,6 +26,7 @@ import {
   loadWindowsBinding,
   windowsFlags as flags,
   type WindowsCompletionFile,
+  type WindowsExclusiveFile,
   type WindowsHandle,
 } from "./windows-binding.mjs";
 
@@ -477,6 +478,108 @@ async function completionFileProof(root: string) {
     for (const file of held) file.close();
     native.setWindowsWritable(pathBytes(readonly), true);
     remove(path);
+  }
+}
+
+async function exclusiveFileProof(root: string) {
+  assert(global.gc, "Run the Windows proof with --expose-gc");
+  const files = windowsFileSystem(native);
+  const path = join(root, "exclusive-\ud800"),
+    replacement = join(root, "exclusive-\ufffd"),
+    probe = join(root, "exclusive-probe"),
+    garbage = join(root, "exclusive-garbage");
+  writeFileSync(replacement, "replacement untouched");
+  const held = new Set<WindowsExclusiveFile>();
+  const create = (path: string, mode: number, readWrite = false) => {
+    const result = native.openWindowsExclusiveFile(
+      pathBytes(path),
+      mode,
+      readWrite,
+    );
+    assert.equal(result.errno, 0);
+    assert(result.file);
+    held.add(result.file);
+    return result.file;
+  };
+  try {
+    const file = create(path, 0o666);
+    assert.deepEqual(native.openWindowsExclusiveFile(pathBytes(path), 0o666), {
+      errno: 17,
+      file: null,
+    });
+    assert.deepEqual(file.write(Buffer.alloc(0)), { errno: 0, value: 0 });
+    const payload = Buffer.alloc(1024 * 1024 + 17);
+    for (let index = 0; index < payload.length; index++)
+      payload[index] = index % 256;
+    assert.deepEqual(file.write(payload), { errno: 0, value: payload.length });
+    assert.deepEqual(file.write(Buffer.from("\r\n\0\x1a")), {
+      errno: 0,
+      value: 4,
+    });
+    const deletion = native.openWindowsFile(
+      pathBytes(path),
+      flags.DELETE,
+      shareAll,
+      flags.OPEN_EXISTING,
+      flags.FILE_ATTRIBUTE_NORMAL,
+    );
+    assert.equal(deletion.error, 32);
+    assert.equal(deletion.handle, null);
+    assert.equal(file.close(), 0);
+    assert.equal(file.close(), 0);
+    assert.deepEqual(file.write(Buffer.from("closed")), {
+      errno: 9,
+      value: -1,
+    });
+    assert.deepEqual(
+      files.readFile(pathBytes(path)),
+      Buffer.concat([payload, Buffer.from("\r\n\0\x1a")]),
+    );
+    const candidate = create(probe, 0o600, true);
+    assert.deepEqual(candidate.write(Buffer.from("blat")), {
+      errno: 0,
+      value: 4,
+    });
+    assert.equal(candidate.close(), 0);
+    assert.equal(readFileSync(probe, "utf8"), "blat");
+    assert.deepEqual(
+      native.openWindowsExclusiveFile(
+        pathBytes(join(root, "missing-exclusive-parent", "file")),
+        0o600,
+      ),
+      { errno: 2, file: null },
+    );
+    for (const malformed of [
+      Buffer.from([0]),
+      Buffer.from("bad\0path", "utf16le"),
+    ])
+      assert.throws(() => native.openWindowsExclusiveFile(malformed, 0o600));
+    (() => {
+      const opened = native.openWindowsExclusiveFile(pathBytes(garbage), 0o600);
+      assert.equal(opened.errno, 0);
+      assert(opened.file);
+      assert.deepEqual(opened.file.write(Buffer.from("collected")), {
+        errno: 0,
+        value: 9,
+      });
+    })();
+    global.gc();
+    await setImmediate();
+    global.gc();
+    await setImmediate();
+    const released = open(garbage, flags.DELETE);
+    success(released.setDisposition(true));
+    success(released.close());
+    assert.equal(readFileSync(replacement, "utf8"), "replacement untouched");
+    return {
+      exclusiveRawCreation: true,
+      binaryWriteAndOffsets: true,
+      crtErrorsAndDeleteSharing: true,
+      probeModeAndGarbageCollection: true,
+    };
+  } finally {
+    for (const file of held) file.close();
+    for (const name of [path, probe, garbage]) remove(name);
   }
 }
 
@@ -1105,6 +1208,7 @@ if (process.argv[2] === "worker") {
           privateDirectories: privateDirectoryProof(root),
           copyPrimitives: copyPrimitivesProof(root),
           completionFiles: await completionFileProof(root),
+          exclusiveFiles: await exclusiveFileProof(root),
           handles: handleProof(root),
           wideProcessAndPaths: wideProcessProof(root),
           garbageCollectionClosesHandle: await ownershipProof(root),

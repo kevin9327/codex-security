@@ -11,6 +11,10 @@ mod windows;
 mod windows_completion_file;
 #[cfg(windows)]
 mod windows_copy;
+#[cfg(windows)]
+mod windows_crt;
+#[cfg(windows)]
+mod windows_exclusive_file;
 
 #[napi_derive::napi]
 pub fn wall_clock_microseconds() -> napi::bindgen_prelude::BigInt {

@@ -15,6 +15,12 @@ export interface WindowsCompletionFile {
   close(): number;
 }
 
+/** Owns a binary, non-inheritable CRT descriptor created exclusively for writing. */
+export interface WindowsExclusiveFile {
+  write(buffer: Buffer): { errno: number; value: number };
+  close(): number;
+}
+
 /** Owns a synchronous Windows file. close() is idempotent; GC also closes it. */
 export interface WindowsHandle {
   close(): number;
@@ -90,6 +96,14 @@ export interface WindowsBinding {
   openWindowsCompletionFile(path: Buffer): {
     errno: number;
     file: WindowsCompletionFile | null;
+  };
+  openWindowsExclusiveFile(
+    path: Buffer,
+    mode: number,
+    readWrite?: boolean,
+  ): {
+    errno: number;
+    file: WindowsExclusiveFile | null;
   };
 }
 
