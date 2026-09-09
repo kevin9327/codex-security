@@ -174,7 +174,7 @@ export type DiffMode = "revisions" | "local-patch";
 export function pathKey(path: string): string {
   return process.platform === "win32" ? path.toLowerCase() : path;
 }
-function comparePaths(left: string, right: string): number {
+export function comparePaths(left: string, right: string): number {
   const separator = process.platform === "win32" ? /[/\\]/u : /\//u;
   const a = pathKey(left).split(separator),
     b = pathKey(right).split(separator);

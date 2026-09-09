@@ -34,7 +34,7 @@ export interface GitResult {
 export function gitCommand(
   target: string,
   args: readonly string[],
-  options: GitContext & { input?: Buffer } = {},
+  options: GitContext & { input?: Buffer; stdoutPath?: string } = {},
 ): GitResult {
   if ((options.gitDir === undefined) !== (options.workTree === undefined))
     throw new Error("git_dir and work_tree must be provided together");
@@ -54,6 +54,10 @@ export function gitCommand(
     program: encodeArgument(command[0]!),
     args: command.slice(1).map(encodeArgument),
     input: options.input,
+    stdoutPath:
+      options.stdoutPath === undefined
+        ? undefined
+        : encodeArgument(options.stdoutPath),
     environment: [
       ...repositoryEnvironment.map((name) => ({
         name: encodeArgument(name),
@@ -170,7 +174,7 @@ export function decodeGitBatchBlobs(
 }
 
 // os.fsencode/fsdecode use UTF-8 surrogatepass on Windows; process arguments are UTF-16.
-function encodeFilename(value: string): Buffer {
+export function encodeFilename(value: string): Buffer {
   if (!windows) return encodePosixPath(value);
   return Buffer.concat(
     value.split(/([\ud800-\udfff])/u).map((part) => {

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, type Hash } from "node:crypto";
 import { lstatSync, statSync } from "node:fs";
 import { sep } from "node:path";
 import { unixBinding, windowsBinding } from "./native";
@@ -31,17 +31,37 @@ const pathParts = (path: string) =>
 const equalPath = (left: string, right: string) =>
   windows ? left.toLowerCase() === right.toLowerCase() : left === right;
 
+/** The Python target helpers' SystemExit boundary. */
+export class TargetInspectionError extends Error {}
+
+export function updateDigestField(
+  digest: Hash,
+  label: Buffer,
+  value: Buffer,
+): void {
+  updateDigestFieldHeader(digest, label, BigInt(value.length));
+  digest.update(value);
+}
+
+export function updateDigestFieldHeader(
+  digest: Hash,
+  label: Buffer,
+  size: bigint,
+): void {
+  const labelSize = Buffer.alloc(4),
+    valueSize = Buffer.alloc(8);
+  labelSize.writeUInt32BE(label.length);
+  valueSize.writeBigUInt64BE(size);
+  digest.update(labelSize).update(label).update(valueSize);
+}
+
 export function cleanWorktreeContentDigest(): string {
   const digest = createHash("sha256");
   for (const [label, value] of [
     ["format", "codex-security-snapshot/v1"],
     ["tracked-diff", ""],
   ] as const) {
-    const labelSize = Buffer.alloc(4),
-      valueSize = Buffer.alloc(8);
-    labelSize.writeUInt32BE(Buffer.byteLength(label));
-    valueSize.writeBigUInt64BE(BigInt(Buffer.byteLength(value)));
-    digest.update(labelSize).update(label).update(valueSize).update(value);
+    updateDigestField(digest, Buffer.from(label), Buffer.from(value));
   }
   return `codex-security-snapshot/v1:sha256:${digest.digest("hex")}`;
 }
@@ -49,7 +69,9 @@ export function cleanWorktreeContentDigest(): string {
 export function gitWorktreeContext(target: string): [string, string] {
   const root = gitOutput(target, ["rev-parse", "--show-toplevel"]);
   if (root === null)
-    throw new Error("Could not inspect the selected Git working tree.");
+    throw new TargetInspectionError(
+      "Could not inspect the selected Git working tree.",
+    );
   const repository = resolvedPath(root, false);
   const selected = resolvedPath(target, false);
   const relative = windows
@@ -60,7 +82,9 @@ export function gitWorktreeContext(target: string): [string, string] {
         ? selected.slice(repository.replace(/\/$/u, "").length + 1)
         : undefined;
   if (relative === undefined)
-    throw new Error("Scan target must stay inside its Git working tree.");
+    throw new TargetInspectionError(
+      "Scan target must stay inside its Git working tree.",
+    );
   return [repository, relative.split(sep).join("/") || "."];
 }
 
@@ -144,7 +168,7 @@ export function gitDirectorySnapshotPaths(target: string): string[] | null {
     inventoryPathspec,
   ]);
   if (listed === null)
-    throw new Error(
+    throw new TargetInspectionError(
       "Could not inspect files in the selected Git working tree.",
     );
   const paths: string[] = [];

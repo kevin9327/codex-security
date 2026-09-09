@@ -8,6 +8,8 @@ export interface ProcessRequest {
   cwd?: Buffer | null;
   /** Absent/null inherits stdin; an empty buffer sends EOF. */
   input?: Buffer | null;
+  /** Stream stdout into an existing file instead of retaining it in memory. */
+  stdoutPath?: Buffer | null;
   environment?: { name: Buffer; value: Buffer | null }[];
 }
 

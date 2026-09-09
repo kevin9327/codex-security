@@ -5,6 +5,7 @@ import {
   closeSync,
   copyFileSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
@@ -17,6 +18,8 @@ import {
   type ProcessRequest,
   type ProcessResult,
 } from "./process-binding.mjs";
+import { loadWindowsBinding } from "./windows-binding.mjs";
+import { windowsFileSystem } from "./windows-files.mjs";
 
 const windows = process.platform === "win32";
 const encode = (value: string): Buffer =>
@@ -164,6 +167,29 @@ function worker(root: string, descriptor: string): unknown {
     Buffer.concat([Buffer.alloc(262_144, 65), input]),
   );
   assert.deepEqual(flood.stderr, Buffer.alloc(262_144, 66));
+  const stdoutPath = raw(`${root}${sep}process-output-`);
+  const windowsFiles = windows ? windowsFileSystem(loadWindowsBinding()) : null;
+  if (windowsFiles)
+    windowsFiles.writeFile(stdoutPath, Buffer.from("old contents"), true);
+  else writeFileSync(stdoutPath, "old contents", { flag: "wx", mode: 0o600 });
+  const streamed = run([encode("flood")], { input, stdoutPath });
+  assert.equal(success(streamed).length, 0);
+  assert.deepEqual(streamed.stderr, flood.stderr);
+  assert.deepEqual(
+    windowsFiles ? windowsFiles.readFile(stdoutPath) : readFileSync(stdoutPath),
+    flood.stdout,
+  );
+  assert.equal(
+    success(run([encode("exit")], { input, stdoutPath }), 7).length,
+    0,
+  );
+  assert.equal(
+    (windowsFiles
+      ? windowsFiles.readFile(stdoutPath)
+      : readFileSync(stdoutPath)
+    ).length,
+    0,
+  );
   assert.equal(success(run([encode("exit")], { input }), 7).length, 0);
   assert.equal(
     success(run([encode("signal")]), windows ? 4_294_967_295 : -15).length,
@@ -258,6 +284,7 @@ function worker(root: string, descriptor: string): unknown {
     rawEnvironmentEdits: true,
     inheritedAndEmptyInput: true,
     concurrentBytePipes: true,
+    streamedByteOutput: true,
     earlyInputClose: true,
     inheritedDescriptorsClosed: true,
     restoredSignals: !windows,

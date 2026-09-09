@@ -239,7 +239,25 @@ export function windowsFileSystem(native: WindowsBinding) {
       const link = !follow && info.reparseTag === 0xa000000c;
       const directory =
         (info.attributes & flags.FILE_ATTRIBUTE_DIRECTORY) !== 0;
+      // Match pathlib's Windows stat permissions, including executable suffixes.
+      const permissions =
+        (info.attributes & 1 ? 0o444 : 0o666) |
+        (directory || /\.(?:exe|bat|cmd|com)$/iu.test(pathText(path))
+          ? 0o111
+          : 0);
       return {
+        mode:
+          (link
+            ? 0o120000
+            : directory
+              ? 0o040000
+              : type.value === 1
+                ? 0o100000
+                : type.value === 2
+                  ? 0o020000
+                  : type.value === 3
+                    ? 0o010000
+                    : 0) | permissions,
         reparseTag: info.reparseTag,
         isDirectory: () => !link && directory,
         isFile: () => !link && !directory && type.value === 1,
@@ -291,6 +309,11 @@ export function windowsFileSystem(native: WindowsBinding) {
   function openRead(path: Buffer) {
     const handle = open(path, flags.GENERIC_READ);
     return {
+      size(): bigint {
+        const result = handle.size();
+        check(result.error, path);
+        return BigInt(result.value);
+      },
       read(buffer: Buffer): number {
         const result = handle.read(buffer, 0, buffer.length);
         check(result.error, path);

@@ -28,6 +28,7 @@ pub struct ProcessRequest {
     pub args: Vec<Buffer>,
     pub cwd: Option<Either<Buffer, Null>>,
     pub input: Option<Either<Buffer, Null>>,
+    pub stdout_path: Option<Either<Buffer, Null>>,
     pub environment: Option<Vec<EnvironmentEdit>>,
 }
 
@@ -92,11 +93,23 @@ fn join<T>(thread: thread::ScopedJoinHandle<'_, io::Result<T>>) -> io::Result<T>
         .map_err(|_| io::Error::other("Process pipe worker panicked"))?
 }
 
-fn communicate(spawned: Spawned, input: Option<Vec<u8>>) -> io::Result<(i64, Vec<u8>, Vec<u8>)> {
+fn communicate(
+    spawned: Spawned,
+    input: Option<Vec<u8>>,
+    stdout_file: Option<File>,
+) -> io::Result<(i64, Vec<u8>, Vec<u8>)> {
     thread::scope(|scope| {
         // Drop this guard before scope joins if a worker cannot be started.
         let mut child = Guard(spawned.child, false);
-        let output = thread::Builder::new().spawn_scoped(scope, move || read(spawned.output))?;
+        let output = thread::Builder::new().spawn_scoped(scope, move || {
+            let mut pipe = spawned.output;
+            if let Some(mut file) = stdout_file {
+                io::copy(&mut pipe, &mut file)?;
+                Ok(Vec::new())
+            } else {
+                read(pipe)
+            }
+        })?;
         let error = thread::Builder::new().spawn_scoped(scope, move || read(spawned.error))?;
         let writer = match (spawned.input, input) {
             (Some(mut pipe), Some(bytes)) => {
@@ -127,6 +140,15 @@ fn communicate(spawned: Spawned, input: Option<Vec<u8>>) -> io::Result<(i64, Vec
 /// OS strings are raw POSIX bytes or UTF-16LE code units. No shell is requested.
 #[napi]
 pub fn raw_process(request: ProcessRequest) -> napi::Result<ProcessResult> {
+    let stdout_file = request
+        .stdout_path
+        .and_then(nullable)
+        .as_deref()
+        .map(platform::decode)
+        .transpose()?
+        .map(|path| File::options().write(true).truncate(true).open(path))
+        .transpose()
+        .map_err(|error| napi::Error::from_reason(error.to_string()))?;
     let request = Request {
         program: platform::decode(&request.program)?,
         args: request
@@ -172,7 +194,7 @@ pub fn raw_process(request: ProcessRequest) -> napi::Result<ProcessResult> {
             }
         }
     };
-    let (code, stdout, stderr) = communicate(spawned, request.input)
+    let (code, stdout, stderr) = communicate(spawned, request.input, stdout_file)
         .map_err(|error| napi::Error::from_reason(error.to_string()))?;
     Ok(ProcessResult {
         error: 0,
