@@ -20,6 +20,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
@@ -154,6 +155,50 @@ function copyMetadataProof(root: string) {
     errorPathAndOrder: true,
     fileFlags: captured.flags,
   };
+}
+
+function clearFileFlagsProof(root: string) {
+  const path = rawPath(root, fixtureName("immutable", 0xf7));
+  assert.throws(() => native.clearFileFlags(Buffer.from([0]), false));
+  if (process.platform !== "darwin") {
+    assert.equal(native.clearFileFlags(path, false), errno.ENOTSUP);
+    assert.equal(native.clearFileFlags(path, true), errno.ENOTSUP);
+    return "unsupported on this Unix host";
+  }
+  assert.equal(native.clearFileFlags(path, false), errno.ENOENT);
+  writeFileSync(path, "immutable payload");
+  const link = Buffer.concat([path, Buffer.from("-link")]);
+  symlinkSync(path, link);
+  const initial = checked(native.readCopyStat(path, true)).metadata;
+  assert(initial);
+  const immutable = { ...initial, flags: 2 }; // Darwin UF_IMMUTABLE.
+  try {
+    checked(native.copyStat(path, path, true, immutable));
+    assert.equal(native.copyStat(path, path, true, initial).errno, errno.EPERM);
+    assert.throws(() => unlinkSync(path), { code: "EPERM" });
+    assert.equal(native.clearFileFlags(link, false), 0);
+    assert.deepEqual(
+      checked(native.readCopyStat(path, true)).metadata,
+      immutable,
+    );
+    assert.equal(native.clearFileFlags(link, true), 0);
+    assert.deepEqual(
+      checked(native.readCopyStat(path, true)).metadata,
+      initial,
+    );
+    checked(native.copyStat(path, path, true, immutable));
+    assert.equal(native.clearFileFlags(path, false), 0);
+    assert.deepEqual(
+      checked(native.readCopyStat(path, true)).metadata,
+      initial,
+    );
+    assert.equal(readFileSync(path, "utf8"), "immutable payload");
+    unlinkSync(path);
+    return "macOS immutable cleanup and symlink follow choices passed";
+  } finally {
+    const result = native.clearFileFlags(path, false);
+    assert(result === 0 || result === errno.ENOENT);
+  }
 }
 
 function accountProof() {
@@ -721,6 +766,7 @@ if (process.argv[2] === "lock-worker") {
           nodeApi: 8,
           rawProcess: rawProcessProof(root),
           copyMetadata: copyMetadataProof(root),
+          clearFileFlags: clearFileFlagsProof(root),
           descriptors,
           accounts,
           directories,

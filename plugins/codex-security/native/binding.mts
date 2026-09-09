@@ -80,6 +80,8 @@ export interface UnixBinding {
     followSymlinks: boolean,
     metadata: CopyStatMetadata,
   ): { errno: number; path: Buffer | null };
+  /** Clears macOS file flags before cleanup; other Unix hosts return ENOTSUP. */
+  clearFileFlags(path: Buffer, followSymlinks: boolean): number;
   readLinkAt(directory: number, name: Buffer): { errno: number; value: Buffer };
   fileLock(
     descriptor: number,

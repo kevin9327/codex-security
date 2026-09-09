@@ -56,6 +56,27 @@ mod unix {
     }
 
     #[napi]
+    pub fn clear_file_flags(path_bytes: Buffer, follow_symlinks: bool) -> napi::Result<i32> {
+        let path = path(path_bytes)?;
+        #[cfg(target_os = "macos")]
+        {
+            let result = unsafe {
+                if follow_symlinks {
+                    libc::chflags(path.as_ptr(), 0)
+                } else {
+                    lchflags(path.as_ptr(), 0)
+                }
+            };
+            Ok(if result < 0 { last_errno() } else { 0 })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (path, follow_symlinks);
+            Ok(libc::ENOTSUP)
+        }
+    }
+
+    #[napi]
     pub fn read_copy_stat(
         source: Buffer,
         follow_symlinks: bool,
