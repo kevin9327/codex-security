@@ -1152,6 +1152,10 @@ async function testWorkerCheckpointDatabase(bundle, runtimeLabel, recordWorkerDr
   ]);
   await writeFile(path.join(repoRoot, "clean.ts"), "export const clean = true;\n");
   await writeFile(path.join(repoRoot, "pending.ts"), "export const pending = true;\n");
+  const unusualPaths = process.platform === "win32" ? [] : ["back\\slash.ts", "line\nbreak.ts"];
+  for (const filename of unusualPaths) {
+    await writeFile(path.join(repoRoot, filename), "export const unusual = true;\n");
+  }
   const python = process.env.CODEX_SECURITY_PYTHON_COMMAND ?? "python3";
   const environment = { ...process.env, CODEX_SECURITY_STATE_DIR: stateRoot };
   const workbench = (...arguments_) => JSON.parse(execFileSync(python, [
@@ -1198,6 +1202,12 @@ with sqlite3.connect(sys.argv[1]) as connection:
   };
   let client = await startClient(bundle, workerEnvironment);
   try {
+    for (const reviewedFiles of [[42], [""]]) {
+      requireToolError(await client.callTool({
+        name: "record_codex_security_scan_draft",
+        arguments: { ...input, coverage: { ...input.coverage, reviewedFiles } }
+      }), /reviewedFiles/, `${runtimeLabel}: reject malformed reviewed filenames`);
+    }
     requireToolError(await client.callTool({
       name: "record_codex_security_scan_draft",
       arguments: { ...input, coverage: { ...input.coverage, reviewedFiles: ["mistyped.ts"] } }
@@ -1210,15 +1220,22 @@ with sqlite3.connect(sys.argv[1]) as connection:
     requireSuccessfulTool(await client.callTool({
       name: "record_codex_security_scan_draft", arguments: input
     }), `${runtimeLabel}: commit worker checkpoint through Python`);
+    if (unusualPaths.length > 0) {
+      requireSuccessfulTool(await client.callTool({
+        name: "record_codex_security_scan_draft",
+        arguments: { ...input, coverage: { ...input.coverage, reviewedFiles: unusualPaths } }
+      }), `${runtimeLabel}: save exact inventory-backed POSIX filenames`);
+    }
   } finally {
     await client.close();
   }
   const { checkpoint } = workbench("get-scan", "--scan-id", scanId).scan;
-  assert.equal(checkpoint.reviewedFileCount, 1);
+  assert.equal(checkpoint.reviewedFileCount, 1 + unusualPaths.length);
   assert.equal(checkpoint.pendingCount, 1);
   const savedPath = path.join(scanRoot, checkpoint.sources[0].checkpointPath);
   const saved = await readFile(savedPath);
   assert.equal(path.basename(savedPath), `${createHash("sha256").update(saved).digest("hex")}.json`);
+  assert.deepEqual(new Set(JSON.parse(saved).coverage.reviewedFiles), new Set(["clean.ts", ...unusualPaths]));
 
   // The prior writer used a compact JSON digest for pretty-printed bytes. Replay
   // those existing files without changing their immutable names or string data.
@@ -1264,7 +1281,7 @@ with sqlite3.connect(sys.argv[1]) as connection:
     await client.close();
   }
   const resumed = workbench("get-scan", "--scan-id", scanId).scan.checkpoint;
-  assert.equal(resumed.reviewedFileCount, 2);
+  assert.equal(resumed.reviewedFileCount, 2 + unusualPaths.length);
   assert.equal(resumed.pendingCount, 0);
   assert.equal(JSON.parse(await readFile(path.join(artifactRoot, "result.json"), "utf8")).complete, true);
 

@@ -898,7 +898,7 @@ export function preserveScanCoverage(
   preserveCompleteness = true,
 ): JsonObject {
   const result = structuredClone(coverage);
-  for (const field of ["surfaces", "explicitExclusions", "deferred", "openQuestions", "reviewedFiles"] as const) {
+  for (const field of ["surfaces", "explicitExclusions", "deferred", "openQuestions"] as const) {
     const current = (result[field] as unknown[] | undefined) ?? [];
     const values = [...current];
     for (const source of sources) {
@@ -906,8 +906,13 @@ export function preserveScanCoverage(
         if (!coverageEntryPresent(values, value)) values.push(structuredClone(value));
       }
     }
-    if ((field !== "openQuestions" && field !== "reviewedFiles") || values.length > 0 || result[field] !== undefined) result[field] = values;
+    if (field !== "openQuestions" || values.length > 0 || result[field] !== undefined) result[field] = values;
   }
+  const reviewedFiles = exactUnion(
+    (result.reviewedFiles as string[] | undefined) ?? [],
+    ...sources.map((source) => (source.reviewedFiles as string[] | undefined) ?? []),
+  );
+  if (reviewedFiles.length > 0 || result.reviewedFiles !== undefined) result.reviewedFiles = reviewedFiles;
   if (
     coverageHasOutstandingWork(result)
     || (preserveCompleteness && sources.some((source) => (

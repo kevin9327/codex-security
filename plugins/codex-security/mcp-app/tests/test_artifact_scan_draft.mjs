@@ -241,6 +241,36 @@ try {
   );
   assert.equal(await readFile(path.join(committedRoot, "result.json"), "utf8"), committedResult);
 
+  const whitespaceRoot = path.join(root, "whitespace-path-worker");
+  await mkdir(whitespaceRoot);
+  const whitespaceSnapshots = [];
+  const whitespaceContext = {
+    ...workerContext,
+    root: whitespaceRoot,
+    onCheckpoint: async (checkpointPath) => {
+      whitespaceSnapshots.push(JSON.parse(await readFile(checkpointPath, "utf8")));
+    },
+  };
+  const distinctPaths = ["a.ts", " a.ts", "a.ts "];
+  for (const [index, filename] of distinctPaths.entries()) {
+    await recordCodexSecurityWorkerScanDraft(whitespaceContext, {
+      ...workerInput,
+      complete: false,
+      coverage: {
+        ...coverage,
+        reviewedFiles: [filename],
+        openQuestions: [index === 0 ? "Check the caller boundary?" : " Check the caller boundary? "],
+      },
+    });
+  }
+  const whitespaceResult = await readJson(whitespaceRoot, "result.json");
+  assert.deepEqual(new Set(whitespaceResult.coverage.reviewedFiles), new Set(distinctPaths));
+  assert.deepEqual(whitespaceSnapshots.at(-1), whitespaceResult);
+  assert.deepEqual(
+    whitespaceResult.coverage.openQuestions.map((question) => question.trim()),
+    ["Check the caller boundary?"],
+  );
+
   const checkpointRoot = path.join(root, "checkpoint-worker");
   await mkdir(checkpointRoot);
   const checkpointContext = { ...workerContext, root: checkpointRoot };
