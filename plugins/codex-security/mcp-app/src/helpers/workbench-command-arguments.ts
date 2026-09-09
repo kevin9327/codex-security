@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { ArgumentError, argumentsFor, print } from "./rank-worklists";
 import { decodePythonUtf8 } from "./utf8";
+import { workbenchFloatArgument } from "./workbench-float-argument";
 
 export interface WorkbenchCommandSpecification {
   description?: string;
@@ -12,6 +13,7 @@ export interface WorkbenchCommandSpecification {
   positiveIntegers?: string[];
   nonNegativeIntegers?: string[];
   repeated?: string[];
+  floats?: string[];
 }
 export function parseWorkbenchCommandArguments(
   command: string,
@@ -22,6 +24,7 @@ export function parseWorkbenchCommandArguments(
   | {
       values: ReturnType<typeof argumentsFor>;
       repeated: Record<string, string[]>;
+      floats: Record<string, number>;
     } {
   const argument = (name: string) =>
     `--${name}${spec.flags?.includes(name) ? "" : ` ${spec.options[name] ? `{${spec.options[name]!.join(",")}}` : name.toUpperCase().replaceAll("-", "_")}`}`;
@@ -47,13 +50,16 @@ export function parseWorkbenchCommandArguments(
       );
     }
     const selected = new Map<number, string>(),
-      repeated: Record<string, string[]> = {};
+      repeated: Record<string, string[]> = {},
+      floats: Record<string, number> = {};
     const values = argumentsFor(
       args,
       spec.required,
       [...(spec.positiveIntegers ?? []), ...(spec.nonNegativeIntegers ?? [])],
       spec.options,
       (name, value) => {
+        if (spec.floats?.includes(name))
+          floats[name] = workbenchFloatArgument(value as string, name);
         for (const [index, group] of (spec.exclusive ?? []).entries()) {
           if (!group.names.includes(name)) continue;
           const prior = selected.get(index);
@@ -87,7 +93,7 @@ export function parseWorkbenchCommandArguments(
       );
       return 0;
     }
-    return { values, repeated };
+    return { values, repeated, floats };
   } catch (error) {
     if (!(error instanceof ArgumentError)) throw error;
     const message = error.message.replace(

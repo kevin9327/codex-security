@@ -439,7 +439,7 @@ test("reports unsupported SQL parameters in order after implicit BEGIN and prese
     "Error binding parameter 1: type 'list' is not supported",
     "Python int too large to convert to SQLite INTEGER",
     "Error binding parameter 1: type 'dict' is not supported",
-    "SQLite strings must be valid UTF-8",
+    "'utf-8' codec can't encode character '\\ud800' in position 0: surrogates not allowed",
     "Error binding parameter 1: type 'dict' is not supported",
   ]);
   for (const response of responses) {

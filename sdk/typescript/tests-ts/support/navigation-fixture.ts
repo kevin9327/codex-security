@@ -29,7 +29,7 @@ export type Operation =
     }
   | { snapshot: true }
   | { lookup: "scan" | "workspace" | "resolve"; id: string }
-  | { sdk: string[]; pluginRoot: string; stateDir: string };
+  | { sdk: string[]; pluginRoot: string; stateDir: string; input?: string };
 export interface Request {
   initialize?: boolean;
   operations: Operation[];
@@ -90,6 +90,7 @@ async function main() {
               failureMessage: "Navigation failed",
             },
             operation.sdk,
+            operation.input,
           );
         } else {
           value =

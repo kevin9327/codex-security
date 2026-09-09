@@ -11,6 +11,7 @@ import { bindRepoScopesCommand } from "./src/helpers/bind-repo-scopes";
 import { snapshotSqliteCommand } from "./src/helpers/snapshot-sqlite";
 import { generateInScopeFilesCommand } from "./src/helpers/generate-in-scope-files";
 import { workbenchCommand } from "./src/helpers/workbench-command";
+import { workbenchDataCommand } from "./src/helpers/workbench-data-command";
 import { workbenchFindingCommand } from "./src/helpers/workbench-finding-command";
 import { workbenchCompletionCommand } from "./src/helpers/workbench-completion-command";
 import { workbenchProgressCommand } from "./src/helpers/workbench-progress-command";
@@ -84,6 +85,22 @@ if (command === "resolve-security-md") {
   });
 } else if (command === "generate-in-scope-files") {
   process.exitCode = generateInScopeFilesCommand(args, posixHome);
+} else if (
+  command === "compare-scans" ||
+  command === "list-unmatched-scan-pairs" ||
+  command === "save-scan-comparison" ||
+  command === "export-findings" ||
+  command === "inspect-linear-publication" ||
+  command === "prepare-linear-publication" ||
+  command === "record-linear-publications" ||
+  command === "set-scan-cost-limit" ||
+  command === "finding-workflow" ||
+  command === "severity-classification" ||
+  command === "read-severity-classification"
+) {
+  void workbenchDataCommand(command, args).then((status) => {
+    process.exitCode = status;
+  });
 } else if (
   command === "set-finding-triage" ||
   command === "request-finding-remediation" ||
@@ -190,7 +207,7 @@ if (command === "resolve-security-md") {
   process.exitCode = finalizeScanContractCommand(args);
 } else {
   console.error(
-    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | validate-scan-contract | validate-tracking-source | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | create-workspace | save-workspace | start-scan | start-prompt-only-scan | start-headless-standard-scan | register-cli-scan | set-scan-thread | get-scan-recipe | set-finding-triage | request-finding-remediation | request-finding-remediation-action | claim-finding-remediation-resend | mark-finding-remediation-delivered | release-finding-remediation-claim | cancel-finding-remediation-request | set-finding-remediation | prepare-scan-completion | complete-scan | complete-budget-exhausted-scan | cancel-scan | fail-scan | preserve-scan-results | recover-scan-results | write-scan-draft | update-progress | update-scan-context | claim-handoff-delivery | release-handoff-delivery | attach-scan-continuation-thread | mark-handoff-delivered | begin-deep-scan | get-deep-scan | claim-deep-scan-coordinator | upsert-deep-scan-worker | claim-deep-scan-dedup | commit-deep-scan-dedup | finish-deep-scan | fail-deep-scan | record-deep-scan-publication-failure | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | list-global-findings | list-repositories | list-scans | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight | deep-scan-config | finalize-scan-contract> [options]",
+    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | validate-scan-contract | validate-tracking-source | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | create-workspace | save-workspace | start-scan | start-prompt-only-scan | start-headless-standard-scan | register-cli-scan | set-scan-thread | get-scan-recipe | compare-scans | list-unmatched-scan-pairs | save-scan-comparison | export-findings | inspect-linear-publication | prepare-linear-publication | record-linear-publications | set-scan-cost-limit | finding-workflow | severity-classification | read-severity-classification | set-finding-triage | request-finding-remediation | request-finding-remediation-action | claim-finding-remediation-resend | mark-finding-remediation-delivered | release-finding-remediation-claim | cancel-finding-remediation-request | set-finding-remediation | prepare-scan-completion | complete-scan | complete-budget-exhausted-scan | cancel-scan | fail-scan | preserve-scan-results | recover-scan-results | write-scan-draft | update-progress | update-scan-context | claim-handoff-delivery | release-handoff-delivery | attach-scan-continuation-thread | mark-handoff-delivered | begin-deep-scan | get-deep-scan | claim-deep-scan-coordinator | upsert-deep-scan-worker | claim-deep-scan-dedup | commit-deep-scan-dedup | finish-deep-scan | fail-deep-scan | record-deep-scan-publication-failure | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | list-global-findings | list-repositories | list-scans | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight | deep-scan-config | finalize-scan-contract> [options]",
   );
   process.exitCode = 2;
 }
