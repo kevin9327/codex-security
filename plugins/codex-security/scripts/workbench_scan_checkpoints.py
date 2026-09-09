@@ -230,7 +230,7 @@ def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, 
         "SELECT * FROM scan_checkpoints WHERE sequence IN (SELECT MAX(sequence) "
         "FROM scan_checkpoints WHERE scan_id = ? GROUP BY source_path) OR "
         "(scan_id = ? AND acceptance_id = "
-        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ?)) "
+        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ? AND mode = 'deep')) "
         "ORDER BY source_path, sequence",
         (scan_id, scan_id, scan_id),
     ).fetchall()
@@ -281,7 +281,7 @@ def checkpoint_summary(connection: sqlite3.Connection, scan_id: str) -> dict[str
         "FROM scan_checkpoints WHERE sequence IN (SELECT MAX(sequence) FROM scan_checkpoints "
         "WHERE scan_id = ? GROUP BY source_path) OR "
         "(scan_id = ? AND acceptance_id = "
-        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ?)) "
+        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ? AND mode = 'deep')) "
         "ORDER BY source_path, sequence",
         (scan_id, scan_id, scan_id),
     ).fetchall()
@@ -652,12 +652,16 @@ def copy_checkpoint_artifacts(
     for source in checkpoint["sources"]:
         references(rebase_checkpoint_receipts(source, source["source"]))
         if source["source"] != ".":
-            sources[source["source"]] = checkpoint_artifact_sources(
-                parent_root,
-                source["source"],
-                source["checkpointPath"],
-                source["digest"],
-                source["acceptanceId"],
+            sources[source["source"]] = (
+                [parent_root / source.get("artifactSource", source["source"])]
+                if source.get("acceptanceId") is None
+                else checkpoint_artifact_sources(
+                    parent_root,
+                    source["source"],
+                    source["checkpointPath"],
+                    source["digest"],
+                    source["acceptanceId"],
+                )
             )
     portfolio = "hardening/hardening.md"
     has_portfolio = bool(parent_manifest and parent_manifest["scan"].get("hardening")) or (
@@ -682,7 +686,8 @@ def copy_checkpoint_artifacts(
     missing_receipts = False
     for relative in sorted(files):
         locations = [relative]
-        for source, directories in sources.items():
+        for source in sorted(sources, key=len, reverse=True):
+            directories = sources[source]
             if relative.startswith(source + "/"):
                 locations = [
                     (directory / relative.removeprefix(source + "/"))
@@ -731,7 +736,13 @@ def copy_checkpoint_artifacts(
 def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> dict[str, Any]:
     """Seed a new bound scan from saved semantic results without reopening its parent."""
     # Reuse the stopped-result merger so finding identity and evidence retention have one owner.
-    from workbench_saved_results import _candidate_owner, merge_saved_results
+    from workbench_saved_results import (
+        _candidate_owner,
+        _digest,
+        _read_saved_result,
+        _saved_result_sources,
+        merge_saved_results,
+    )
 
     with (
         db.scan_completion_lock(args.parent_scan_id),
@@ -803,6 +814,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             key=lambda source: sequence[source["acceptanceId"]],
             reverse=True,
         )
+        warnings: list[str] = []
         if parent["seal_manifest_digest"] is not None:
             parent_manifest, retained, retained_coverage, _ = _read_sealed_scan(
                 Path(parent["scan_dir"]), None, "Checkpoint continuation"
@@ -831,11 +843,92 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                     },
                 }
             )
+        else:
+            parent_root = Path(parent["scan_dir"])
+            accepted_sources = {source["source"] for source in sources}
+            parent_workers = connection.execute(
+                "SELECT * FROM deep_scan_workers WHERE scan_id = ?", (parent["id"],)
+            ).fetchall()
+            accepted = {
+                (row["source_path"], _digest(json.loads(row["snapshot_json"])))
+                for row in connection.execute(
+                    "SELECT source_path, snapshot_json FROM scan_checkpoints WHERE scan_id = ?",
+                    (parent["id"],),
+                )
+            }
+            baseline = connection.execute(
+                "SELECT snapshot_json FROM scan_checkpoints WHERE scan_id = ? AND acceptance_id = ?",
+                (parent["id"], parent["continuation_checkpoint_acceptance_id"]),
+            ).fetchone()
+            derived_sources = (
+                json.loads(baseline["snapshot_json"]).get("preservedSources", {})
+                if baseline
+                else {}
+            )
+            retained_sources = set()
+            for relative, worker in _saved_result_sources(parent_root, parent_workers):
+                try:
+                    draft, digest = _read_saved_result(
+                        parent_root,
+                        relative,
+                        parent["id"],
+                        kind=worker["kind"] if worker else None,
+                    )
+                except (ContractError, OSError, ValueError) as exc:
+                    if (parent_root / relative).exists():
+                        warnings.append(f"Preserved unreadable checkpoint {relative}: {exc}")
+                    continue
+                logical_source = (
+                    Path(worker["artifact_dir"]).relative_to(parent_root).as_posix()
+                    if worker
+                    else "."
+                )
+                source = Path(relative).parent
+                if source.name == "checkpoints":
+                    source = source.parent
+                source_path = source.as_posix()
+                if (
+                    (logical_source, digest) in accepted
+                    or derived_sources.get(relative) == digest
+                    or (source_path, digest) in retained_sources
+                ):
+                    continue
+                retained_sources.add((source_path, digest))
+                coverage = {
+                    **draft.get("coverage", {}),
+                    "completeness": "partial",
+                    "reviewedFiles": [],
+                }
+                if isinstance(coverage.get("deferred"), list):
+                    coverage["deferred"] = [
+                        item
+                        for item in coverage["deferred"]
+                        if not isinstance(item, dict) or item.get("id") != "scan-stopped"
+                    ]
+                # A file written before acceptance retains evidence, not completed
+                # work or a newer validation decision. Keep its physical archive
+                # location separate from its registered worker's candidate owner.
+                destination = source_path
+                if source_path != "." and source_path in accepted_sources:
+                    # Current raw evidence may reuse an accepted archive's filenames.
+                    # Keep both versions while reading from the original directory.
+                    destination = f"{source_path}/checkpoints/{digest}"
+                sources.append(
+                    {
+                        "source": destination,
+                        "artifactSource": source_path,
+                        "workerId": worker["id"] if worker else None,
+                        "findings": draft["findings"],
+                        "coverage": coverage,
+                        **{key: draft[key] for key in ("scope", "threatModel") if key in draft},
+                    }
+                )
         hardening, missing_receipts, sealed_artifacts = copy_checkpoint_artifacts(
             db, parent, root, {"sources": sources}
         )
         current_checkpoints = []
         retained_checkpoints = set()
+        seed_sources = {}
         for source in sources:
             snapshot = {
                 "scanId": child["id"],
@@ -845,8 +938,12 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 "coverage": source["coverage"],
             }
             worker = connection.execute(
-                "SELECT id, kind FROM deep_scan_workers WHERE scan_id = ? AND artifact_dir = ?",
-                (parent["id"], str(Path(parent["scan_dir"]) / source["source"])),
+                "SELECT id, kind FROM deep_scan_workers WHERE scan_id = ? AND "
+                + ("id = ?" if source.get("workerId") else "artifact_dir = ?"),
+                (
+                    parent["id"],
+                    source.get("workerId") or str(Path(parent["scan_dir"]) / source["source"]),
+                ),
             ).fetchone()
             snapshot = db.deep_scan.rebind_checkpoint_result(
                 snapshot,
@@ -860,7 +957,9 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 root,
                 snapshot,
                 source["source"],
-                locations=[Path(parent["scan_dir"])]
+                locations=[
+                    Path(parent["scan_dir"]) / source.get("artifactSource", source["source"])
+                ]
                 if source.get("acceptanceId") is None
                 else checkpoint_artifact_sources(
                     Path(parent["scan_dir"]),
@@ -873,19 +972,37 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 worker_sources=worker_sources if worker and worker["kind"] == "dedup" else None,
             )
             missing_reports |= missing
+            if missing:
+                # A stronger retained copy can become canonical during merging.
+                # Report the missing source writeup before that selection occurs.
+                _recover_unsealed_findings(
+                    {
+                        "scan": {
+                            "id": child["id"],
+                            "target": db.workbench_completion_binding(child, db.now())["target"],
+                        }
+                    },
+                    {
+                        "scanId": child["id"],
+                        "findings": json.loads(json.dumps(snapshot["findings"])),
+                    },
+                    Path(__file__).resolve().parent.parent / "schemas",
+                    root,
+                    warnings,
+                )
             if worker and worker["kind"] == "discovery" and worker["id"] in worker_ids:
                 worker_report_paths[worker_ids[worker["id"]]] = report_paths
             contents = (json.dumps(snapshot, indent=2) + "\n").encode()
             relative = f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json"
             write_scan_local_bytes(root, relative, contents)
-            if (
-                source.get("acceptanceId") is not None
-                and source["acceptanceId"] != parent["continuation_checkpoint_acceptance_id"]
+            seed_sources[relative] = _digest(snapshot)
+            if source.get("acceptanceId") is not None and (
+                parent["mode"] != "deep"
+                or source["acceptanceId"] != parent["continuation_checkpoint_acceptance_id"]
             ):
                 current_checkpoints.append(relative)
             elif source.get("acceptanceId") is None:
                 retained_checkpoints.add(relative)
-        warnings: list[str] = []
         merged = merge_saved_results(
             root,
             child["id"],
@@ -981,6 +1098,9 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         snapshot = {
             "scanId": child["id"],
             "complete": completion_ready,
+            # Bind host-derived input snapshots to this acceptance so a later
+            # continuation can distinguish them from never-accepted model output.
+            "preservedSources": seed_sources,
             **{
                 key: manifest["scan"][key]
                 for key in ("scope", "threatModel")
@@ -1003,7 +1123,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             (
                 db.parse_scan_cost(args.cost_json),
                 path.relative_to(root).as_posix() if child["mode"] == "deep" else None,
-                receipt["acceptanceId"] if child["mode"] == "deep" else None,
+                receipt["acceptanceId"],
                 first_seed,
                 child["id"],
             ),

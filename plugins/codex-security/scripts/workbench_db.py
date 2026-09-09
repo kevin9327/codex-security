@@ -538,6 +538,7 @@ def workbench_completion_binding(scan: sqlite3.Row, completed_at: str) -> dict[s
 
     return {
         "scanId": scan["id"],
+        "scanMode": scan["mode"],
         "startedAt": scan["started_at"],
         "completedAt": completed_at,
         "producer": {"name": PRODUCER_NAME, "version": plugin_version},

@@ -117,13 +117,13 @@ def _latest_successful_reducer(workers: list[Any]) -> Any | None:
     )
 
 
-def _saved_result_paths(scan_dir: Path, workers: list[Any]) -> Iterator[tuple[str, str | None]]:
+def _saved_result_sources(scan_dir: Path, workers: list[Any]) -> Iterator[tuple[str, Any | None]]:
     latest_reducer = _latest_successful_reducer(workers)
 
-    def checkpoints(directory: str, kind: str | None = None) -> Iterator[tuple[str, str | None]]:
+    def checkpoints(directory: str, worker: Any | None = None) -> Iterator[tuple[str, Any | None]]:
         for name in _children(scan_dir, directory):
             if re.fullmatch(r"[0-9a-f]{64}\.json", name):
-                yield f"{directory}/{name}", kind
+                yield f"{directory}/{name}", worker
 
     yield from checkpoints("checkpoints")
     for worker in workers:
@@ -142,9 +142,9 @@ def _saved_result_paths(scan_dir: Path, workers: list[Any]) -> Iterator[tuple[st
             if re.fullmatch(r"attempt-\d+", name)
         ]
         for directory in directories:
-            checkpoint_paths = list(checkpoints(f"{directory}/checkpoints", worker["kind"]))
+            checkpoint_paths = list(checkpoints(f"{directory}/checkpoints", worker))
             if worker["kind"] == "discovery" or checkpoint_paths:
-                yield f"{directory}/result.json", worker["kind"]
+                yield f"{directory}/result.json", worker
                 yield from checkpoint_paths
         if worker["result_manifest_path"] and (
             worker["kind"] == "discovery"
@@ -153,10 +153,15 @@ def _saved_result_paths(scan_dir: Path, workers: list[Any]) -> Iterator[tuple[st
             try:
                 yield (
                     Path(worker["result_manifest_path"]).relative_to(scan_dir).as_posix(),
-                    worker["kind"],
+                    worker,
                 )
             except ValueError:
                 continue
+
+
+def _saved_result_paths(scan_dir: Path, workers: list[Any]) -> Iterator[tuple[str, str | None]]:
+    for relative, worker in _saved_result_sources(scan_dir, workers):
+        yield relative, worker["kind"] if worker is not None else None
 
 
 def _read_saved_result(
@@ -775,8 +780,12 @@ def merge_saved_results(
 
     def candidate_owner(value: Any, source_worker_id: str | None) -> str | None:
         # Standard drafts share one candidate namespace, including model-authored
-        # worker provenance. Only registered Deep workers have separate owners.
-        return _candidate_owner(value, source_worker_id) if workers else None
+        # worker provenance. Deep ownership survives even when no worker can resume.
+        return (
+            _candidate_owner(value, source_worker_id)
+            if binding.get("scanMode", "deep" if workers else "standard") == "deep"
+            else None
+        )
 
     latest_decisions: dict[tuple[str | None, str], str] = {}
     for owner, draft in current_drafts:
