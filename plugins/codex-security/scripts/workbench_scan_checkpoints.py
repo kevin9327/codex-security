@@ -10,12 +10,13 @@ import sqlite3
 import stat
 import uuid
 from contextlib import nullcontext
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from finalize_scan_contract import (
     ContractError,
     _read_scan_local_json,
+    _recover_unsealed_coverage,
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
@@ -24,24 +25,32 @@ from workbench_target import require_scan_target_identity
 from workbench_validation import path_within_scope
 
 
-def freeze_review_files(
-    connection: sqlite3.Connection, scan_id: str, repository: Path, scopes: list[str]
-) -> None:
-    """Bind review declarations to selected source bytes without imposing a completion gate."""
+def review_file_inventory(repository: Path, scopes: list[str]) -> list[tuple[str, str]]:
+    """Read source bytes before a scan acquires the shared database write lock."""
     paths: set[Path] = set()
     for scope in scopes or ["."]:
         selected = repository / scope
         metadata = selected.lstat()
         if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_reparse_tag", 0) & 0x20000000:
             continue
-        paths.update(repo_scope_paths(repository, selected))
+        paths.update(
+            repo_scope_paths(repository, selected, allow_unfiltered_fallback=selected == repository)
+        )
+    inventory = []
     for path in sorted(paths):
         if not stat.S_ISREG(path.lstat().st_mode) or not path.resolve().is_relative_to(repository):
             continue
-        connection.execute(
-            "INSERT INTO scan_review_files (scan_id, relative_path, content_sha256) VALUES (?, ?, ?)",
-            (scan_id, path.relative_to(repository).as_posix(), file_digest(path)),
-        )
+        inventory.append((path.relative_to(repository).as_posix(), file_digest(path)))
+    return inventory
+
+
+def freeze_review_files(
+    connection: sqlite3.Connection, scan_id: str, inventory: list[tuple[str, str]]
+) -> None:
+    connection.executemany(
+        "INSERT INTO scan_review_files (scan_id, relative_path, content_sha256) VALUES (?, ?, ?)",
+        ((scan_id, path, digest) for path, digest in inventory),
+    )
 
 
 def file_digest(path: Path) -> str:
@@ -73,7 +82,7 @@ def ensure_review_files(connection: sqlite3.Connection, scan: sqlite3.Row) -> No
         if scan["recipe_json"]
         else [scan["scope"]]
     )
-    freeze_review_files(connection, scan["id"], repository, scopes)
+    freeze_review_files(connection, scan["id"], review_file_inventory(repository, scopes))
 
 
 def record_checkpoint(
@@ -131,6 +140,7 @@ def record_checkpoint(
     reviewed = coverage.get("reviewedFiles", [])
     if not isinstance(reviewed, list) or any(not isinstance(path, str) for path in reviewed):
         raise SystemExit("Checkpoint reviewedFiles must contain repository-relative file paths.")
+    reviewed = [PurePosixPath(path).as_posix() for path in reviewed]
     if reviewed:
         ensure_review_files(connection, scan)
     for path in reviewed:
@@ -369,9 +379,42 @@ def checkpoint_completion_ready(checkpoint: dict[str, Any], mode: str) -> bool:
     )
 
 
+def rebase_checkpoint_receipts(
+    value: dict[str, Any], source: str, *, to_source: bool = False
+) -> dict[str, Any]:
+    """Translate structured receipt references between a worker and its scan."""
+    result = json.loads(json.dumps(value))
+    if source == ".":
+        return result
+    prefix = source + "/"
+
+    def rebase(receipt: Any) -> Any:
+        if not isinstance(receipt, str):
+            return receipt
+        if to_source:
+            return receipt.removeprefix(prefix)
+        if receipt.startswith("artifacts/") and not receipt.startswith(prefix):
+            return prefix + receipt
+        return receipt
+
+    def references(item: Any) -> None:
+        if isinstance(item, list):
+            for child in item:
+                references(child)
+        elif isinstance(item, dict):
+            receipts = item.get("receiptRefs")
+            if isinstance(receipts, list):
+                item["receiptRefs"] = [rebase(receipt) for receipt in receipts]
+            for child in item.values():
+                references(child)
+
+    references(result)
+    return result
+
+
 def copy_checkpoint_artifacts(
     db: Any, parent: sqlite3.Row, child_root: Path, checkpoint: dict[str, Any]
-) -> dict[str, str] | None:
+) -> tuple[dict[str, str] | None, bool]:
     """Keep referenced evidence and derived hardening files with their saved result."""
     parent_root = db.require_canonical_scan_directory(Path(parent["scan_dir"]))
     parent_manifest = (
@@ -385,6 +428,7 @@ def copy_checkpoint_artifacts(
         else {}
     )
     files: set[str] = set()
+    receipt_files: set[str] = set()
     reports: set[str] = set()
 
     def references(value: Any) -> None:
@@ -404,10 +448,12 @@ def copy_checkpoint_artifacts(
             ):
                 if isinstance(receipt, str) and receipt.startswith("artifacts/"):
                     files.add(receipt)
+                    receipt_files.add(receipt)
             for item in value.values():
                 references(item)
 
-    references(checkpoint["sources"])
+    for source in checkpoint["sources"]:
+        references(rebase_checkpoint_receipts(source, source["source"]))
     portfolio = "hardening/hardening.md"
     has_portfolio = bool(parent_manifest and parent_manifest["scan"].get("hardening")) or (
         (parent_root / portfolio).exists() or (parent_root / portfolio).is_symlink()
@@ -430,10 +476,21 @@ def copy_checkpoint_artifacts(
             files.update(
                 (Path(directory) / name).relative_to(parent_root).as_posix() for name in filenames
             )
+    missing_receipts = False
     for relative in sorted(files):
-        descriptor = open_scan_local_file_descriptor(
-            parent_root, relative, "Saved checkpoint artifact"
-        )
+        try:
+            descriptor = open_scan_local_file_descriptor(
+                parent_root, relative, "Saved checkpoint artifact"
+            )
+        except ContractError as exc:
+            if (
+                relative in receipt_files
+                and relative not in sealed_artifacts
+                and isinstance(exc.__cause__, FileNotFoundError)
+            ):
+                missing_receipts = True
+                continue
+            raise
         with os.fdopen(descriptor, "rb") as source:
             contents = source.read()
         if (
@@ -442,7 +499,7 @@ def copy_checkpoint_artifacts(
         ):
             raise ContractError(f"{relative}: sealed artifact changed after completion")
         write_scan_local_bytes(child_root, relative, contents)
-    return {"portfolioPath": portfolio} if has_portfolio else None
+    return ({"portfolioPath": portfolio} if has_portfolio else None), missing_receipts
 
 
 def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> dict[str, Any]:
@@ -492,7 +549,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         completion_ready = checkpoint_completion_ready(checkpoint, parent["mode"])
         worker_ids = db.deep_scan.restore_checkpoint_workers(connection, parent, child, db.now())
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
-        hardening = copy_checkpoint_artifacts(db, parent, root, checkpoint)
+        hardening, missing_receipts = copy_checkpoint_artifacts(db, parent, root, checkpoint)
         sequence = {
             row["acceptance_id"]: row["sequence"]
             for row in connection.execute(
@@ -524,6 +581,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 worker_ids,
                 source_worker_id=worker["id"] if worker and worker["kind"] == "discovery" else None,
             )
+            snapshot = rebase_checkpoint_receipts(snapshot, source["source"])
             contents = (json.dumps(snapshot, indent=2) + "\n").encode()
             relative = f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json"
             write_scan_local_bytes(root, relative, contents)
@@ -532,20 +590,27 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         workers = connection.execute(
             "SELECT * FROM deep_scan_workers WHERE scan_id = ?", (child["id"],)
         ).fetchall()
+        warnings: list[str] = []
         merged = merge_saved_results(
             root,
             child["id"],
             db.workbench_completion_binding(child, db.now()),
             workers,
-            [],
+            warnings,
             stopped=False,
             reason="Continue saved source work",
             include_parent=False,
             current_checkpoint_paths=current_checkpoints,
+            rebase_receipts=True,
         )
         if merged is None:
             raise SystemExit("The saved semantic checkpoint could not seed the continuation.")
         manifest, findings, coverage = merged
+        if missing_receipts:
+            _recover_unsealed_coverage(
+                coverage, Path(__file__).resolve().parent.parent / "schemas", root, warnings, []
+            )
+            completion_ready = completion_ready and coverage.get("completeness") == "complete"
         for worker in workers:
             if worker["kind"] != "discovery" or worker["status"] != "queued":
                 continue
@@ -570,6 +635,9 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                     for item in coverage.get(field, [])
                     if _candidate_owner(item, None) == worker["id"]
                 ]
+            worker_snapshot = rebase_checkpoint_receipts(
+                worker_snapshot, source_path, to_source=True
+            )
             worker_contents = (json.dumps(worker_snapshot, indent=2) + "\n").encode()
             worker_path = (
                 f"{source_path}/checkpoints/{hashlib.sha256(worker_contents).hexdigest()}.json"
@@ -582,6 +650,8 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 **root_source["scope"],
                 **manifest["scan"]["scope"],
             }
+        if root_source is not None and isinstance(root_source.get("threatModel"), dict):
+            manifest["scan"]["threatModel"] = root_source["threatModel"]
         if hardening is not None:
             manifest["scan"]["hardening"] = hardening
         manifest["scan"]["complete"] = completion_ready
@@ -614,6 +684,11 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 child["id"],
             ),
         )
+        if warnings:
+            connection.execute(
+                "UPDATE scans SET completion_warnings_json = ? WHERE id = ?",
+                (json.dumps(list(dict.fromkeys(warnings))), child["id"]),
+            )
         for filename, document in (
             ("findings.json", findings),
             ("coverage.json", coverage),
@@ -696,4 +771,5 @@ def continued_deep_documents(
         frozen_source_digests=frozen,
         allow_frozen_legacy_parent=True,
         preserve_sources={relative},
+        rebase_receipts=True,
     )

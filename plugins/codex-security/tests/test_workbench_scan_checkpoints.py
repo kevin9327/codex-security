@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sqlite3
@@ -99,6 +100,110 @@ def test_checkpoint_survives_new_process_with_clean_coverage_and_pending_evidenc
         run_workbench(state, "get-scan", "--scan-id", scan_id)["scan"]["checkpoint"]
         == result["checkpoint"]
     )
+
+
+def test_checkpoint_normalizes_reviewed_path_spellings_without_changing_saved_bytes(
+    tmp_path: Path,
+) -> None:
+    state, _, scan_dir, scan_id = scan_fixture(tmp_path)
+    payload = semantic(scan_id, ["clean.ts", "./clean.ts", "././clean.ts"])
+    checkpoint = write_checkpoint(scan_dir / "checkpoints", payload)
+    original = checkpoint.read_bytes()
+    save(state, scan_id, checkpoint)
+    resumed = run_workbench(state, "get-cli-scan-resume", "--scan-id", scan_id)
+    assert resumed["checkpoint"]["reviewedFiles"] == ["clean.ts"]
+    assert resumed["checkpoint"]["remainingFiles"] == ["pending.ts"]
+    assert checkpoint.read_bytes() == original
+    assert resumed["checkpoint"]["sources"][0]["coverage"]["reviewedFiles"] == [
+        "clean.ts",
+        "./clean.ts",
+        "././clean.ts",
+    ]
+
+
+@pytest.mark.parametrize("mode", ["standard", "deep"])
+def test_full_directory_registration_with_ignore_files_does_not_require_ripgrep(
+    tmp_path: Path, mode: str
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".gitignore").write_text("ignored.ts\n")
+    (repository / "ignored.ts").write_text("export const ignored = true;\n")
+    (repository / "source.ts").write_text("export const reviewed = true;\n")
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir(mode=0o700)
+    state = tmp_path / "state"
+    result = run_workbench(
+        state,
+        "register-cli-scan",
+        "--repository",
+        str(repository),
+        "--scan-dir",
+        str(scan_dir),
+        "--recipe-json",
+        json.dumps(
+            {
+                "repository": str(repository),
+                "target": {"kind": "repository", "paths": []},
+                "mode": mode,
+                "config": {},
+            }
+        ),
+        environment={"PATH": ""},
+    )
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT relative_path FROM scan_review_files WHERE scan_id = ? ORDER BY relative_path",
+            (result["scanId"],),
+        ).fetchall() == [(".gitignore",), ("ignored.ts",), ("source.ts",)]
+
+
+def test_registration_hashes_inventory_before_taking_the_shared_database_write_lock(
+    tmp_path: Path, workbench_api, monkeypatch
+) -> None:
+    state, repository, _, existing_scan_id = scan_fixture(tmp_path)
+    scan_dir = tmp_path / "second-scan"
+    scan_dir.mkdir(mode=0o700)
+    checkpoints = workbench_api["scan_checkpoints"]
+    original_digest = checkpoints.file_digest
+    hashed = []
+
+    def digest_while_other_scan_updates(path):
+        with sqlite3.connect(state / "workbench.sqlite3", timeout=0) as other:
+            other.execute("UPDATE scans SET phase = 'discovery' WHERE id = ?", (existing_scan_id,))
+        hashed.append(path.name)
+        return original_digest(path)
+
+    monkeypatch.setattr(checkpoints, "file_digest", digest_while_other_scan_updates)
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.row_factory = sqlite3.Row
+        registered = workbench_api["register_cli_scan"](
+            connection,
+            argparse.Namespace(
+                repository=str(repository),
+                scan_dir=str(scan_dir),
+                registration_json_stdin=False,
+                recipe_json_stdin=False,
+                recipe_json=json.dumps(
+                    {
+                        "repository": str(repository),
+                        "target": {"kind": "repository", "paths": []},
+                        "mode": "standard",
+                        "config": {},
+                    }
+                ),
+                parent_scan_id=None,
+                archived_scan_dir=None,
+                archive_existing=False,
+            ),
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM scan_review_files WHERE scan_id = ?", (registered["scanId"],)
+            ).fetchone()[0]
+            == 2
+        )
+    assert sorted(hashed) == ["clean.ts", "pending.ts"]
 
 
 @pytest.mark.parametrize("source_changed", [False, True])
@@ -495,7 +600,7 @@ def test_child_registration_against_changed_source_cannot_reuse_parent_coverage(
     assert not (child_dir / "findings.json").exists()
 
 
-@pytest.mark.parametrize("receipt_change", [None, "contents", "symlink"])
+@pytest.mark.parametrize("receipt_change", [None, "contents", "symlink", "missing"])
 def test_completed_checkpoint_continuation_keeps_bound_reports_receipts_and_poc_files(
     tmp_path: Path,
     receipt_change: str | None,
@@ -560,6 +665,8 @@ def test_completed_checkpoint_continuation_keeps_bound_reports_receipts_and_poc_
         receipt = scan_dir / "artifacts/review/clean.json"
         if receipt_change == "contents":
             receipt.write_text("changed receipt\n")
+        elif receipt_change == "missing":
+            receipt.unlink()
         else:
             outside = tmp_path / "outside.json"
             outside.write_text("outside evidence\n")

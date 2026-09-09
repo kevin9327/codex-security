@@ -1418,6 +1418,22 @@ with sqlite3.connect(sys.argv[1]) as connection:
   assert.deepEqual(recovered.sources[0].findings, []);
 
   const childRoot = path.join(fixtureRoot, "continued-scan");
+  const staleWorkerFiles = [
+    "result.json.lock", "checkpoint-head.json.lock",
+    "artifacts/01_context/threat_model.md.lock", `.${randomUUID()}.tmp`
+  ];
+  await mkdir(path.join(replacement.artifactDir, "artifacts", "01_context"), { recursive: true });
+  for (const relative of staleWorkerFiles) {
+    await writeFile(path.join(replacement.artifactDir, relative), "Interrupted writer\n");
+  }
+  const retainedWorkerFiles = {
+    "artifacts/01_context/threat_model.md": "# Saved threat model\n",
+    "example.lock": "Ordinary lock-file evidence\n",
+    ".example.tmp": "Ordinary temporary-file evidence\n"
+  };
+  for (const [relative, contents] of Object.entries(retainedWorkerFiles)) {
+    await writeFile(path.join(replacement.artifactDir, relative), contents);
+  }
   await mkdir(childRoot, { mode: 0o700 });
   const { scanId: childId } = workbench("register-cli-scan", "--repository", repoRoot,
     "--scan-dir", childRoot, "--parent-scan-id", scanId, "--recipe-json", JSON.stringify({
@@ -1431,6 +1447,32 @@ with sqlite3.connect(sys.argv[1]) as connection:
   const childCoverage = JSON.parse(await readFile(path.join(childRoot, "coverage.json"), "utf8"));
   assert.ok(childCoverage.surfaces.some((surface) => surface.candidateId === "candidate-reaccepted" && surface.disposition === "rejected"));
   assert.equal(childCoverage.deferred.some((item) => item.candidateId === "candidate-reaccepted"), false);
+  const childOutput = path.join(childRoot, path.relative(scanRoot, replacement.artifactDir));
+  for (const relative of staleWorkerFiles) {
+    await assert.rejects(readFile(path.join(childOutput, relative)), { code: "ENOENT" });
+    assert.equal(await readFile(path.join(replacement.artifactDir, relative), "utf8"), "Interrupted writer\n");
+  }
+  for (const [relative, contents] of Object.entries(retainedWorkerFiles)) {
+    assert.equal(await readFile(path.join(childOutput, relative), "utf8"), contents);
+  }
+  const childHead = JSON.parse(await readFile(path.join(childOutput, "checkpoint-head.json"), "utf8"));
+  const childDraft = JSON.parse(await readFile(path.join(childOutput, "checkpoints", childHead.checkpoint), "utf8"));
+  const childWorkerId = childDraft.coverage.surfaces.find((surface) => surface.candidateId === "candidate-reaccepted").provenance.workerId;
+  client = await startClient(bundle, {
+    ...workerEnvironment,
+    CODEX_SECURITY_ARTIFACT_ROOT: childOutput,
+    CODEX_SECURITY_SCAN_ID: childId,
+    CODEX_SECURITY_WORKER_ID: childWorkerId
+  });
+  try {
+    requireSuccessfulTool(await client.callTool({
+      name: "record_codex_security_scan_draft",
+      arguments: { ...childDraft, complete: true, coverage: { ...childDraft.coverage, completeness: "complete" } }
+    }), `${runtimeLabel}: linked worker can publish after its parent's writer was interrupted`);
+  } finally {
+    await client.close();
+  }
+  assert.deepEqual(JSON.parse(await readFile(path.join(childOutput, "result.json"), "utf8")).findings, []);
 }
 
 async function testReducerWorkerToolList(bundle) {

@@ -518,8 +518,10 @@ def make_repo_rank_input(args: argparse.Namespace) -> None:
     print(f"Wrote {len(rows)} rows to {output}")
 
 
-def repo_scope_paths(repo: Path, scope_path: Path) -> list[Path]:
-    """Enumerate exactly the files selected for a repository scope review."""
+def repo_scope_paths(
+    repo: Path, scope_path: Path, *, allow_unfiltered_fallback: bool = False
+) -> list[Path]:
+    """Enumerate source files, preserving strict ignore rules for scoped reviews."""
     if scope_path.is_file():
         candidates = (scope_path,)
     else:
@@ -557,7 +559,8 @@ def repo_scope_paths(repo: Path, scope_path: Path) -> list[Path]:
                         if path.is_file()
                     )
                 )
-                if has_ignore_rules:
+                # Full-directory scans already support filesystem-only enumeration.
+                if has_ignore_rules and not allow_unfiltered_fallback:
                     raise SystemExit(
                         "Could not safely enumerate ignored scoped files without Git or ripgrep."
                     ) from exc

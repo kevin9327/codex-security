@@ -253,6 +253,7 @@ def insert_running_scan(
     target_summary: str | None,
     scope_file_count: int,
     timestamp: str,
+    review_files: list[tuple[str, str]],
     handoff_status: str = "pending",
     model: str | None = None,
     reasoning_effort: str | None = None,
@@ -316,9 +317,8 @@ def insert_running_scan(
         "UPDATE workspaces SET active_scan_id = ?, updated_at = ? WHERE id = ?",
         (scan_id, timestamp, workspace["id"]),
     )
+    freeze_review_files(connection, scan_id, review_files)
     if native_scan:
-        if workspace["default_mode"] in {"standard", "deep"}:
-            freeze_review_files(connection, scan_id, target, [scope])
         scan = next(connection.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)))
         false_positives = get_scan_feedback(connection, scan)["falsePositives"]
         if false_positives:

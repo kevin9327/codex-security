@@ -34,7 +34,7 @@ from finalize_scan_contract import (
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
-from workbench_scan_checkpoints import record_checkpoint
+from workbench_scan_checkpoints import rebase_checkpoint_receipts, record_checkpoint
 from workbench_validation import path_within_scope
 
 _PUBLISHED_OUTPUTS = (
@@ -477,6 +477,7 @@ def merge_saved_results(
     include_parent: bool = True,
     preserve_sources: set[str] | None = None,
     current_checkpoint_paths: list[str] | None = None,
+    rebase_receipts: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
     """Read only bound parent/worker files; return an unsealed loss-preserving union."""
     initial_warnings = set(warnings)
@@ -606,6 +607,11 @@ def merge_saved_results(
             if frozen_source_digests is not None and frozen_source_digests[relative] != digest:
                 raise ContractError("checkpoint changed after the scan stopped")
             source_digests[relative] = digest
+            if rebase_receipts:
+                source = Path(relative).parent
+                if source.name == "checkpoints":
+                    source = source.parent
+                draft = rebase_checkpoint_receipts(draft, source.as_posix())
             # Recovery expects coverage, but reducer results only contain findings
             # and context. Add an empty value after hashing the original result.
             sources.append((relative, {"coverage": {}, **draft}, worker_id))

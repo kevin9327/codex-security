@@ -617,6 +617,21 @@ def rebind_checkpoint_result(
     return document
 
 
+def transient_worker_artifact(relative: Path, *, include_locks: bool = True) -> bool:
+    """Identify the semantic writer's synchronization files, preserving ordinary evidence."""
+    return bool(
+        re.fullmatch(r"\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp", relative.name)
+    ) or (
+        include_locks
+        and relative.as_posix()
+        in {
+            "result.json.lock",
+            "checkpoint-head.json.lock",
+            "artifacts/01_context/threat_model.md.lock",
+        }
+    )
+
+
 def restore_checkpoint_workers(
     connection: sqlite3.Connection, parent: sqlite3.Row, child: sqlite3.Row, timestamp: str
 ) -> dict[str, str]:
@@ -752,7 +767,11 @@ def restore_checkpoint_workers(
                 )
             for name in filenames:
                 path = Path(directory) / name
-                if path != result_path and name != "checkpoint-head.json":
+                if (
+                    path != result_path
+                    and name != "checkpoint-head.json"
+                    and not transient_worker_artifact(path.relative_to(artifact_dir))
+                ):
                     copy_file(path)
         copied_prompt = copy_file(prompt_path)
         result = rebind_checkpoint_result(
@@ -1419,17 +1438,12 @@ def isolate_checkpoint_worker(
                     scan, str(Path(current) / name), "Saved Deep evidence", kind="directory"
                 )
             for name in filenames:
-                # The artifact writer uses UUID-named atomic temporary files.
-                if re.fullmatch(r"\.[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp", name):
-                    continue
                 path = Path(current) / name
-                if current_output and path.relative_to(directory).as_posix() in {
-                    "result.json",
-                    "checkpoint-head.json",
-                    "result.json.lock",
-                    "checkpoint-head.json.lock",
-                    "artifacts/01_context/threat_model.md.lock",
-                }:
+                relative = path.relative_to(directory)
+                if transient_worker_artifact(relative, include_locks=current_output) or (
+                    current_output
+                    and relative.as_posix() in {"result.json", "checkpoint-head.json"}
+                ):
                     continue
                 copy_file(path, target / path.relative_to(directory))
 

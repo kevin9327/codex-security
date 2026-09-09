@@ -862,6 +862,11 @@ def start_scan(connection: sqlite3.Connection, args: argparse.Namespace) -> dict
             diff_target,
             metadata=target_metadata,
         )
+        review_files = (
+            scan_checkpoints.review_file_inventory(target, [scope])
+            if workspace["default_mode"] in {"standard", "deep"}
+            else []
+        )
         target_root = scan_target_root(args.scan_root, target)
         target_root.mkdir(parents=True, exist_ok=True)
         if manages_transaction:
@@ -914,6 +919,7 @@ def start_scan(connection: sqlite3.Connection, args: argparse.Namespace) -> dict
             target_summary=target_summary,
             scope_file_count=scope_file_count,
             timestamp=timestamp,
+            review_files=review_files,
             model=args.model,
             reasoning_effort=args.reasoning_effort,
         )
@@ -966,6 +972,11 @@ def _start_prompt_driven_scan(
     )
     diff_identity = scan_diff_identity(diff_target)
     target_identity = scan_target_identity(target, diff_target)
+    review_files = (
+        scan_checkpoints.review_file_inventory(target, [scope])
+        if args.mode in {"standard", "deep"}
+        else []
+    )
     target_root = scan_target_root(args.scan_root, target)
 
     connection.execute("BEGIN IMMEDIATE")
@@ -1072,6 +1083,7 @@ def _start_prompt_driven_scan(
             target_summary=target_summary,
             scope_file_count=scope_file_count,
             timestamp=timestamp,
+            review_files=review_files,
             handoff_status="delivered",
             model=args.model,
             reasoning_effort=args.reasoning_effort,
@@ -1701,6 +1713,11 @@ def register_cli_scan(connection: sqlite3.Connection, args: argparse.Namespace) 
             diff_target["contentDigest"] = worktree_content_digest(repository)
     mode = "diff" if diff_target is not None else recipe["mode"]
     target_identity = scan_target_identity(repository, diff_target)
+    review_files = (
+        scan_checkpoints.review_file_inventory(repository, paths)
+        if mode in {"standard", "deep"}
+        else []
+    )
     scope_file_count = (
         directory_snapshot_regular_file_count(repository)
         if not paths
@@ -1762,6 +1779,7 @@ def register_cli_scan(connection: sqlite3.Connection, args: argparse.Namespace) 
             target_summary=None,
             scope_file_count=scope_file_count,
             timestamp=timestamp,
+            review_files=review_files,
             handoff_status="delivered",
             scan_dir=scan_dir,
         )
@@ -1776,8 +1794,6 @@ def register_cli_scan(connection: sqlite3.Connection, args: argparse.Namespace) 
         )
         if workflow_id is not None:
             register_workflow_scan(connection, workflow_id, scan_id, str(scan_dir), timestamp)
-        if mode in {"standard", "deep"}:
-            scan_checkpoints.freeze_review_files(connection, scan_id, repository, paths)
         connection.commit()
     except BaseException:
         connection.rollback()
