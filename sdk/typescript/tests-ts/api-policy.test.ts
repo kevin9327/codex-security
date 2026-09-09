@@ -27,11 +27,9 @@ import {
   type SecurityPolicyStage,
 } from "../src/index.js";
 import { preparedRuntime } from "./support/api-events.js";
-import type { PluginPythonOptions } from "../src/runtime.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 import {
   POLICY,
-  PYTHON,
   addPolicySubmodule,
   policyFixture,
   policyGit,
@@ -71,7 +69,6 @@ async function setup(
   const threads: ThreadOptions[] = [];
   const prompts: string[] = [];
   const turns: TurnOptions[] = [];
-  const pythonSelections: PluginPythonOptions[] = [];
   const stages: SecurityPolicyStage[] = [
     "architecture",
     "threat_model",
@@ -84,10 +81,6 @@ async function setup(
       prepareRuntime: async () => {
         options.onPrepare?.();
         return runtime;
-      },
-      resolvePluginPython: async (selection: PluginPythonOptions) => {
-        pythonSelections.push(selection);
-        return PYTHON;
       },
       requirePrivatePolicyOutputDirectory: async (path: string) => {
         await options.secureOutput?.(path);
@@ -129,7 +122,6 @@ async function setup(
     threads,
     prompts,
     turns,
-    pythonSelections,
     configuration: () => configuration,
   };
 }
@@ -212,10 +204,9 @@ describe("CodexSecurity policy API", () => {
     await f.security.close();
   });
 
-  test("uses the client's Python and renders preview controls visibly", async () => {
+  test("renders preview controls visibly without a Python interpreter", async () => {
     const content = `${POLICY}\n\u001b]52;c;c3ludGhldGlj\u0007\u202eOwner note\n`;
     const f = await setup({
-      config: { pythonPath: "configured-policy-python" },
       stream: async function* (stage) {
         yield* events(stage, {
           ...stageResult(stage),
@@ -227,15 +218,9 @@ describe("CodexSecurity policy API", () => {
       outputDir: f.outputDir,
     });
     const preview = await f.security.previewPolicy(draft);
-    expect(f.pythonSelections).toHaveLength(2);
-    for (const selection of f.pythonSelections)
-      expect(selection).toMatchObject({
-        configuredPath: "configured-policy-python",
-        protectedRoot: f.repository,
-      });
     expect(preview).not.toMatch(/[\u001b\u0007\p{Bidi_Control}]/u);
     expect(preview).toContain("\\u001b]52;c;c3ludGhldGlj\\u0007\\u202e");
-    expect(await securityPolicyDiff(draft, PYTHON)).toContain(
+    expect(await securityPolicyDiff(draft)).toContain(
       "\u001b]52;c;c3ludGhldGlj\u0007\u202eOwner note",
     );
     expect(await readFile(draft.draftPath, "utf8")).toBe(content);
@@ -1042,7 +1027,7 @@ describe("CodexSecurity policy API", () => {
       const generated = await f.security.generatePolicy(f.repository, options);
       expect(generated.scope).toBe(scope);
       expect(f.prompts[0]).toContain("Inherited guidance.");
-      expect(await securityPolicyDiff(generated, PYTHON)).toContain(
+      expect(await securityPolicyDiff(generated)).toContain(
         `b/${scope}/SECURITY.md`,
       );
       expect(await readdir(component)).toEqual([]);

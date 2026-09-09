@@ -16,13 +16,6 @@ import { PLUGIN_ROOT } from "../plugin-root.js";
 
 export const POLICY =
   "# Security Policy\n\n## Security Invariants\n\nRequests must be authorized before reading another account's records.\n";
-export const PYTHON = execFileSync(
-  process.env["PYTHON"] ??
-    (process.platform === "win32" ? "python" : "python3"),
-  ["-c", "import sys; print(sys.executable)"],
-  { encoding: "utf8" },
-).trim();
-
 export function policyGit(repository: string, ...args: string[]): void {
   execFileSync("git", [
     "-C",

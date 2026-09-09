@@ -390,10 +390,10 @@ try {
 ```
 
 `preflightPolicy()` checks local inputs without starting Codex.
-`previewPolicy()` previews the supplied in-memory draft, uses the client's Python
-setting, and makes terminal control characters visible. Editing the saved file
-does not change that object. The standalone `securityPolicyDiff()` returns a raw diff
-for files or other non-terminal uses; pass an interpreter explicitly if needed.
+`previewPolicy()` previews the supplied in-memory draft and makes terminal
+control characters visible. Editing the saved file does not change that object.
+The standalone `securityPolicyDiff(draft, signal?)` returns a raw diff for files
+or other non-terminal uses. Both compute the diff in TypeScript.
 `generatePolicy()` accepts `auth`, `path`, `knowledgeBasePaths`, `outputDir`,
 `maxCostUsd`, `signal`, and progress and cost callbacks. An optional
 `answerQuestions` callback receives each group of up to three owner questions
@@ -705,7 +705,9 @@ Custom Codex executables need thread source attribution for `exec` and
 command shims such as `codex.cmd` fall back to the bundled executable.
 
 All bundled helpers use Node.js. This breaking release removes the ignored
-`--python` options, SDK `pythonPath`, and `WorkbenchCommandOptions.python`.
+`--python` options, SDK `pythonPath`, `WorkbenchCommandOptions.python`, and
+the interpreter argument to `securityPolicyDiff()` (pass the optional abort
+signal as its second argument).
 Remove these from command lines and SDK configurations; no replacement is
 needed. The product no longer uses `PYTHON` or sets `PYTHONUTF8`.
 

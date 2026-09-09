@@ -37,6 +37,7 @@
     "dist",
     "_bundled_plugin",
     "LICENSE",
+    "PYTHON-DIFFLIB-LICENSE.txt",
     "README.md"
   ],
   "publishConfig": {

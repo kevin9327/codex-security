@@ -13,7 +13,6 @@ import type { PolicyPrompt } from "../src/security-policy-cli.js";
 import { capture, dependencies, FakeSignals } from "./cli-fixtures.js";
 import {
   POLICY,
-  PYTHON,
   policyFixture,
   stageResult,
 } from "./support/security-policy.js";
@@ -107,7 +106,7 @@ function policyDependencies(
         ) => {
           options.onPreview?.();
           return formatSecurityPolicyText(
-            await securityPolicyDiff(draft, PYTHON, preview.signal),
+            await securityPolicyDiff(draft, preview.signal),
             true,
           );
         },
@@ -462,12 +461,12 @@ describe("policy CLI", () => {
         policyDependencies(f, {
           draft,
           onPreview: () => {
-            throw new Error("Python preview failed");
+            throw new Error("Policy preview failed");
           },
         }),
       ),
     ).toBe(0);
-    expect(stderr.text()).toContain("Python preview failed");
+    expect(stderr.text()).toContain("Policy preview failed");
     expect(stderr.text()).toContain(draft.draftPath);
     expect(await readFile(draft.draftPath, "utf8")).toBe(POLICY);
   });

@@ -2943,9 +2943,6 @@ export async function main(
         pluginPath: optionValue("--plugin-path")
           .optional()
           .describe(PLUGIN_PATH_DESCRIPTION),
-        python: optionValue("--python")
-          .optional()
-          .describe(PYTHON_PATH_DESCRIPTION),
         codex: z
           .array(optionValue("--codex"))
           .default([])
@@ -2989,7 +2986,6 @@ export async function main(
                 repository: resolveCliPath(directory, args.repository ?? "."),
                 config: {
                   pluginPath: options.pluginPath,
-                  pythonPath: options.python,
                   codexOverrides: parseCodexOverrides(
                     options.codex,
                     options.model,

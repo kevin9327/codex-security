@@ -25,7 +25,8 @@ import type { ScanAuthentication, ScanOptions } from "./api.js";
 import { jsonForPrompt } from "./codex-prompt.js";
 import type { ScanCost } from "./cost.js";
 import { CodexSecurityError, InvalidTargetError } from "./errors.js";
-import { resolvePluginPython, type ProcessEnvironment } from "./runtime.js";
+import type { ProcessEnvironment } from "./runtime.js";
+import { unifiedPolicyDiff } from "./security-policy-diff.js";
 import {
   abortable,
   enclosingGitWorktreeRoot,
@@ -953,60 +954,25 @@ export async function runSecurityPolicyStages(options: {
   };
 }
 
-/** Raw unified diff. A Python resolver is called only when there is a change.
- * Use CodexSecurity.previewPolicy() for terminal output. */
+/** Raw unified diff. Use CodexSecurity.previewPolicy() for terminal output. */
 export async function securityPolicyDiff(
   draft: SecurityPolicyDraft,
-  python?: string | (() => Promise<string>),
   signal?: AbortSignal,
 ): Promise<string> {
   draft = { ...draft };
   const target = await resolveDraftTarget(draft, signal);
   await requireUnchangedSecurityPolicy(target, draft, signal);
   if (draft.previousContent === draft.content) return "";
-  const selectedPython = typeof python === "function" ? await python() : python;
-  const interpreter =
-    selectedPython ??
-    (await resolvePluginPython({
-      protectedRoot:
-        (await enclosingGitWorktreeRoots(draft.repository, signal)).at(-1) ??
-        draft.repository,
-      signal,
-    }));
   const label = relative(draft.repository, draft.targetPath)
     .split(sep)
     .join("/");
-  const script = [
-    "import difflib, json, sys",
-    "before, after, fromfile, tofile = json.loads(sys.stdin.buffer.read().decode('utf-8'))",
-    "def lines(text):",
-    "    parts = text.split('\\n')",
-    "    return [part + '\\n' for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])",
-    "for line in difflib.unified_diff(lines(before), lines(after), fromfile=fromfile, tofile=tofile):",
-    "    sys.stdout.buffer.write(line.encode('utf-8'))",
-    "    if not line.endswith('\\n'): sys.stdout.buffer.write(b'\\n\\\\ No newline at end of file\\n')",
-  ].join("\n");
-  const diff = await new Promise<string>((resolve, reject) => {
-    const child = execFile(
-      interpreter,
-      ["-I", "-c", script],
-      {
-        encoding: "utf8",
-        maxBuffer: Infinity,
-        signal,
-      },
-      (error, stdout) => (error === null ? resolve(stdout) : reject(error)),
-    );
-    child.stdin!.on("error", reject);
-    child.stdin!.end(
-      JSON.stringify([
-        draft.previousContent ?? "",
-        draft.content,
-        draft.previousContent === null ? "/dev/null" : diffLabel(`a/${label}`),
-        diffLabel(`b/${label}`),
-      ]),
-    );
-  });
+  const diff = await unifiedPolicyDiff(
+    draft.previousContent ?? "",
+    draft.content,
+    draft.previousContent === null ? "/dev/null" : diffLabel(`a/${label}`),
+    diffLabel(`b/${label}`),
+    signal,
+  );
   await requireUnchangedSecurityPolicy(
     await resolveDraftTarget(draft, signal),
     draft,

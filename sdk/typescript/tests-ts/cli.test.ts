@@ -2792,6 +2792,7 @@ describe("CLI", () => {
       ],
       [["bulk-scan", "--python=python3"], "Unknown flag: --python"],
       [["export", ".", "--python=python3"], "Unknown flag: --python"],
+      [["policy", ".", "--python=python3"], "Unknown flag: --python"],
       [["scan", ".", "--path", "--dry-run"], "Missing value for flag"],
       [["scan", ".", "--model", "--dry-run"], "Missing value for flag"],
       [["scan", ".", "--effort", "--dry-run"], "Missing value for flag"],

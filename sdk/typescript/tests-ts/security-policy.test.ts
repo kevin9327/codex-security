@@ -12,7 +12,8 @@ import {
 } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as policyDiff from "../src/security-policy-diff.js";
 import {
   inspectSecurityPolicySources,
   readSecurityPolicy,
@@ -27,7 +28,6 @@ import { preparePersistentOutputRoot } from "../src/runtime.js";
 import { runTestInSubprocess } from "./support/test-subprocess.js";
 import {
   POLICY,
-  PYTHON,
   addPolicySubmodule,
   policyFixture,
   policyGit,
@@ -900,7 +900,7 @@ describe("security policy preview", () => {
       });
       expect(draft.content).toBe(content);
       expect(await readFile(draft.draftPath, "utf8")).toBe(content);
-      expect(await securityPolicyDiff(draft, PYTHON)).toContain(
+      expect(await securityPolicyDiff(draft)).toContain(
         "+Report vulnerabilities privately.",
       );
       expect(await readdir(f.repository)).toEqual([]);
@@ -910,7 +910,7 @@ describe("security policy preview", () => {
   test("previews the exact proposed policy without changing source", async () => {
     const f = await fixture();
     const draft = await f.generate();
-    const diff = await securityPolicyDiff(draft, PYTHON);
+    const diff = await securityPolicyDiff(draft);
     expect(diff).toContain("--- /dev/null\n+++ b/SECURITY.md\n");
     expect(diff).toContain("+Requests must be authorized");
     expect(await readdir(f.repository)).toEqual([]);
@@ -926,7 +926,7 @@ describe("security policy preview", () => {
       const draft = await f.generate({ path: "component" });
       if (change === "add") policyGit(component, "init", "--quiet");
       else await rename(join(component, ".git"), join(f.root, "previous-git"));
-      await expect(securityPolicyDiff(draft, PYTHON)).rejects.toThrow(
+      await expect(securityPolicyDiff(draft)).rejects.toThrow(
         "destination changed",
       );
       expect(await readSecurityPolicy(draft.targetPath)).toBe(null);
@@ -942,7 +942,7 @@ describe("security policy preview", () => {
         ...(stage === "policy" ? { markdown: "# New policy" } : {}),
       }),
     });
-    const diff = await securityPolicyDiff(draft, PYTHON);
+    const diff = await securityPolicyDiff(draft);
     expect(diff).toContain("-# Old policy\n\\ No newline at end of file\n");
     expect(diff).toContain("+# New policy\n\\ No newline at end of file\n");
   });
@@ -958,32 +958,25 @@ describe("security policy preview", () => {
         ...(stage === "policy" ? { markdown: after } : {}),
       }),
     });
-    const diff = await securityPolicyDiff(draft, PYTHON);
+    const diff = await securityPolicyDiff(draft);
     expect(diff).toContain("@@ -1 +1 @@\n");
     expect(diff).toContain(`-${before}\n\\ No newline at end of file\n`);
     expect(diff).toContain(`+${after}\n\\ No newline at end of file\n`);
     expect(diff.match(/No newline at end of file/gu)).toHaveLength(2);
   });
 
-  test("reports an early diff subprocess exit without an unhandled stdin error", async () => {
-    const name =
-      "reports an early diff subprocess exit without an unhandled stdin error";
-    if (runTestInSubprocess(import.meta.path, name)) return;
+  test("previews large policies without resolving an interpreter", async () => {
     const f = await fixture();
     const draft = await f.generate();
-    const node = execFileSync("node", ["-p", "process.execPath"], {
-      encoding: "utf8",
-    }).trim();
-    await expect(
-      securityPolicyDiff(
-        { ...draft, content: `# Policy\n${"x".repeat(900_000)}` },
-        node,
-      ),
-    ).rejects.toThrow();
+    const content = `# Policy\n${"x".repeat(900_000)}`;
+    const diff = await securityPolicyDiff({ ...draft, content });
+    expect(diff).toContain(
+      `+${"x".repeat(900_000)}\n\\ No newline at end of file\n`,
+    );
     expect(await readdir(f.repository)).toEqual([]);
   });
 
-  test("preserves UTF-8 text and CRLF content independently of Python's locale", async () => {
+  test("preserves UTF-8 text and CRLF content without an external interpreter", async () => {
     const f = await fixture();
     await writeFile(
       join(f.repository, "SECURITY.md"),
@@ -997,7 +990,7 @@ describe("security policy preview", () => {
           : {}),
       }),
     });
-    const diff = await securityPolicyDiff(draft, PYTHON);
+    const diff = await securityPolicyDiff(draft);
     expect(diff).toContain("--- a/SECURITY.md\n+++ b/SECURITY.md\n");
     expect(diff).toContain("-Old naïve 🔒\r\n");
     expect(diff).toContain("+New π 🛡️\r\n");
@@ -1011,7 +1004,7 @@ describe("security policy preview", () => {
       const scope = "component\n+++ forged\tname";
       await mkdir(join(f.repository, scope));
       const draft = await f.generate({ path: scope });
-      const diff = await securityPolicyDiff(draft, PYTHON);
+      const diff = await securityPolicyDiff(draft);
       expect(diff).toContain(
         `+++ ${JSON.stringify(`b/${scope}/SECURITY.md`)}\n`,
       );
@@ -1027,7 +1020,7 @@ describe("security policy preview", () => {
     const scope = `component${controls}name`;
     await mkdir(join(f.repository, scope));
     const draft = await f.generate({ path: scope });
-    const diff = await securityPolicyDiff(draft, PYTHON);
+    const diff = await securityPolicyDiff(draft);
     expect(diff).not.toMatch(/\p{Bidi_Control}/u);
     for (const character of controls)
       expect(diff).toContain(
@@ -1039,33 +1032,37 @@ describe("security policy preview", () => {
     const f = await fixture();
     await writeFile(join(f.repository, "SECURITY.md"), POLICY);
     const draft = await f.generate();
-    expect(
-      await securityPolicyDiff(draft, async () => {
-        throw new Error("An unchanged preview must not resolve Python");
-      }),
-    ).toBe("");
+    expect(await securityPolicyDiff(draft)).toBe("");
     await writeFile(draft.targetPath, "# Concurrent policy\n");
-    await expect(securityPolicyDiff(draft, PYTHON)).rejects.toThrow(
-      "changed after",
-    );
+    await expect(securityPolicyDiff(draft)).rejects.toThrow("changed after");
   });
 
   test("rejects changes made while preparing a policy diff", async () => {
+    const original = policyDiff.unifiedPolicyDiff;
     for (const changed of ["target", "inherited"]) {
       const f = await fixture();
       await mkdir(join(f.repository, "component"));
       const rootPolicy = join(f.repository, "SECURITY.md");
       await writeFile(rootPolicy, "# Original root policy\n");
       const draft = await f.generate({ path: "component" });
-      await expect(
-        securityPolicyDiff(draft, async () => {
-          await writeFile(
-            changed === "target" ? draft.targetPath : rootPolicy,
-            "# Concurrent policy\n",
-          );
-          return PYTHON;
-        }),
-      ).rejects.toThrow("changed after");
+      const computeDiff = spyOn(
+        policyDiff,
+        "unifiedPolicyDiff",
+      ).mockImplementation(async (...args) => {
+        const diff = await original(...args);
+        await writeFile(
+          changed === "target" ? draft.targetPath : rootPolicy,
+          "# Concurrent policy\n",
+        );
+        return diff;
+      });
+      try {
+        await expect(securityPolicyDiff(draft)).rejects.toThrow(
+          "changed after",
+        );
+      } finally {
+        computeDiff.mockRestore();
+      }
     }
   });
 
@@ -1086,7 +1083,7 @@ describe("security policy preview", () => {
           "# New intermediate policy\n",
         );
       else await rm(rootPolicy);
-      await expect(securityPolicyDiff(draft, "missing-python")).rejects.toThrow(
+      await expect(securityPolicyDiff(draft)).rejects.toThrow(
         "inherited SECURITY.md changed",
       );
       expect(await readSecurityPolicy(draft.targetPath)).toBe(
@@ -1133,11 +1130,11 @@ describe("security policy preview", () => {
     await writeFile(linkedPolicy, "# Owner policy\n");
     await symlink(linkedPolicy, join(f.repository, "SECURITY.md"), "file");
     const draft = await f.generate({ path: "component" });
-    expect(await securityPolicyDiff(draft, PYTHON)).toContain(
+    expect(await securityPolicyDiff(draft)).toContain(
       "b/component/SECURITY.md",
     );
     await writeFile(linkedPolicy, "# Changed owner policy\n");
-    await expect(securityPolicyDiff(draft, PYTHON)).rejects.toThrow(
+    await expect(securityPolicyDiff(draft)).rejects.toThrow(
       "inherited SECURITY.md changed",
     );
 
@@ -1167,7 +1164,7 @@ describe("security policy preview", () => {
       "file",
     );
     const draft = await f.generate({ path: "component" });
-    expect(await securityPolicyDiff(draft, PYTHON)).toContain(
+    expect(await securityPolicyDiff(draft)).toContain(
       "b/component/SECURITY.md",
     );
   });
@@ -1194,7 +1191,7 @@ describe("security policy preview", () => {
         await symlink(intermediate, inherited, "file");
       }
       if (change === "dangle") await rm(ownerPolicy);
-      await expect(securityPolicyDiff(draft, "missing-python")).rejects.toThrow(
+      await expect(securityPolicyDiff(draft)).rejects.toThrow(
         "inherited SECURITY.md changed",
       );
       expect(await readFile(target, "utf8")).toBe("# Original policy\n");

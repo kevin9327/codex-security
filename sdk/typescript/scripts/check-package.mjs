@@ -104,6 +104,7 @@ const required = [
   "package/package.json",
   "package/README.md",
   "package/LICENSE",
+  "package/PYTHON-DIFFLIB-LICENSE.txt",
   "package/bin/codex-security.mjs",
   "package/dist/index.js",
   "package/dist/index.d.ts",
@@ -160,6 +161,7 @@ const allowedRoot = new Set([
   "package/package.json",
   "package/README.md",
   "package/LICENSE",
+  "package/PYTHON-DIFFLIB-LICENSE.txt",
   "package/bin/codex-security.mjs",
 ]);
 const distFiles = new Set(
@@ -205,6 +207,7 @@ const distFiles = new Set(
     "scan-history-renderer",
     "scan-logs",
     "security-policy",
+    "security-policy-diff",
     "security-policy-cli",
     "scan-sessions",
     "server/index",
