@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFile,
@@ -13,7 +14,7 @@ import { scanPreflightCodexConfig } from "../src/api.js";
 import { main } from "../src/cli.js";
 import { DEFAULT_CODEX_CONFIG } from "../src/config.js";
 import { ScanCostTracker } from "../src/cost.js";
-import { runWorkbench } from "../src/runtime.js";
+import { prepareScanArtifactRestorer, runWorkbench } from "../src/runtime.js";
 import { capture, dependencies } from "./cli-fixtures.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 import { TestClient } from "./support/api-client.js";
@@ -41,6 +42,7 @@ async function savedScan(
     cost?: boolean;
     maxCostUsd?: number;
     custom?: boolean;
+    postScanPrompt?: string;
   } = {},
 ) {
   const root = await temporaryDirectory();
@@ -86,6 +88,9 @@ async function savedScan(
       ? {}
       : { maxCostUsd: options.maxCostUsd }),
     ...(options.custom ? { validationMode: "custom" } : {}),
+    ...(options.postScanPrompt === undefined
+      ? {}
+      : { postScanPrompt: options.postScanPrompt }),
   };
   const registration = await command(
     [
@@ -190,6 +195,7 @@ async function resume(
   >,
   options: {
     failExport?: boolean;
+    failRestorer?: boolean;
     beforeWorkbench?: (args: readonly string[]) => Promise<void>;
   } = {},
 ) {
@@ -223,6 +229,11 @@ async function resume(
               throw new Error("Synthetic local export failure");
             return runWorkbench(workbenchOptions, args, input);
           },
+          prepareScanArtifactRestorer: options.failRestorer
+            ? async () => {
+                throw new Error("Synthetic restorer setup failure");
+              }
+            : prepareScanArtifactRestorer,
           createCodex,
         }),
     },
@@ -825,6 +836,9 @@ async function saveCompleteCheckpoint(f: Fixture, missingReceipt = false) {
   await f.checkpoint(f.scanDir, f.scanId, {
     scanId: f.scanId,
     complete: true,
+    ...(f.recipe.validationMode === "custom"
+      ? { scope: { validationMode: "custom" } }
+      : {}),
     findings: current.sources[0]!.findings,
     coverage: {
       ...current.sources[0]!.coverage,
@@ -1064,5 +1078,278 @@ test.each(["prepare-scan-completion", "complete-scan"])(
     expect(result.cost).toEqual(previousCost);
     expect(result.findings.findings).toHaveLength(1);
     expect(result.coverage.completeness).toBe("complete");
+  },
+);
+
+test.each([false, true])(
+  "completed checkpoint runs only its saved post-scan instructions (custom: %s)",
+  async (custom) => {
+    const postScanPrompt = "Write the requested follow-up note.";
+    const f = await savedScan({
+      running: true,
+      custom,
+      postScanPrompt,
+      maxCostUsd: 100,
+    });
+    await saveCompleteCheckpoint(f);
+    await f.command([
+      "fail-scan",
+      "--scan-id",
+      f.scanId,
+      "--message",
+      "Synthetic export interruption",
+      "--cost-json",
+      JSON.stringify(previousCost),
+    ]);
+    const parent = await readFile(
+      join(f.scanDir, "scan-manifest.json"),
+      "utf8",
+    );
+    const prompts: string[] = [];
+    let childDirectory = "";
+    let childId = "";
+    const threadId = randomUUID();
+    const outcome = await resume(f, (options) => ({
+      startThread(threadOptions) {
+        childDirectory = threadOptions.workingDirectory!;
+        childId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+        return {
+          id: threadId,
+          async runStreamed(prompt) {
+            prompts.push(prompt as string);
+            expect(prompt).toBe(postScanPrompt);
+            expect(
+              (await f.command(["get-scan", "--scan-id", childId]))["scan"],
+            ).toMatchObject({
+              progress: { status: "complete" },
+            });
+            await writeFile(
+              join(childDirectory, "follow-up.txt"),
+              "Follow-up complete.\n",
+            );
+            return { events: completedEvents(threadId) };
+          },
+        };
+      },
+      resumeThread() {
+        throw new Error("The follow-up must use the child directory");
+      },
+    }));
+    expect(outcome.code, outcome.stderr).toBe(0);
+    expect(prompts).toEqual([postScanPrompt]);
+    expect(await readFile(join(childDirectory, "follow-up.txt"), "utf8")).toBe(
+      "Follow-up complete.\n",
+    );
+    expect(await readFile(join(f.scanDir, "scan-manifest.json"), "utf8")).toBe(
+      parent,
+    );
+    const result = JSON.parse(outcome.stdout);
+    expect(result.findings.findings).toHaveLength(1);
+    expect(result.cost.estimatedUsd).toBeGreaterThan(previousCost.estimatedUsd);
+    expect(result.cost.inputTokens).toBe(previousCost.inputTokens + 10);
+    expect(
+      (await f.command(["get-scan", "--scan-id", childId]))["scan"],
+    ).toMatchObject({
+      continuationThreadId: threadId,
+      cost: result.cost,
+      progress: { status: "complete" },
+    });
+  },
+);
+
+test("completed checkpoint preserves sealed results when its optional follow-up changes an artifact", async () => {
+  const f = await savedScan({
+    running: true,
+    postScanPrompt: "Write a follow-up.",
+    maxCostUsd: 100,
+  });
+  await saveCompleteCheckpoint(f);
+  await f.command([
+    "fail-scan",
+    "--scan-id",
+    f.scanId,
+    "--message",
+    "Synthetic export interruption",
+    "--cost-json",
+    JSON.stringify(previousCost),
+  ]);
+  let childId = "";
+  let childDirectory = "";
+  let manifest = "";
+  let findings = "";
+  const threadId = randomUUID();
+  const outcome = await resume(f, (options) => ({
+    startThread(threadOptions) {
+      childId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+      childDirectory = threadOptions.workingDirectory!;
+      return {
+        id: threadId,
+        async runStreamed(prompt) {
+          expect(prompt).toBe(f.recipe.postScanPrompt!);
+          manifest = await readFile(
+            join(childDirectory, "scan-manifest.json"),
+            "utf8",
+          );
+          findings = await readFile(
+            join(childDirectory, "findings.json"),
+            "utf8",
+          );
+          await writeFile(join(childDirectory, "findings.json"), "{}\n");
+          return { events: completedEvents(threadId) };
+        },
+      };
+    },
+  }));
+  expect(outcome.code, outcome.stderr).toBe(0);
+  expect(outcome.stderr).toContain("Could not run post-scan instructions:");
+  expect(
+    await readFile(join(childDirectory, "scan-manifest.json"), "utf8"),
+  ).toBe(manifest);
+  expect(await readFile(join(childDirectory, "findings.json"), "utf8")).toBe(
+    findings,
+  );
+  expect(
+    (await f.command(["get-scan", "--scan-id", childId]))["scan"],
+  ).toMatchObject({
+    progress: { status: "complete" },
+    cost: { inputTokens: previousCost.inputTokens + 10 },
+  });
+});
+
+test.each(["exhausted", "unknown"] as const)(
+  "completed checkpoint refuses a follow-up without a usable saved budget (%s)",
+  async (budget) => {
+    const f = await savedScan({
+      running: true,
+      postScanPrompt: "Run the saved follow-up.",
+      maxCostUsd: budget === "exhausted" ? 10 : 100,
+    });
+    await saveCompleteCheckpoint(f);
+    await f.command([
+      "fail-scan",
+      "--scan-id",
+      f.scanId,
+      "--message",
+      "Synthetic export interruption",
+      ...(budget === "unknown"
+        ? []
+        : ["--cost-json", JSON.stringify(previousCost)]),
+    ]);
+    if (budget === "unknown") await rm(f.sessionPath);
+    let calls = 0;
+    const outcome = await resume(f, () => {
+      calls++;
+      throw new Error("No budget remains for the follow-up");
+    });
+    expect(outcome.code).toBe(2);
+    expect(calls).toBe(0);
+    expect(outcome.stderr).toContain(
+      budget === "unknown"
+        ? "cost is unavailable"
+        : "reached its saved total cost limit",
+    );
+  },
+);
+
+test("completed checkpoint retains follow-up cost when the total reaches its saved limit", async () => {
+  const f = await savedScan({
+    running: true,
+    postScanPrompt: "Run the saved follow-up.",
+    maxCostUsd: previousCost.estimatedUsd + 0.000001,
+  });
+  await saveCompleteCheckpoint(f);
+  await f.command([
+    "fail-scan",
+    "--scan-id",
+    f.scanId,
+    "--message",
+    "Synthetic export interruption",
+    "--cost-json",
+    JSON.stringify(previousCost),
+  ]);
+  let childId = "";
+  const threadId = randomUUID();
+  const outcome = await resume(f, (options) => ({
+    startThread() {
+      childId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+      return {
+        id: threadId,
+        async runStreamed() {
+          return { events: completedEvents(threadId) };
+        },
+      };
+    },
+  }));
+  expect(outcome.code, outcome.stderr).toBe(2);
+  expect(outcome.stderr).toContain("exceeded the");
+  const child = (await f.command(["get-scan", "--scan-id", childId]))[
+    "scan"
+  ] as {
+    cost: { estimatedUsd: number; inputTokens: number };
+    progress: { status: string };
+  };
+  expect(child.progress.status).toBe("complete");
+  expect(child.cost.estimatedUsd).toBeGreaterThan(f.recipe.maxCostUsd!);
+  expect(child.cost.inputTokens).toBe(previousCost.inputTokens + 10);
+});
+
+test.each(["prepare", "restorer"] as const)(
+  "completed checkpoint records no inference before a local %s failure",
+  async (phase) => {
+    const f = await savedScan({
+      running: true,
+      postScanPrompt: "Run the saved follow-up.",
+      maxCostUsd: 100,
+    });
+    await saveCompleteCheckpoint(f);
+    await f.command([
+      "fail-scan",
+      "--scan-id",
+      f.scanId,
+      "--message",
+      "Synthetic export interruption",
+      "--cost-json",
+      JSON.stringify(previousCost),
+    ]);
+    let childId = "";
+    let calls = 0;
+    const outcome = await resume(
+      f,
+      (options) => ({
+        startThread() {
+          childId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+          return {
+            id: randomUUID(),
+            async runStreamed() {
+              calls++;
+              throw new Error("Unpaid setup must not dispatch a follow-up");
+            },
+          };
+        },
+      }),
+      { failExport: phase === "prepare", failRestorer: phase === "restorer" },
+    );
+    expect(outcome.code).toBe(phase === "prepare" ? 2 : 0);
+    expect(outcome.stderr).toContain(
+      phase === "prepare"
+        ? "Synthetic local export failure"
+        : "Synthetic restorer setup failure",
+    );
+    expect(calls).toBe(0);
+    const database = await f.command(["database-info"]);
+    const started = execFileSync(
+      f.python,
+      [
+        "-c",
+        "import sqlite3, sys; db = sqlite3.connect(sys.argv[1]); print(db.execute('SELECT inference_started FROM scans WHERE id = ?', (sys.argv[2],)).fetchone()[0])",
+        database["databasePath"] as string,
+        childId,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(started.trim()).toBe("0");
+    expect(
+      (await f.command(["get-scan", "--scan-id", childId]))["scan"],
+    ).toMatchObject({ cost: previousCost });
   },
 );

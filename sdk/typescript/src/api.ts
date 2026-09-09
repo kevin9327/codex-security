@@ -1206,6 +1206,7 @@ export class CodexSecurity {
     let completionCost: ScanCost | null = null;
     let previousCost: ScanCost | null = null;
     let completeFromCheckpoint = false;
+    const hasPostScanPrompt = Boolean(options.postScanPrompt?.trim());
     let continuingCustomValidation = false;
     const requireContinuationValidation = () => {
       if (
@@ -1221,7 +1222,7 @@ export class CodexSecurity {
     let completionSourceThreadId: string | undefined;
     const requireContinuationBudget = () => {
       if (
-        !completeFromCheckpoint &&
+        (!completeFromCheckpoint || hasPostScanPrompt) &&
         options.maxCostUsd !== undefined &&
         (previousCost === null ||
           previousCost.estimatedUsd >= options.maxCostUsd)
@@ -1914,7 +1915,7 @@ export class CodexSecurity {
             hasCompletedCustomValidation(continuationCheckpoint));
         requireContinuationValidation();
         requireContinuationBudget();
-        if (completeFromCheckpoint) {
+        if (completeFromCheckpoint && !hasPostScanPrompt) {
           notifyObserver(
             "onWarning",
             options.onWarning,
@@ -2016,7 +2017,7 @@ export class CodexSecurity {
         });
         deepProgressTracker.start();
       }
-      if (options.validationPrompt !== undefined) {
+      if (!completeFromCheckpoint && options.validationPrompt !== undefined) {
         await writeCustomValidationStatus(
           scanDir,
           { scanId, status: "pending" },
@@ -2210,7 +2211,7 @@ export class CodexSecurity {
         await chmod(targetPathsFile, 0o400);
       }
       checkOpen();
-      if (options.continuationScanId !== undefined) {
+      if (options.continuationScanId !== undefined && !completeFromCheckpoint) {
         await workbench(workbenchOptions, [
           "start-scan-inference",
           "--scan-id",
@@ -2219,195 +2220,227 @@ export class CodexSecurity {
         checkOpen();
       }
       const postScanPrompt = options.postScanPrompt;
-      if (postScanPrompt?.trim()) {
+      if (postScanPrompt?.trim() && !completeFromCheckpoint) {
         runPostScan = () => thread.runStreamed(postScanPrompt, { signal });
       }
-      inferenceStarted = true;
-      const { events } = await thread.runStreamed(prompt, {
-        signal,
-      });
+      const trackThread = async (threadId: string) => {
+        if (resumeThreadId !== undefined) {
+          if (threadId !== resumeThreadId) {
+            throw new CodexSecurityError(
+              "Codex did not resume the original scan session.",
+            );
+          }
+          return;
+        }
+        if (budgetRecovery !== null) budgetRecovery.threadId = threadId;
+        tracker.start(threadId);
+        try {
+          await workbench(workbenchOptions, [
+            "set-scan-thread",
+            "--scan-id",
+            scanId,
+            "--thread-id",
+            threadId,
+          ]);
+        } catch (error) {
+          notifyObserver(
+            "onWarning",
+            options.onWarning,
+            options.onObserverError,
+            `Could not save scan session: ${safeErrorMessage(error)}`,
+          );
+        }
+      };
+      if (completeFromCheckpoint) {
+        const preparation = await workbench(workbenchOptions, [
+          "prepare-scan-completion",
+          "--scan-id",
+          scanId,
+        ]);
+        preparedTargetWarnings = Array.isArray(preparation["targetWarnings"])
+          ? preparation["targetWarnings"].filter(
+              (warning): warning is string => typeof warning === "string",
+            )
+          : [];
+        completionCost = previousCost;
+      }
+      inferenceStarted = !completeFromCheckpoint;
+      const sourceEvents = completeFromCheckpoint
+        ? null
+        : (await thread.runStreamed(prompt, { signal })).events;
       checkOpen();
-
-      const result = await runScanEvents({
-        thread,
-        events,
-        signal,
-        scanDir,
-        pluginRoot: runtime.plugin.installedRoot,
-        expectation,
-        authentication,
-        workbenchValidated: true,
-        model,
-        onThreadStarted: async (threadId) => {
-          if (resumeThreadId !== undefined) {
-            if (threadId !== resumeThreadId) {
-              throw new CodexSecurityError(
-                "Codex did not resume the original scan session.",
-              );
-            }
-            return;
-          }
-          if (budgetRecovery !== null) budgetRecovery.threadId = threadId;
-          tracker.start(threadId);
-          try {
-            await workbench(workbenchOptions, [
-              "set-scan-thread",
-              "--scan-id",
-              scanId,
-              "--thread-id",
-              threadId,
-            ]);
-          } catch (error) {
-            notifyObserver(
-              "onWarning",
-              options.onWarning,
-              options.onObserverError,
-              `Could not save scan session: ${safeErrorMessage(error)}`,
-            );
-          }
-        },
-        onFinalize: async (usage) => {
-          if (options.validationPrompt !== undefined) {
-            tracker.recordUsage(usage);
-            await tracker.refresh().catch(reportTrackingError);
-            checkOpen();
-            await runCustomValidation({
-              repository: repo,
-              target: normalized,
+      const result =
+        sourceEvents === null
+          ? await collectResult(
+              { status: "completed", model, usage: null },
+              completionSourceThreadId!,
               scanDir,
-              scanId,
-              pluginRoot: runtime.plugin.installedRoot,
-              prompt: options.validationPrompt,
-              falsePositives: falsePositiveExamples,
+              runtime.plugin.installedRoot,
+              expectation,
               signal,
-              checkpoint: async (path, validated) => {
-                await workbench(workbenchOptions, [
-                  "record-scan-checkpoint",
-                  "--scan-id",
-                  scanId,
-                  "--checkpoint-path",
-                  path,
-                ]);
-                customValidationComplete = validated;
-              },
-              run: async (validationPrompt, outputSchema) => {
-                if (scopeFileCount !== null)
-                  reportProgress({
-                    phase: "validation",
-                    filesCompleted: reviewedFileCount,
-                    filesTotal: scopeFileCount,
+              true,
+            )
+          : await runScanEvents({
+              thread,
+              events: sourceEvents,
+              signal,
+              scanDir,
+              pluginRoot: runtime.plugin.installedRoot,
+              expectation,
+              authentication,
+              workbenchValidated: true,
+              model,
+              onThreadStarted: trackThread,
+              onFinalize: async (usage) => {
+                if (options.validationPrompt !== undefined) {
+                  tracker.recordUsage(usage);
+                  await tracker.refresh().catch(reportTrackingError);
+                  checkOpen();
+                  await runCustomValidation({
+                    repository: repo,
+                    target: normalized,
+                    scanDir,
+                    scanId,
+                    pluginRoot: runtime.plugin.installedRoot,
+                    prompt: options.validationPrompt,
+                    falsePositives: falsePositiveExamples,
+                    signal,
+                    checkpoint: async (path, validated) => {
+                      await workbench(workbenchOptions, [
+                        "record-scan-checkpoint",
+                        "--scan-id",
+                        scanId,
+                        "--checkpoint-path",
+                        path,
+                      ]);
+                      customValidationComplete = validated;
+                    },
+                    run: async (validationPrompt, outputSchema) => {
+                      if (scopeFileCount !== null)
+                        reportProgress({
+                          phase: "validation",
+                          filesCompleted: reviewedFileCount,
+                          filesTotal: scopeFileCount,
+                        });
+                      const validationThread = codex.startThread({
+                        threadSource: CODEX_SECURITY_THREAD_SOURCES.scan,
+                        workingDirectory: join(scanDir, "artifacts"),
+                        skipGitRepoCheck: true,
+                        approvalPolicy,
+                      });
+                      const turn = await readCodexTurn({
+                        thread: validationThread,
+                        events: (
+                          await validationThread.runStreamed(validationPrompt, {
+                            outputSchema,
+                            signal,
+                          })
+                        ).events,
+                        onReconnect: (message, attempts) =>
+                          notifyObserver(
+                            "onReconnect",
+                            options.onReconnect,
+                            options.onObserverError,
+                            ...attempts,
+                            reconnectDetails(message),
+                          ),
+                      });
+                      checkOpen();
+                      if (turn.status !== "completed")
+                        throw new IncompleteScanError(
+                          turn.lastStreamError ??
+                            "The custom validation turn did not complete.",
+                        );
+                      budgetAbortController.abort();
+                      tracker.recordUsage(turn.usage, turn.threadId);
+                      await tracker.refresh().catch(reportTrackingError);
+                      checkOpen();
+                      return turn.finalResponse;
+                    },
                   });
-                const validationThread = codex.startThread({
-                  threadSource: CODEX_SECURITY_THREAD_SOURCES.scan,
-                  workingDirectory: join(scanDir, "artifacts"),
-                  skipGitRepoCheck: true,
-                  approvalPolicy,
-                });
-                const turn = await readCodexTurn({
-                  thread: validationThread,
-                  events: (
-                    await validationThread.runStreamed(validationPrompt, {
-                      outputSchema,
-                      signal,
-                    })
-                  ).events,
-                  onReconnect: (message, attempts) =>
-                    notifyObserver(
-                      "onReconnect",
-                      options.onReconnect,
-                      options.onObserverError,
-                      ...attempts,
-                      reconnectDetails(message),
-                    ),
-                });
-                checkOpen();
-                if (turn.status !== "completed")
-                  throw new IncompleteScanError(
-                    turn.lastStreamError ??
-                      "The custom validation turn did not complete.",
-                  );
+                  customValidationComplete = true;
+                }
                 budgetAbortController.abort();
-                tracker.recordUsage(turn.usage, turn.threadId);
-                await tracker.refresh().catch(reportTrackingError);
-                checkOpen();
-                return turn.finalResponse;
+                const snapshot = await tracker
+                  .stop(usage)
+                  .catch((error: unknown) => {
+                    if (options.maxCostUsd !== undefined) throw error;
+                    reportTrackingError(error);
+                    return { usage, cost: estimateScanCost(model, usage) };
+                  });
+                throwIfAborted(signal, scanDir);
+                if (
+                  options.maxCostUsd !== undefined &&
+                  snapshot.cost === null
+                ) {
+                  notifyObserver(
+                    "onWarning",
+                    options.onWarning,
+                    options.onObserverError,
+                    "Scan completed, but its cost limit could not be verified because model pricing or token usage is unavailable.",
+                  );
+                }
+                completionCost = cumulativeCost(snapshot.cost);
+                let preparation: JsonObject;
+                try {
+                  preparation = await workbench(workbenchOptions, [
+                    "prepare-scan-completion",
+                    "--scan-id",
+                    scanId,
+                  ]);
+                } catch (error) {
+                  const saved = await workbench(workbenchOptions, [
+                    "get-scan",
+                    "--scan-id",
+                    scanId,
+                  ]).catch(() => null);
+                  const savedScan = isRecord(saved) ? saved["scan"] : undefined;
+                  const progress = isRecord(savedScan)
+                    ? savedScan["progress"]
+                    : undefined;
+                  const failureMessage = isRecord(savedScan)
+                    ? savedScan["failureMessage"]
+                    : undefined;
+                  if (
+                    isRecord(progress) &&
+                    progress["status"] === "failed" &&
+                    typeof failureMessage === "string" &&
+                    failureMessage.trim() !== ""
+                  ) {
+                    throw new IncompleteScanError(failureMessage);
+                  }
+                  throw error;
+                }
+                preparedTargetWarnings = Array.isArray(
+                  preparation["targetWarnings"],
+                )
+                  ? preparation["targetWarnings"].filter(
+                      (warning): warning is string =>
+                        typeof warning === "string",
+                    )
+                  : [];
+                return snapshot.usage;
               },
+              onScanStarted: options.onScanStarted,
+              onTrustedAccessStatus: options.onTrustedAccessStatus,
+              onReconnect: options.onReconnect,
+              onActivity: options.onActivity,
+              onProgress: (progress) => {
+                if (
+                  progress.phase === "discovery" &&
+                  progress.filesCompleted === 0 &&
+                  reviewedFileCount === 0 &&
+                  progress.filesTotal !== scopeFileCount
+                ) {
+                  scopeFileCount = progress.filesTotal;
+                  tracker.setExpectedFilesTotal(scopeFileCount);
+                }
+                reportProgress(progress);
+              },
+              onWorkerStatus: options.onWorkerStatus,
+              onWarning: options.onWarning,
+              onObserverError: options.onObserverError,
             });
-            customValidationComplete = true;
-          }
-          budgetAbortController.abort();
-          const snapshot = await tracker.stop(usage).catch((error: unknown) => {
-            if (options.maxCostUsd !== undefined) throw error;
-            reportTrackingError(error);
-            return { usage, cost: estimateScanCost(model, usage) };
-          });
-          throwIfAborted(signal, scanDir);
-          if (options.maxCostUsd !== undefined && snapshot.cost === null) {
-            notifyObserver(
-              "onWarning",
-              options.onWarning,
-              options.onObserverError,
-              "Scan completed, but its cost limit could not be verified because model pricing or token usage is unavailable.",
-            );
-          }
-          completionCost = cumulativeCost(snapshot.cost);
-          let preparation: JsonObject;
-          try {
-            preparation = await workbench(workbenchOptions, [
-              "prepare-scan-completion",
-              "--scan-id",
-              scanId,
-            ]);
-          } catch (error) {
-            const saved = await workbench(workbenchOptions, [
-              "get-scan",
-              "--scan-id",
-              scanId,
-            ]).catch(() => null);
-            const savedScan = isRecord(saved) ? saved["scan"] : undefined;
-            const progress = isRecord(savedScan)
-              ? savedScan["progress"]
-              : undefined;
-            const failureMessage = isRecord(savedScan)
-              ? savedScan["failureMessage"]
-              : undefined;
-            if (
-              isRecord(progress) &&
-              progress["status"] === "failed" &&
-              typeof failureMessage === "string" &&
-              failureMessage.trim() !== ""
-            ) {
-              throw new IncompleteScanError(failureMessage);
-            }
-            throw error;
-          }
-          preparedTargetWarnings = Array.isArray(preparation["targetWarnings"])
-            ? preparation["targetWarnings"].filter(
-                (warning): warning is string => typeof warning === "string",
-              )
-            : [];
-          return snapshot.usage;
-        },
-        onScanStarted: options.onScanStarted,
-        onTrustedAccessStatus: options.onTrustedAccessStatus,
-        onReconnect: options.onReconnect,
-        onActivity: options.onActivity,
-        onProgress: (progress) => {
-          if (
-            progress.phase === "discovery" &&
-            progress.filesCompleted === 0 &&
-            reviewedFileCount === 0 &&
-            progress.filesTotal !== scopeFileCount
-          ) {
-            scopeFileCount = progress.filesTotal;
-            tracker.setExpectedFilesTotal(scopeFileCount);
-          }
-          reportProgress(progress);
-        },
-        onWorkerStatus: options.onWorkerStatus,
-        onWarning: options.onWarning,
-        onObserverError: options.onObserverError,
-      });
       checkOpen();
       const completion = await workbench(workbenchOptions, [
         "complete-scan",
@@ -2419,6 +2452,9 @@ export class CodexSecurity {
       ]);
       activeScan = null;
       reportCompletionWarnings(completion, options, preparedTargetWarnings);
+      if (completeFromCheckpoint && postScanPrompt?.trim()) {
+        runPostScan = () => thread.runStreamed(postScanPrompt, { signal });
+      }
       if (runPostScan !== null) {
         const followUp = runPostScan;
         runPostScan = null;
@@ -2444,6 +2480,15 @@ export class CodexSecurity {
             workbenchOptions,
             scanDir,
           );
+          if (completeFromCheckpoint) {
+            await workbench(workbenchOptions, [
+              "start-scan-inference",
+              "--scan-id",
+              scanId,
+            ]);
+            checkOpen();
+            inferenceStarted = true;
+          }
           await runScanEvents({
             thread,
             events: (await followUp()).events,
@@ -2455,6 +2500,13 @@ export class CodexSecurity {
             onReconnect: options.onReconnect,
             onWorkerStatus: options.onWorkerStatus,
             onObserverError: options.onObserverError,
+            onThreadStarted: completeFromCheckpoint ? trackThread : undefined,
+            onFinalize: completeFromCheckpoint
+              ? async (usage) => {
+                  tracker.recordUsage(usage);
+                  return usage;
+                }
+              : undefined,
           });
           checkOpen();
         } catch (error) {
@@ -2490,7 +2542,33 @@ export class CodexSecurity {
             options.onObserverError,
             `Could not run post-scan instructions: ${errorMessage(error)}`,
           );
+        } finally {
+          if (completeFromCheckpoint && inferenceStarted) {
+            budgetAbortController.abort();
+            const snapshot = await tracker.stop().catch((error: unknown) => {
+              reportTrackingError(error);
+              return { cost: null };
+            });
+            completionCost = cumulativeCost(snapshot.cost);
+            if (completionCost !== null) {
+              await workbench({ ...workbenchOptions, signal: undefined }, [
+                "complete-scan",
+                "--scan-id",
+                scanId,
+                "--cost-json",
+                JSON.stringify(completionCost),
+              ]).catch((error: unknown) =>
+                notifyObserver(
+                  "onWarning",
+                  options.onWarning,
+                  options.onObserverError,
+                  `Could not save post-scan cost: ${safeErrorMessage(error)}`,
+                ),
+              );
+            }
+          }
         }
+        if (completeFromCheckpoint) checkOpen();
       }
       try {
         const runWorkbench = (args: readonly string[], input?: string) =>
@@ -2501,30 +2579,34 @@ export class CodexSecurity {
           "all",
         );
         if (previousFindings !== undefined) {
-          await matchCompletedScan({
-            scanId,
-            repository: repo,
-            previousFindings: previousFindings.filter(
-              (finding) =>
-                finding["scanId"] !== scanId &&
-                finding["targetId"] === targetId,
-            ),
-            falsePositives: falsePositiveExamples as Record<string, unknown>[],
-            findings: result.findings.findings,
-            workbench: runWorkbench,
-            matchFindings: (input, comparisonOptions) =>
-              (this.#dependencies.matchFindings ?? matchScanFindingsInternal)(
-                input,
-                comparisonOptions,
-                {
-                  surface: this.#surface,
-                  singleTurn: options.maxCostUsd !== undefined,
-                },
+          if (!completeFromCheckpoint)
+            await matchCompletedScan({
+              scanId,
+              repository: repo,
+              previousFindings: previousFindings.filter(
+                (finding) =>
+                  finding["scanId"] !== scanId &&
+                  finding["targetId"] === targetId,
               ),
-            environment,
-            model,
-            signal,
-          });
+              falsePositives: falsePositiveExamples as Record<
+                string,
+                unknown
+              >[],
+              findings: result.findings.findings,
+              workbench: runWorkbench,
+              matchFindings: (input, comparisonOptions) =>
+                (this.#dependencies.matchFindings ?? matchScanFindingsInternal)(
+                  input,
+                  comparisonOptions,
+                  {
+                    surface: this.#surface,
+                    singleTurn: options.maxCostUsd !== undefined,
+                  },
+                ),
+              environment,
+              model,
+              signal,
+            });
           result.repositoryFindings = (await listRepositoryFindings(
             runWorkbench,
             targetId,
@@ -2538,7 +2620,7 @@ export class CodexSecurity {
           `Could not update repository findings: ${errorMessage(error)}`,
         );
       }
-      return previousCost === null
+      return previousCost === null && !completeFromCheckpoint
         ? result
         : new ScanResult({ ...result, cost: completionCost });
     } catch (error) {
@@ -2547,7 +2629,7 @@ export class CodexSecurity {
       scanFailure = true;
       const snapshot = await costTracker?.stop().catch(() => null);
       const failureCost =
-        completeFromCheckpoint || (!inferenceStarted && snapshot?.cost == null)
+        !inferenceStarted && snapshot?.cost == null
           ? previousCost
           : cumulativeCost(snapshot?.cost ?? null);
       let failure =

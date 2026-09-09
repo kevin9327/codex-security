@@ -1214,8 +1214,9 @@ scheduling missing units. An incomplete model turn may need to run again.
 The original scan's sealed results remain unchanged.
 
 A Standard checkpoint that already contains complete reviewed coverage can finish
-without another model call. Resume uses the installed plugin with the saved
-configuration and instructions. Costs include prior attempts, and an existing
+without another model call. If it saved post-scan instructions, recovery runs only
+that follow-up after sealing the results, using the remaining saved budget.
+Resume uses the installed plugin with the saved configuration and instructions. Costs include prior attempts, and an existing
 `--max-cost` limit applies to the total. If the remaining budget cannot be
 established from saved usage, resume reports that before starting more work.
 

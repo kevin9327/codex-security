@@ -736,8 +736,8 @@ def copy_checkpoint_artifacts(
 def start_inference(db: Any, connection: sqlite3.Connection, args: Any) -> dict[str, Any]:
     with db.scan_completion_lock(args.scan_id), connection:
         scan = db.require_scan(connection, args.scan_id)
-        if scan["status"] != "running":
-            raise SystemExit("Only a running scan can start inference.")
+        if scan["status"] not in {"running", "complete"}:
+            raise SystemExit("Only a running or completed scan can start inference.")
         connection.execute(
             "UPDATE scans SET inference_started = 1, updated_at = ? WHERE id = ?",
             (db.now(), scan["id"]),
