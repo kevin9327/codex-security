@@ -6,6 +6,7 @@ import {
 import { sqliteBinding } from "../../../../plugins/codex-security/mcp-app/src/native";
 import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workbench-migrations";
 import * as remediation from "../../../../plugins/codex-security/mcp-app/src/workbench-remediation-requests";
+import * as remediationState from "../../../../plugins/codex-security/mcp-app/src/workbench-remediation-state";
 import { TargetInspectionError } from "../../../../plugins/codex-security/mcp-app/src/workbench-git-snapshot";
 import { scanTargetIdentity } from "../../../../plugins/codex-security/mcp-app/src/workbench-target";
 import { timestamp } from "../../../../plugins/codex-security/mcp-app/src/helpers/utc-timestamp";
@@ -24,17 +25,29 @@ export const TOKEN = "44444444-4444-4444-8444-444444444444";
 export const OCCURRENCE = "synthetic-occurrence";
 export const NOW = 1786795200123456n;
 type Values = Record<string, Parameter>;
-type Phase = "now" | "microseconds" | "stale" | "patch" | "checkout" | "render";
+type Phase =
+  | "now"
+  | "microseconds"
+  | "stale"
+  | "patch"
+  | "checkout"
+  | "applied"
+  | "render";
 export type Action = (
   | { operation: "open"; occurrenceId?: string }
   | {
       operation: "request" | "action" | "claim" | "deliver" | "release";
       args?: Partial<remediation.RemediationActionArguments>;
     }
+  | {
+      operation: "record";
+      args?: Partial<remediationState.RemediationUpdateArguments>;
+    }
   | { operation: "sql"; sql: string; parameters?: Parameter[] }
   | { operation: "commit" | "rollback" }
 ) & {
   now?: bigint;
+  appliedDigest?: string;
   hooks?: Partial<
     Record<Phase, { sql?: string; error?: string; systemExit?: boolean }>
   >;
@@ -190,7 +203,8 @@ function execute(request: Request): Response {
             ? new WorkbenchValidationError(configured.error)
             : new Error(configured.error);
       };
-      const context: remediation.WorkbenchRemediationRequestContext = {
+      const context: remediation.WorkbenchRemediationRequestContext &
+        remediationState.WorkbenchRemediationUpdateContext = {
         now() {
           events.push(["now", connection.inTransaction]);
           hook("now");
@@ -241,6 +255,17 @@ function execute(request: Request): Response {
           ]);
           hook("checkout");
         },
+        requireReviewedPatchApplied(scan, current, patchPath) {
+          events.push([
+            "applied",
+            scan.get("id"),
+            current.get("request_id"),
+            patchPath,
+            connection.inTransaction,
+          ]);
+          hook("applied");
+          return action.appliedDigest ?? "synthetic-applied-content";
+        },
       };
       try {
         let value: unknown = null;
@@ -269,9 +294,22 @@ function execute(request: Request): Response {
               actionToken: TOKEN,
               action: "apply",
               expectedVersion: 1n,
+              state: "generated",
+              summary: null,
+              verificationSummary: null,
+              patchPath: null,
+              patchDigest: null,
+              baseRevision: null,
               ...action.args,
             };
             switch (action.operation) {
+              case "record":
+                value = remediationState.setFindingRemediation(
+                  context,
+                  connection,
+                  args,
+                );
+                break;
               case "request":
                 value = remediation.requestFindingRemediation(
                   context,
