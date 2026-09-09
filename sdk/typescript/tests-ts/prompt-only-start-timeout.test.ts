@@ -1,40 +1,55 @@
 import { expect, test } from "bun:test";
-import { loadBundledRuntime, PLUGIN_ROOT } from "./plugin-root.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import ts from "typescript";
+import { PLUGIN_ROOT } from "./plugin-root.js";
 
 test("gives prompt-only scan startup the five-minute scan timeout", async () => {
-  const runtime = await loadBundledRuntime();
-  const source =
-    /async function executeWorkbench\([^\n]*\) \{[\s\S]*?\n\}/u.exec(
-      runtime,
-    )?.[0];
-  expect(source).toBeDefined();
-  const execFileHelper = /\b(execFileAsync\d*)\(/u.exec(source ?? "")?.[1];
-  expect(execFileHelper).toBeDefined();
-
+  const server = await readFile(
+    new URL(
+      "../../../plugins/codex-security/mcp-app/server.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const parsed = ts.createSourceFile(
+    "server.ts",
+    server,
+    ts.ScriptTarget.Latest,
+  );
+  const helper = parsed.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) &&
+      statement.name?.text === "executeWorkbench",
+  );
+  expect(helper).toBeDefined();
+  const { outputText } = ts.transpileModule(helper!.getText(parsed), {
+    compilerOptions: { target: ts.ScriptTarget.ESNext },
+  });
   const executeWorkbench = new Function(
-    execFileHelper!,
-    "workbenchScriptPath",
+    "execFileAsync",
+    "join",
     "PLUGIN_ROOT",
-    "isJsonObject2",
-    `${source}\nreturn executeWorkbench;`,
+    "isJsonObject",
+    `${outputText}\nreturn executeWorkbench;`,
   )(
-    async (
-      _command: string,
-      _args: string[],
-      options: { timeout: number },
-    ) => ({ stdout: JSON.stringify({ timeout: options.timeout }) }),
-    () => "workbench.py",
+    async (command: string, args: string[], options: { timeout: number }) => {
+      expect(command).toBe(process.execPath);
+      expect(args[0]).toBe(join(PLUGIN_ROOT, "mcp", "helpers.mjs"));
+      return { stdout: JSON.stringify({ timeout: options.timeout }) };
+    },
+    join,
     PLUGIN_ROOT,
     () => true,
-  ) as (command: string, args: string[]) => Promise<{ timeout: number }>;
+  ) as (args: string[]) => Promise<{ timeout: number }>;
 
-  expect(await executeWorkbench("python", ["start-prompt-only-scan"])).toEqual({
+  expect(await executeWorkbench(["start-prompt-only-scan"])).toEqual({
     timeout: 300_000,
   });
-  expect(await executeWorkbench("python", ["start-scan"])).toEqual({
+  expect(await executeWorkbench(["start-scan"])).toEqual({
     timeout: 300_000,
   });
-  expect(await executeWorkbench("python", ["other-operation"])).toEqual({
+  expect(await executeWorkbench(["other-operation"])).toEqual({
     timeout: 30_000,
   });
 });

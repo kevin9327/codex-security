@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { withWorkbenchDatabase } from "./support/workbench-database";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { buildSync } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root";
@@ -204,6 +205,88 @@ test("prompt and headless starts preserve ownership, context and join behavior",
         command === "start-headless-standard-scan" ? "owner" : null,
     });
   }
+});
+
+test("concurrent headless starts join one scan and preserve thread ownership", async () => {
+  const s = setup();
+  const context =
+    "Repository: https://example.invalid/repository\nReview authentication.";
+  const start = async (owner: string) => {
+    const child = await promisify(execFile)(
+      node,
+      [
+        join(PLUGIN_ROOT, "mcp/helpers.mjs"),
+        "start-headless-standard-scan",
+        "--thread-id",
+        owner,
+        "--target-path",
+        s.target,
+        "--scope",
+        ".",
+        "--scan-root",
+        s.scanRoot,
+        "--user-context",
+        context,
+      ],
+      { env: { ...environment, CODEX_SECURITY_STATE_DIR: s.state } },
+    );
+    expect(child.stderr).toBe("");
+    return JSON.parse(child.stdout) as {
+      startDisposition: string;
+      scan: { scanId: string; handoffClaimToken: string; userContext: string };
+    };
+  };
+  const starts = await Promise.all([start("owner"), start("owner")]);
+  expect(starts.map((value) => value.startDisposition).sort()).toEqual([
+    "created",
+    "joined",
+  ]);
+  expect(starts[0]!.scan.scanId).toBe(starts[1]!.scan.scanId);
+  expect(starts[0]!.scan.handoffClaimToken).toBe(
+    starts[1]!.scan.handoffClaimToken,
+  );
+  expect(starts[0]!.scan.userContext).toBe(context);
+  const other = await start("other-owner");
+  expect(other.startDisposition).toBe("created");
+  expect(other.scan.scanId).not.toBe(starts[0]!.scan.scanId);
+});
+
+test("prompt starts keep setup-owned pending scans separate", () => {
+  const s = setup();
+  result(
+    ["create-workspace", "--workspace-id", workspace, "--thread-id", "owner"],
+    s,
+  );
+  result(["save-workspace", ...workspaceArgs(s)], s);
+  result(
+    ["start-scan", "--workspace-id", workspace, "--scan-root", s.scanRoot],
+    s,
+  );
+  const pending = current(s);
+  expect(pending["handoff_status"]).toBe("pending");
+  const started = result(
+    [
+      "start-prompt-only-scan",
+      "--thread-id",
+      "owner",
+      "--target-path",
+      s.target,
+      "--scope",
+      ".",
+      "--mode",
+      "standard",
+      "--scan-root",
+      s.scanRoot,
+    ],
+    s,
+  );
+  expect(started).toMatchObject({
+    startDisposition: "created",
+    scan: { handoffStatus: "delivered" },
+  });
+  expect((started["scan"] as { scanId: string }).scanId).not.toBe(
+    pending["id"],
+  );
 });
 
 test("registration accepts each existing recipe transport and persists thread and recipe commands", () => {
