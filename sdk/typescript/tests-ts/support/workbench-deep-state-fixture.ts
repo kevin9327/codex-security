@@ -7,6 +7,7 @@ import {
 import { sqliteBinding } from "../../../../plugins/codex-security/mcp-app/src/native";
 import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workbench-migrations";
 import * as deep from "../../../../plugins/codex-security/mcp-app/src/workbench-deep-state";
+import * as terminal from "../../../../plugins/codex-security/mcp-app/src/workbench-deep-terminal";
 import { WorkbenchValidationError } from "../../../../plugins/codex-security/mcp-app/src/workbench-validation";
 import { filesystemErrorMessage } from "../../../../plugins/codex-security/mcp-app/src/helpers/file-errors";
 import {
@@ -42,6 +43,10 @@ export interface Action {
     | "sql"
     | "commit"
     | "rollback"
+    | "clearPublicationFailure"
+    | "failFromParent"
+    | "cancelFromParent"
+    | "cancelWorkers"
     | "windowsSize"
     | "others";
   id?: string;
@@ -55,6 +60,8 @@ export interface Action {
   current?: string;
   requested?: string;
   message?: string;
+  timestamp?: string;
+  nowError?: boolean;
   maximum?: number;
   original?: Parameter;
   publication?: Parameter;
@@ -244,6 +251,35 @@ function execute(request: Request): Response {
             break;
           case "rollback":
             connection.rollback();
+            break;
+          case "clearPublicationFailure":
+            terminal.clearDeepScanPublicationFailure(connection, id, () => {
+              events.push(["now", connection.inTransaction]);
+              if (action.nowError) throw new Error("clock failed");
+              return action.timestamp ?? "timestamp";
+            });
+            break;
+          case "failFromParent":
+            terminal.failFromParentScan(
+              connection,
+              id,
+              action.message ?? null,
+              action.timestamp ?? "timestamp",
+            );
+            break;
+          case "cancelFromParent":
+            terminal.cancelFromParentScan(
+              connection,
+              id,
+              action.timestamp ?? "timestamp",
+            );
+            break;
+          case "cancelWorkers":
+            terminal.cancelActiveWorkers(
+              connection,
+              id,
+              action.timestamp ?? "timestamp",
+            );
             break;
           case "bounded":
             result = deep.boundedErrorText(

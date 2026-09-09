@@ -76,6 +76,173 @@ const legacyRun = {
   completed_at: "completed",
 };
 
+test("parent failure changes only a running run and leaves active worker cancellation uncommitted", () => {
+  for (const status of [
+    "running",
+    "succeeded",
+    "failed",
+    "canceled",
+    "interrupted",
+  ]) {
+    const [response] = run({
+      run: { status, error_message: "original" },
+      workers: [
+        { id: worker(1), status: "queued" },
+        { id: worker(2), status: "running" },
+        { id: worker(3), status: "succeeded", updated_at: "finished" },
+        { id: worker(4), status: "failed", updated_at: "finished" },
+      ],
+      actions: [{ operation: "failFromParent", message: "parent failure" }],
+    });
+    expect(response!.outcomes[0]!.error).toBeUndefined();
+    expect(response!.outcomes[0]!.inTransaction).toBe(true);
+    const row = response!.snapshot["deep_scan_runs"]![0]!;
+    expect(row["status"]).toBe(status === "running" ? "failed" : status);
+    expect(row["error_message"]).toBe(
+      status === "running" ? "parent failure" : "original",
+    );
+    expect(row["cancel_requested"]).toBe(status === "running" ? 1n : 0n);
+    const workers = response!.snapshot["deep_scan_workers"]!;
+    expect(workers.map((item) => item["status"])).toEqual([
+      "canceled",
+      "canceled",
+      "succeeded",
+      "failed",
+    ]);
+    expect(workers.map((item) => item["updated_at"])).toEqual([
+      "timestamp",
+      "timestamp",
+      "finished",
+      "finished",
+    ]);
+    expect(response!.snapshot["scans"]![0]!["status"]).toBe("running");
+  }
+});
+
+test("parent cancellation overrides a successful run without replacing its error or terminal reason", () => {
+  const [response] = run({
+    run: {
+      status: "succeeded",
+      error_message: "retained",
+      terminal_reason: "saturated",
+    },
+    workers: [{ status: "running" }],
+    actions: [{ operation: "cancelFromParent" }],
+  });
+  expect(response!.outcomes[0]!.error).toBeUndefined();
+  expect(response!.outcomes[0]!.inTransaction).toBe(true);
+  expect(response!.snapshot["deep_scan_runs"]![0]).toMatchObject({
+    status: "canceled",
+    phase: "terminal",
+    cancel_requested: 1n,
+    error_message: "retained",
+    terminal_reason: "saturated",
+    completed_at: "timestamp",
+    updated_at: "timestamp",
+  });
+  expect(response!.snapshot["deep_scan_workers"]![0]!["status"]).toBe(
+    "canceled",
+  );
+});
+
+test("worker cancellation is scan-local and the caller can roll back the parent update", () => {
+  const [response] = run({
+    workers: [
+      { id: worker(1), status: "running" },
+      { id: worker(2), scan_id: "other-scan", status: "queued" },
+    ],
+    actions: [
+      { operation: "failFromParent" },
+      { operation: "run" },
+      { operation: "rollback" },
+      { operation: "cancelWorkers", id: "other-scan" },
+    ],
+  });
+  expect(response!.outcomes.every((item) => item.error === undefined)).toBe(
+    true,
+  );
+  expect(value(response!, 1)["error_message"]).toBeNull();
+  expect(response!.snapshot["deep_scan_runs"]![0]!["status"]).toBe("running");
+  expect(
+    response!.snapshot["deep_scan_workers"]!.map((item) => item["status"]),
+  ).toEqual(["running", "canceled"]);
+});
+
+test("clearing publication errors commits the caller transaction even when there is no error or matching run", () => {
+  for (const publication of [null, "", "publication failed"]) {
+    const [response] = run({
+      run: {
+        publication_error_message: publication,
+        error_message: "original",
+      },
+      actions: [
+        { operation: "sql", sql: "UPDATE scans SET scope = 'pending'" },
+        { operation: "clearPublicationFailure" },
+        { operation: "rollback" },
+      ],
+    });
+    expect(response!.outcomes.every((item) => item.error === undefined)).toBe(
+      true,
+    );
+    expect(response!.outcomes[1]!.inTransaction).toBe(false);
+    expect(response!.outcomes[1]!.events).toContainEqual(["now", true]);
+    expect(response!.snapshot["scans"]![0]!["scope"]).toBe("pending");
+    expect(response!.snapshot["deep_scan_runs"]![0]).toMatchObject({
+      publication_error_message: null,
+      error_message: "original",
+      updated_at: publication === null ? "updated" : "timestamp",
+    });
+  }
+  const [missing] = run({
+    run: null,
+    actions: [{ operation: "clearPublicationFailure", id: "missing" }],
+  });
+  expect(missing!.outcomes[0]!.error).toBeUndefined();
+  expect(missing!.outcomes[0]!.inTransaction).toBe(false);
+  expect(missing!.outcomes[0]!.events).toContainEqual(["now", false]);
+});
+
+test("failed publication clearing rolls back but failed worker cancellation retains the caller transaction", () => {
+  const [clock, clear, cancel] = run(
+    {
+      actions: [
+        { operation: "sql", sql: "UPDATE scans SET scope = 'pending'" },
+        { operation: "clearPublicationFailure", nowError: true },
+      ],
+    },
+    {
+      run: { publication_error_message: "publication failed" },
+      setupSql: [
+        "CREATE TRIGGER reject_clear BEFORE UPDATE ON deep_scan_runs BEGIN SELECT RAISE(ABORT, 'cannot clear'); END",
+      ],
+      actions: [
+        { operation: "sql", sql: "UPDATE scans SET scope = 'pending'" },
+        { operation: "clearPublicationFailure" },
+      ],
+    },
+    {
+      workers: [{ status: "running" }],
+      setupSql: [
+        "CREATE TRIGGER reject_cancel BEFORE UPDATE ON deep_scan_workers BEGIN SELECT RAISE(ABORT, 'cannot cancel'); END",
+      ],
+      actions: [{ operation: "failFromParent", message: "parent failed" }],
+    },
+  );
+  expect(error(clock!, 1)).toBe("clock failed");
+  expect(clock!.outcomes[1]!.inTransaction).toBe(false);
+  expect(clock!.snapshot["scans"]![0]!["scope"]).toBe(".");
+  expect(error(clear!, 1)).toBe("cannot clear");
+  expect(clear!.outcomes[1]!.inTransaction).toBe(false);
+  expect(clear!.snapshot["scans"]![0]!["scope"]).toBe(".");
+  expect(
+    clear!.snapshot["deep_scan_runs"]![0]!["publication_error_message"],
+  ).toBe("publication failed");
+  expect(error(cancel!)).toBe("cannot cancel");
+  expect(cancel!.outcomes[0]!.inTransaction).toBe(true);
+  expect(cancel!.snapshot["deep_scan_runs"]![0]!["status"]).toBe("failed");
+  expect(cancel!.snapshot["deep_scan_workers"]![0]!["status"]).toBe("running");
+});
+
 test("projects ordered workers, dedup inputs, and exact large review counters", () => {
   const [response] = run({
     run: {
