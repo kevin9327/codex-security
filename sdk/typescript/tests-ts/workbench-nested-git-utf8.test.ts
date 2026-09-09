@@ -8,8 +8,34 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 import { PLUGIN_ROOT } from "./plugin-root.js";
+
+const fixtureDirectory = realpathSync(
+  mkdtempSync(join(tmpdir(), "target-probe-")),
+);
+const fixture = join(fixtureDirectory, "fixture.cjs");
+const node = Bun.which("node")!;
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(new URL("./support/target-fixture.ts", import.meta.url)),
+    ],
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+  }),
+);
+afterAll(() => rmSync(fixtureDirectory, { recursive: true, force: true }));
 
 const temporaryDirectories: string[] = [];
 
@@ -27,15 +53,6 @@ function git(directory: string, ...args: string[]): void {
   expect(result.status, result.stderr).toBe(0);
 }
 
-function pythonExecutable(): string | null {
-  return (
-    process.env["PYTHON"] ??
-    Bun.which("python3") ??
-    Bun.which("python") ??
-    Bun.which("py")
-  );
-}
-
 test("writes nested Git pointers as UTF-8 independently of the locale", () => {
   const root = realpathSync(
     mkdtempSync(join(tmpdir(), "codex-security-nested-git-utf8-")),
@@ -48,33 +65,12 @@ test("writes nested Git pointers as UTF-8 independently of the locale", () => {
   git(repository, "init", "-q");
   git(nested, "init", "-q");
 
-  const python = pythonExecutable();
-  expect(python).not.toBeNull();
-  const probe = [
-    "import pathlib, sys",
-    "sys.path.insert(0, sys.argv[1])",
-    "import workbench_target as target",
-    "original_open = pathlib.Path.open",
-    "def locale_open(self, mode='r', buffering=-1, encoding=None, errors=None, newline=None):",
-    "    if 'b' not in mode and encoding is None:",
-    "        encoding = 'cp1252'",
-    "    return original_open(self, mode, buffering, encoding, errors, newline)",
-    "pathlib.Path.open = locale_open",
-    "target.copy_git_worktree_files(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), ())",
-  ].join("\n");
-  const result = spawnSync(
-    python!,
-    [
-      "-I",
-      "-B",
-      "-c",
-      probe,
-      join(PLUGIN_ROOT, "scripts"),
-      repository,
-      checkout,
-    ],
-    { encoding: "utf8", windowsHide: true },
-  );
+  const result = spawnSync(node, [fixture], {
+    input: JSON.stringify({ operation: "copy", repository, checkout }),
+    encoding: "utf8",
+    windowsHide: true,
+    env: { ...process.env, PYTHON: "/unavailable/python", LC_ALL: "C" },
+  });
 
   expect(result.status, result.stderr).toBe(0);
   expect(readFileSync(join(checkout, "nested-漢字", ".git"), "utf8")).toContain(

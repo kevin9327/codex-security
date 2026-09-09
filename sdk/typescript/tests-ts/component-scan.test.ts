@@ -190,9 +190,6 @@ function fakeCodex(
 }
 
 async function scopedInventory(paths: Fixture, scope: string) {
-  const python =
-    process.env["PYTHON"] ?? Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
   const scopesFile = join(paths.root, "scopes.json");
   const output = join(paths.root, "scoped-source-input.jsonl");
   await writeFile(scopesFile, JSON.stringify([scope]));
@@ -217,7 +214,7 @@ async function scopedInventory(paths: Fixture, scope: string) {
   const generated = JSON.parse(
     execFileSync(
       Bun.which("node")!,
-      [fixture, paths.repository, scopesFile, output],
+      [fixture, paths.repository, scopesFile, output, scope],
       { encoding: "utf8", stdio: "pipe" },
     )
       .trim()
@@ -225,46 +222,10 @@ async function scopedInventory(paths: Fixture, scope: string) {
       .at(-1)!,
   ) as {
     paths: string[];
-    queries: Array<{ pathspec: string; count: number }>;
-  };
-  const stdout = execFileSync(
-    python!,
-    [
-      "-I",
-      "-B",
-      "-c",
-      [
-        "import json, sys",
-        "from pathlib import Path",
-        "sys.path.insert(0, sys.argv[1])",
-        "import workbench_target as target",
-        "queries = []",
-        "git_bytes = target.git_bytes",
-        "def record_query(repository, *args, **kwargs):",
-        "    data = git_bytes(repository, *args, **kwargs)",
-        "    if 'ls-files' in args:",
-        "        queries.append({'pathspec': args[-1], 'count': len([path for path in (data or b'').split(b'\\0') if path])})",
-        "    return data",
-        "target.git_bytes = record_query",
-        "repo, scope = sys.argv[2:]",
-        "count = target.directory_snapshot_regular_file_count((Path(repo) / scope).resolve())",
-        "print(json.dumps({'count': count, 'queries': queries}))",
-      ].join("\n"),
-      join(PLUGIN_ROOT, "scripts"),
-      paths.repository,
-      scope,
-    ],
-    { encoding: "utf8", stdio: "pipe" },
-  );
-  const snapshot = JSON.parse(stdout.trim().split("\n").at(-1)!) as {
     count: number;
     queries: Array<{ pathspec: string; count: number }>;
   };
-  return {
-    paths: generated.paths,
-    count: snapshot.count,
-    queries: [...generated.queries, ...snapshot.queries],
-  };
+  return generated;
 }
 
 function matcher(

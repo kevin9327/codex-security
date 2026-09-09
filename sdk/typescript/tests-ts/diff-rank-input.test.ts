@@ -10,19 +10,36 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 
-const temporaryRoots: string[] = [];
+const fixtureDirectory = realpathSync(
+  mkdtempSync(join(tmpdir(), "target-probe-")),
+);
+const fixture = join(fixtureDirectory, "fixture.cjs");
+const node = Bun.which("node")!;
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(new URL("./support/target-fixture.ts", import.meta.url)),
+    ],
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+  }),
+);
+afterAll(() => rmSync(fixtureDirectory, { recursive: true, force: true }));
 
-function pythonExecutable(): string | null {
-  return (
-    process.env["PYTHON"] ??
-    Bun.which("python3") ??
-    Bun.which("python") ??
-    Bun.which("py")
-  );
-}
+const temporaryRoots: string[] = [];
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
@@ -159,8 +176,6 @@ test("preserves Unicode Git paths and legacy-encoded commit metadata", () => {
   );
   const legacyHead = git(repository, "rev-parse", "HEAD");
 
-  const python = pythonExecutable();
-  expect(python).not.toBeNull();
   const output = join(root, "rank-input.jsonl");
   const rank = spawnSync(
     Bun.which("node")!,
@@ -178,30 +193,15 @@ test("preserves Unicode Git paths and legacy-encoded commit metadata", () => {
     ],
     { encoding: "utf8" },
   );
-  const probeSource = [
-    "import json, pathlib, sys",
-    "sys.path.insert(0, sys.argv[1])",
-    "import workbench_target as target",
-    "import workbench_db as db",
-    "repo = pathlib.Path(sys.argv[2])",
-    "root, pathspec = target.git_worktree_context(repo)",
-    "metadata = target.git_target_metadata(repo)",
-    "diff = db.require_diff_target(repo, 'commit', None, sys.argv[3], None)",
-    "print(json.dumps({'root': str(root), 'pathspec': pathspec, 'subject': metadata['commitSubject'], 'diff': diff}))",
-  ].join("\n");
-  const probe = spawnSync(
-    python!,
-    [
-      "-I",
-      "-B",
-      "-c",
-      probeSource,
-      join(PLUGIN_ROOT, "scripts"),
+  const probe = spawnSync(node, [fixture], {
+    input: JSON.stringify({
+      operation: "target",
       repository,
-      legacyHead,
-    ],
-    { encoding: "utf8" },
-  );
+      head: legacyHead,
+    }),
+    encoding: "utf8",
+    env: { ...process.env, PYTHON: "/unavailable/python" },
+  });
 
   expect(rank.status, `${rank.stderr}\n${String(rank.error ?? "")}`).toBe(0);
   expect(

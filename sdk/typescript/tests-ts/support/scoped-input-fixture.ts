@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { resolvedPath } from "../../../../plugins/codex-security/mcp-app/src/helpers/resolve-path";
+import { directorySnapshotRegularFileCount } from "../../../../plugins/codex-security/mcp-app/src/workbench-target";
 import { processBinding } from "../../../../plugins/codex-security/mcp-app/src/native";
 import { generateRankInputCommand } from "../../../../plugins/codex-security/mcp-app/src/helpers/generate-rank-input";
 
-const [repository, scopes, output] = process.argv.slice(2) as [
+const [repository, scopes, output, scope] = process.argv.slice(2) as [
+  string,
   string,
   string,
   string,
@@ -37,7 +41,10 @@ try {
       .split("\n")
       .filter(Boolean)
       .map((row) => (JSON.parse(row) as { path: string }).path);
-    console.log(JSON.stringify({ paths, queries }));
+    const count = directorySnapshotRegularFileCount(
+      resolvedPath(join(repository, scope)),
+    );
+    console.log(JSON.stringify({ paths, count, queries }));
   }
 } finally {
   native.rawProcess = execute;
