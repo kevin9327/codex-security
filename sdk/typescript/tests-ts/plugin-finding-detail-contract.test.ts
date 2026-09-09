@@ -1,13 +1,82 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import Ajv from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 
+import type {
+  FindingDocument,
+  LegacyResponse,
+  RecoveryResponse,
+  Request,
+} from "./support/finding-detail-fixture";
+
 type JsonObject = Record<string, unknown>;
+const directory = realpathSync(mkdtempSync(join(tmpdir(), "finding-detail-")));
+const fixture = join(directory, "fixture.cjs");
+const node = Bun.which("node")!;
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/finding-detail-fixture.ts", import.meta.url),
+      ),
+    ],
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+  }),
+);
+afterAll(() => rmSync(directory, { recursive: true, force: true }));
+function run<T>(request: Request): T {
+  const child = spawnSync(node, [fixture, PLUGIN_ROOT], {
+    input: JSON.stringify(request),
+    encoding: "utf8",
+    env: { ...process.env, PYTHON: "/unavailable/python" },
+  });
+  expect(child.status, child.stderr).toBe(0);
+  expect(child.stderr).toBe("");
+  return JSON.parse(child.stdout) as T;
+}
+function exampleFindings(): FindingDocument {
+  return JSON.parse(
+    readFileSync(
+      join(PLUGIN_ROOT, "examples/completed-scan/findings.json"),
+      "utf8",
+    ),
+  ) as FindingDocument;
+}
+function section(finding: JsonObject, name: string): JsonObject {
+  return finding[name] as JsonObject;
+}
+function compatible(
+  findings: FindingDocument,
+  validate = true,
+  schema = true,
+): LegacyResponse {
+  const response = run<LegacyResponse>({
+    operation: "legacy",
+    findings,
+    validate,
+    schema,
+  });
+  expect(response.error).toBeNull();
+  return response;
+}
 
 const invalidFindingDetails: Array<{
   section: "attackPath" | "rootCause" | "root_cause" | "validation";
@@ -94,23 +163,7 @@ const stringAssessmentInput = {
 };
 
 function projectFindingDetails(details: JsonObject): string {
-  const python = Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
-  const script = [
-    "import json, pathlib, runpy, sys",
-    "plugin = pathlib.Path(sys.argv[1])",
-    "examples = plugin / 'examples' / 'completed-scan'",
-    "manifest, findings, coverage = [json.loads((examples / name).read_text()) for name in ('scan-manifest.json', 'findings.json', 'coverage.json')]",
-    "findings['findings'][0].update(json.loads(sys.argv[2]))",
-    "projection = runpy.run_path(str(plugin / 'scripts' / 'report_projection.py'))",
-    "print(projection['build_report_markdown'](manifest, findings, coverage))",
-  ].join("\n");
-  const result = Bun.spawnSync(
-    [python!, "-I", "-B", "-c", script, PLUGIN_ROOT, JSON.stringify(details)],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-  return new TextDecoder().decode(result.stdout);
+  return run<string>({ operation: "report", details });
 }
 
 async function readJson(path: string): Promise<JsonObject> {
@@ -626,108 +679,122 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("rejects unknown code evidence referenced by nested attack-path details", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "finding = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())['findings'][0]",
-      "finding['attackPath'] = {'dataflow': {'evidenceRefs': ['missing-evidence']}}",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "try:",
-      "    finalizer['_validate_finding'](finding, 'findings[0]')",
-      "except finalizer['ContractError'] as error:",
-      "    print(error)",
-      "else:",
-      "    print('accepted')",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(new TextDecoder().decode(result.stdout)).toContain(
+    const finding = exampleFindings().findings[0]!;
+    finding["attackPath"] = {
+      dataflow: { evidenceRefs: ["missing-evidence"] },
+    };
+    expect(run<string | null>({ operation: "validate", finding })).toContain(
       "attackPath.dataflow.evidenceRefs: unknown code-evidence ids: missing-evidence",
     );
   });
 
   test("accepts nested references to the legacy code evidence catalog", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "finding = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())['findings'][0]",
-      "finding.pop('codeEvidence', None)",
-      "finding['code_evidence'] = [{'id': 'legacy-source', 'code': 'entry_path = archive_entry.name'}]",
-      "finding['attackPath'] = {'dataflow': {'evidence_refs': ['legacy-source']}}",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "finalizer['_validate_finding'](finding, 'findings[0]')",
-      "print('accepted')",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(new TextDecoder().decode(result.stdout)).toContain("accepted");
+    const finding = exampleFindings().findings[0]!;
+    delete finding["codeEvidence"];
+    finding["code_evidence"] = [
+      { id: "legacy-source", code: "entry_path = archive_entry.name" },
+    ];
+    finding["attackPath"] = { dataflow: { evidence_refs: ["legacy-source"] } };
+    expect(run<string | null>({ operation: "validate", finding })).toBeNull();
   });
 
   test("rejects duplicate IDs across code evidence catalogs", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "finding = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())['findings'][0]",
-      "finding['codeEvidence'] = [{'id': 'shared-source', 'code': 'canonical_source()'}]",
-      "finding['code_evidence'] = [{'id': 'shared-source', 'code': 'conflicting_legacy_source()'}]",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "try:",
-      "    finalizer['_validate_finding'](finding, 'findings[0]')",
-      "except finalizer['ContractError'] as error:",
-      "    print(error)",
-      "else:",
-      "    print('accepted')",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(new TextDecoder().decode(result.stdout)).toContain(
+    const finding = exampleFindings().findings[0]!;
+    finding["codeEvidence"] = [
+      { id: "shared-source", code: "canonical_source()" },
+    ];
+    finding["code_evidence"] = [
+      { id: "shared-source", code: "conflicting_legacy_source()" },
+    ];
+    expect(run<string | null>({ operation: "validate", finding })).toContain(
       "code_evidence[0].id: duplicate code-evidence id",
     );
   });
 
   test("keeps legacy sealed evidence references compatible", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "findings = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())",
-      "findings['findings'][0]['codeEvidence'] = [{'id': 'shared-source', 'label': 'Canonical source', 'path': 'src/extract.py', 'startLine': 41, 'code': 'canonical_source()', 'explanation': 'Canonical snippet.'}]",
-      "findings['findings'][0]['code_evidence'] = [",
-      "    {'id': 'shared-source', 'code': 'legacy_source()'},",
-      "    {'id': 'legacy-duplicate', 'code': 'first_legacy_source()'},",
-      "    {'id': 'legacy-duplicate', 'code': 'second_legacy_source()'},",
-      "]",
-      "findings['findings'][0]['validation'] = {'evidence_refs': ['legacy-validation-evidence'], 'counterEvidence': None, 'limitations': '', 'method': [], 'status': '', 'summary': {}, 'disposition': '', 'result': ''}",
-      "findings['findings'][0]['rootCause'] = {'summary': 'Canonical root cause.', 'code': 'canonical_root()', 'language': 'python'}",
-      "findings['findings'][0]['attackPath'] = {'evidence_refs': ['legacy-attack-evidence'], 'dataFlow': '', 'dataflow': {'summary': '', 'source': None, 'sink': None, 'outcome': None, 'evidenceRefs': ['legacy-missing-evidence']}, 'impact': {'level': '', 'rationale': None, 'why': None}, 'likelihood': {'level': None, 'rationale': None, 'why': None}, 'reachability': None, 'summary': ''}",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "compatible = finalizer['_legacy_sealed_findings_for_validation'](findings)",
-      "finalizer['_validate_finding'](compatible['findings'][0], 'findings[0]')",
-      "finalizer['validate_against_schema'](compatible, plugin / 'schemas' / 'findings.schema.json')",
-      "print(json.dumps({'originalDataFlow': findings['findings'][0]['attackPath']['dataFlow'], 'compatibleHasDataFlow': 'dataFlow' in compatible['findings'][0]['attackPath'], 'originalNested': findings['findings'][0]['attackPath']['dataflow']['evidenceRefs'], 'compatibleNested': compatible['findings'][0]['attackPath']['dataflow']['evidenceRefs'], 'originalReachability': findings['findings'][0]['attackPath']['reachability'], 'compatibleHasReachability': 'reachability' in compatible['findings'][0]['attackPath'], 'originalAttack': findings['findings'][0]['attackPath']['evidence_refs'], 'compatibleAttack': compatible['findings'][0]['attackPath']['evidence_refs'], 'originalValidation': findings['findings'][0]['validation']['evidence_refs'], 'compatibleValidation': compatible['findings'][0]['validation']['evidence_refs'], 'compatibleHasCounterEvidence': 'counterEvidence' in compatible['findings'][0]['validation'], 'compatibleHasDisposition': 'disposition' in compatible['findings'][0]['validation'], 'compatibleHasLimitations': 'limitations' in compatible['findings'][0]['validation'], 'compatibleHasMethod': 'method' in compatible['findings'][0]['validation'], 'compatibleHasResult': 'result' in compatible['findings'][0]['validation'], 'compatibleHasRootCause': 'rootCause' in compatible['findings'][0], 'compatibleHasStatus': 'status' in compatible['findings'][0]['validation'], 'compatibleHasSummary': 'summary' in compatible['findings'][0]['validation'], 'originalMethod': findings['findings'][0]['validation']['method'], 'originalRootCauseSummary': findings['findings'][0]['rootCause']['summary'], 'originalSummary': findings['findings'][0]['validation']['summary'], 'originalLegacyCatalog': findings['findings'][0]['code_evidence'], 'compatibleLegacyCatalog': compatible['findings'][0]['code_evidence']}))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    const findings = exampleFindings(),
+      finding = findings.findings[0]!;
+    finding["codeEvidence"] = [
+      {
+        id: "shared-source",
+        label: "Canonical source",
+        path: "src/extract.py",
+        startLine: 41,
+        code: "canonical_source()",
+        explanation: "Canonical snippet.",
+      },
+    ];
+    finding["code_evidence"] = [
+      { id: "shared-source", code: "legacy_source()" },
+      { id: "legacy-duplicate", code: "first_legacy_source()" },
+      { id: "legacy-duplicate", code: "second_legacy_source()" },
+    ];
+    finding["validation"] = {
+      evidence_refs: ["legacy-validation-evidence"],
+      counterEvidence: null,
+      limitations: "",
+      method: [],
+      status: "",
+      summary: {},
+      disposition: "",
+      result: "",
+    };
+    finding["rootCause"] = {
+      summary: "Canonical root cause.",
+      code: "canonical_root()",
+      language: "python",
+    };
+    finding["attackPath"] = {
+      evidence_refs: ["legacy-attack-evidence"],
+      dataFlow: "",
+      dataflow: {
+        summary: "",
+        source: null,
+        sink: null,
+        outcome: null,
+        evidenceRefs: ["legacy-missing-evidence"],
+      },
+      impact: { level: "", rationale: null, why: null },
+      likelihood: { level: null, rationale: null, why: null },
+      reachability: null,
+      summary: "",
+    };
+    const response = compatible(findings),
+      original = response.original.findings[0]!,
+      adapted = response.compatible.findings[0]!;
+    const attack = section(adapted, "attackPath"),
+      validation = section(adapted, "validation"),
+      originalAttack = section(original, "attackPath"),
+      originalValidation = section(original, "validation");
+    const result = {
+      originalDataFlow: originalAttack["dataFlow"],
+      compatibleHasDataFlow: Object.hasOwn(attack, "dataFlow"),
+      originalNested: section(originalAttack, "dataflow")["evidenceRefs"],
+      compatibleNested: section(attack, "dataflow")["evidenceRefs"],
+      originalReachability: originalAttack["reachability"],
+      compatibleHasReachability: Object.hasOwn(attack, "reachability"),
+      originalAttack: originalAttack["evidence_refs"],
+      compatibleAttack: attack["evidence_refs"],
+      originalValidation: originalValidation["evidence_refs"],
+      compatibleValidation: validation["evidence_refs"],
+      compatibleHasCounterEvidence: Object.hasOwn(
+        validation,
+        "counterEvidence",
+      ),
+      compatibleHasDisposition: Object.hasOwn(validation, "disposition"),
+      compatibleHasLimitations: Object.hasOwn(validation, "limitations"),
+      compatibleHasMethod: Object.hasOwn(validation, "method"),
+      compatibleHasResult: Object.hasOwn(validation, "result"),
+      compatibleHasRootCause: Object.hasOwn(adapted, "rootCause"),
+      compatibleHasStatus: Object.hasOwn(validation, "status"),
+      compatibleHasSummary: Object.hasOwn(validation, "summary"),
+      originalMethod: originalValidation["method"],
+      originalRootCauseSummary: section(original, "rootCause")["summary"],
+      originalSummary: originalValidation["summary"],
+      originalLegacyCatalog: original["code_evidence"],
+      compatibleLegacyCatalog: adapted["code_evidence"],
+    };
+    expect(result).toEqual({
       compatibleAttack: [],
       compatibleLegacyCatalog: [
         { code: "first_legacy_source()", id: "legacy-duplicate" },
@@ -761,28 +828,23 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("normalizes formerly free-form sealed details for validation", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "findings = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())",
-      "finding = findings['findings'][0]",
-      "finding['validation'] = {'evidence': {'kind': 'trace'}, 'counterEvidence': [None, 'The mitigation was checked.']}",
-      "finding['attackPath'] = {'steps': {'first': 'upload'}}",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "compatible = finalizer['_legacy_sealed_findings_for_validation'](findings)",
-      "finalizer['_validate_finding'](compatible['findings'][0], 'findings[0]')",
-      "finalizer['validate_against_schema'](compatible, plugin / 'schemas' / 'findings.schema.json')",
-      "print(json.dumps({'originalValidation': finding['validation'], 'originalAttackPath': finding['attackPath'], 'compatibleValidation': compatible['findings'][0]['validation'], 'compatibleAttackPath': compatible['findings'][0]['attackPath']}))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    const findings = exampleFindings(),
+      finding = findings.findings[0]!;
+    finding["validation"] = {
+      evidence: { kind: "trace" },
+      counterEvidence: [null, "The mitigation was checked."],
+    };
+    finding["attackPath"] = { steps: { first: "upload" } };
+    const response = compatible(findings),
+      original = response.original.findings[0]!,
+      adapted = response.compatible.findings[0]!;
+    const result = {
+      originalValidation: original["validation"],
+      originalAttackPath: original["attackPath"],
+      compatibleValidation: adapted["validation"],
+      compatibleAttackPath: adapted["attackPath"],
+    };
+    expect(result).toEqual({
       originalValidation: {
         evidence: { kind: "trace" },
         counterEvidence: [null, "The mitigation was checked."],
@@ -796,62 +858,38 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("rejects malformed canonical root causes during sealed validation", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "findings = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())",
-      "findings['findings'][0]['rootCause'] = {'summary': []}",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "compatible = finalizer['_legacy_sealed_findings_for_validation'](findings)",
-      "try:",
-      "    finalizer['validate_against_schema'](compatible, plugin / 'schemas' / 'findings.schema.json')",
-      "except finalizer['ContractError'] as error:",
-      "    print(error)",
-      "else:",
-      "    print('accepted')",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(new TextDecoder().decode(result.stdout)).toContain(
-      "rootCause.summary",
-    );
+    const findings = exampleFindings();
+    findings.findings[0]!["rootCause"] = { summary: [] };
+    const response = run<LegacyResponse>({
+      operation: "legacy",
+      findings,
+      schema: true,
+    });
+    expect(response.error).toContain("rootCause.summary");
   });
 
   test("ranks legacy code evidence during interrupted recovery", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import copy, json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "examples = plugin / 'examples' / 'completed-scan'",
-      "manifest = json.loads((examples / 'scan-manifest.json').read_text())",
-      "example = json.loads((examples / 'findings.json').read_text())['findings'][0]",
-      "first = copy.deepcopy(example)",
-      "first.pop('codeEvidence', None)",
-      "first['summary'] = 'FIRST'",
-      "second = copy.deepcopy(first)",
-      "second['summary'] = 'SECOND'",
-      "second['code_evidence'] = [{'id': 'legacy-source', 'code': 'legacy_source()'}]",
-      "second['root_cause'] = None",
-      "findings = {'scanId': manifest['scan']['id'], 'findings': [first, second]}",
-      "warnings = []",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "finalizer['_recover_unsealed_findings'](manifest, findings, plugin / 'schemas', examples, warnings)",
-      "print(json.dumps({'summary': findings['findings'][0]['summary'], 'evidence': findings['findings'][0].get('code_evidence'), 'rootCause': findings['findings'][0].get('root_cause'), 'warnings': warnings}))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    const first = exampleFindings().findings[0]!;
+    delete first["codeEvidence"];
+    first["summary"] = "FIRST";
+    const second = structuredClone(first);
+    second["summary"] = "SECOND";
+    second["code_evidence"] = [
+      { id: "legacy-source", code: "legacy_source()" },
+    ];
+    second["root_cause"] = null;
+    const response = run<RecoveryResponse>({
+      operation: "recover",
+      findings: [first, second],
+    });
+    const finding = response.findings[0]!;
+    const result = {
+      summary: finding["summary"],
+      evidence: finding["code_evidence"],
+      rootCause: finding["root_cause"],
+      warnings: response.warnings,
+    };
+    expect(result).toEqual({
       summary: "SECOND",
       evidence: [{ id: "legacy-source", code: "legacy_source()" }],
       rootCause: null,
@@ -862,36 +900,29 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("ranks embedded root-cause evidence during interrupted recovery", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import copy, json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "examples = plugin / 'examples' / 'completed-scan'",
-      "manifest = json.loads((examples / 'scan-manifest.json').read_text())",
-      "example = json.loads((examples / 'findings.json').read_text())['findings'][0]",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "results = {}",
-      "for name, detail in {'embedded': {'codeEvidence': [{'id': 'embedded-root', 'code': 'embedded_root()'}]}, 'legacy-code': {'code': 'legacy_root()'}}.items():",
-      "    first = copy.deepcopy(example)",
-      "    first.pop('codeEvidence', None)",
-      "    first['summary'] = 'FIRST'",
-      "    second = copy.deepcopy(first)",
-      "    second['summary'] = 'SECOND'",
-      "    second['rootCause'] = {'summary': 'Richer root cause', **detail}",
-      "    findings = {'scanId': manifest['scan']['id'], 'findings': [first, second]}",
-      "    warnings = []",
-      "    finalizer['_recover_unsealed_findings'](manifest, findings, plugin / 'schemas', examples, warnings)",
-      "    results[name] = {'summary': findings['findings'][0]['summary'], 'warnings': warnings}",
-      "print(json.dumps(results))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    const result: JsonObject = {};
+    for (const [name, detail] of Object.entries({
+      embedded: {
+        codeEvidence: [{ id: "embedded-root", code: "embedded_root()" }],
+      },
+      "legacy-code": { code: "legacy_root()" },
+    })) {
+      const first = exampleFindings().findings[0]!;
+      delete first["codeEvidence"];
+      first["summary"] = "FIRST";
+      const second = structuredClone(first);
+      second["summary"] = "SECOND";
+      second["rootCause"] = { summary: "Richer root cause", ...detail };
+      const response = run<RecoveryResponse>({
+        operation: "recover",
+        findings: [first, second],
+      });
+      result[name] = {
+        summary: response.findings[0]!["summary"],
+        warnings: response.warnings,
+      };
+    }
+    expect(result).toEqual({
       embedded: {
         summary: "SECOND",
         warnings: [
@@ -908,38 +939,40 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("ignores malformed legacy evidence references in sealed validation", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "findings = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())",
-      "finding = findings['findings'][0]",
-      "finding['code_evidence'] = [{'id': 'legacy-source', 'code': 'legacy_source()'}]",
-      "finding['rootCause'] = {'summary': 'Canonical root cause.', 'evidenceRefs': ['legacy-source', 'missing-source']}",
-      "finding['validation'] = {'evidenceRefs': [None, '', 42, 'legacy-source', 'missing-source']}",
-      "finding['attackPath'] = {'dataflow': {'evidence_refs': [None, '', 42, 'legacy-source', 'missing-source']}}",
-      "original = json.dumps(findings, sort_keys=True)",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "compatible = finalizer['_legacy_sealed_findings_for_validation'](findings)",
-      "finalizer['_validate_finding'](compatible['findings'][0], 'findings[0]')",
-      "print(json.dumps({",
-      "    'originalUnchanged': json.dumps(findings, sort_keys=True) == original,",
-      "    'originalRootCause': finding['rootCause'],",
-      "    'compatibleRootCause': compatible['findings'][0]['rootCause'],",
-      "    'originalValidation': finding['validation']['evidenceRefs'],",
-      "    'compatibleValidation': compatible['findings'][0]['validation']['evidenceRefs'],",
-      "    'originalDataflow': finding['attackPath']['dataflow']['evidence_refs'],",
-      "    'compatibleDataflow': compatible['findings'][0]['attackPath']['dataflow']['evidence_refs'],",
-      "}))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    const findings = exampleFindings(),
+      finding = findings.findings[0]!;
+    finding["code_evidence"] = [
+      { id: "legacy-source", code: "legacy_source()" },
+    ];
+    finding["rootCause"] = {
+      summary: "Canonical root cause.",
+      evidenceRefs: ["legacy-source", "missing-source"],
+    };
+    finding["validation"] = {
+      evidenceRefs: [null, "", 42, "legacy-source", "missing-source"],
+    };
+    finding["attackPath"] = {
+      dataflow: {
+        evidence_refs: [null, "", 42, "legacy-source", "missing-source"],
+      },
+    };
+    const response = compatible(findings, true, false),
+      original = response.original.findings[0]!,
+      adapted = response.compatible.findings[0]!;
+    const result = {
+      originalUnchanged: response.originalUnchanged,
+      originalRootCause: original["rootCause"],
+      compatibleRootCause: adapted["rootCause"],
+      originalValidation: section(original, "validation")["evidenceRefs"],
+      compatibleValidation: section(adapted, "validation")["evidenceRefs"],
+      originalDataflow: section(section(original, "attackPath"), "dataflow")[
+        "evidence_refs"
+      ],
+      compatibleDataflow: section(section(adapted, "attackPath"), "dataflow")[
+        "evidence_refs"
+      ],
+    };
+    expect(result).toEqual({
       originalUnchanged: true,
       originalRootCause: {
         summary: "Canonical root cause.",
@@ -957,24 +990,17 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("drops unsupported legacy attack-path sequences from sealed validation", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "findings = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())",
-      "findings['findings'][0]['attackPath'] = {'dataflow': ['source', 'sink'], 'reachability': ['authenticated uploader']}",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "compatible = finalizer['_legacy_sealed_findings_for_validation'](findings)",
-      "finalizer['validate_against_schema'](compatible, plugin / 'schemas' / 'findings.schema.json')",
-      "print(json.dumps({'original': findings['findings'][0]['attackPath'], 'compatible': compatible['findings'][0]['attackPath']}))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    const findings = exampleFindings();
+    findings.findings[0]!["attackPath"] = {
+      dataflow: ["source", "sink"],
+      reachability: ["authenticated uploader"],
+    };
+    const response = compatible(findings, false, true);
+    const result = {
+      original: response.original.findings[0]!["attackPath"],
+      compatible: response.compatible.findings[0]!["attackPath"],
+    };
+    expect(result).toEqual({
       original: {
         dataflow: ["source", "sink"],
         reachability: ["authenticated uploader"],
@@ -984,34 +1010,21 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("keeps nullable legacy sealed evidence catalogs compatible", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import copy, json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "example = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())['findings'][0]",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "results = {}",
-      "for field in ('codeEvidence', 'code_evidence'):",
-      "    finding = copy.deepcopy(example)",
-      "    finding[field] = None",
-      "    compatible = finalizer['_legacy_sealed_findings_for_validation']({'findings': [finding]})",
-      "    try:",
-      "        finalizer['_validate_finding'](compatible['findings'][0], 'findings[0]')",
-      "    except finalizer['ContractError'] as error:",
-      "        outcome = str(error)",
-      "    else:",
-      "        outcome = 'accepted'",
-      "    results[field] = {'outcome': outcome, 'present': field in compatible['findings'][0]} ",
-      "print(json.dumps(results))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    const result: JsonObject = {};
+    for (const field of ["codeEvidence", "code_evidence"]) {
+      const finding = exampleFindings().findings[0]!;
+      finding[field] = null;
+      const response = run<LegacyResponse>({
+        operation: "legacy",
+        findings: { findings: [finding] },
+        validate: true,
+      });
+      result[field] = {
+        outcome: response.error ?? "accepted",
+        present: Object.hasOwn(response.compatible.findings[0]!, field),
+      };
+    }
+    expect(result).toEqual({
       codeEvidence: {
         outcome: "findings[0].codeEvidence: expected an array",
         present: true,
@@ -1021,25 +1034,22 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("ignores malformed legacy evidence rows in sealed validation", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "findings = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())",
-      "findings['findings'][0]['code_evidence'] = [None, 'legacy source', {}, {'id': '', 'code': 'empty_id()'}, {'id': 'missing-code'}, {'id': 'empty-code', 'code': ''}, {'id': 'legacy-source', 'code': 'legacy_source()'}]",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "compatible = finalizer['_legacy_sealed_findings_for_validation'](findings)",
-      "finalizer['_validate_finding'](compatible['findings'][0], 'findings[0]')",
-      "print(json.dumps({'original': findings['findings'][0]['code_evidence'], 'compatible': compatible['findings'][0]['code_evidence']}))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+    const findings = exampleFindings();
+    findings.findings[0]!["code_evidence"] = [
+      null,
+      "legacy source",
+      {},
+      { id: "", code: "empty_id()" },
+      { id: "missing-code" },
+      { id: "empty-code", code: "" },
+      { id: "legacy-source", code: "legacy_source()" },
+    ];
+    const response = compatible(findings, true, false);
+    const result = {
+      original: response.original.findings[0]!["code_evidence"],
+      compatible: response.compatible.findings[0]!["code_evidence"],
+    };
+    expect(result).toEqual({
       original: [
         null,
         "legacy source",
@@ -1054,44 +1064,66 @@ describe("bundled plugin finding detail contracts", () => {
   });
 
   test("projects canonical and legacy code evidence into safe SARIF locations", () => {
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    const script = [
-      "import json, pathlib, runpy, sys",
-      "plugin = pathlib.Path(sys.argv[1])",
-      "finding = json.loads((plugin / 'examples' / 'completed-scan' / 'findings.json').read_text())['findings'][0]",
-      "finding['codeEvidence'] = [{'id': 'canonical-source', 'path': 'src/canonical.py', 'startLine': 12, 'code': 'canonical_source()'}]",
-      "finding['code_evidence'] = [",
-      "    {'id': 'legacy-sink', 'path': 'src/legacy.py', 'startLine': 37, 'endLine': 39, 'code': 'legacy_sink()'},",
-      "    {'id': 'legacy-null-end', 'path': 'src/null_end.py', 'startLine': 48, 'endLine': None, 'code': 'null_end()'},",
-      "    {'id': 'legacy-reversed-end', 'path': 'src/reversed_end.py', 'startLine': 59, 'endLine': 58, 'code': 'reversed_end()'},",
-      "    {'id': 'legacy-text-end', 'path': 'src/text_end.py', 'startLine': 70, 'endLine': '71', 'code': 'text_end()'},",
-      "    {'id': 'legacy-zero-start', 'path': 'src/zero.py', 'startLine': 0, 'code': 'zero_start()'},",
-      "    {'id': 'legacy-unsafe-path', 'path': '../outside.py', 'startLine': 81, 'code': 'unsafe_path()'},",
-      "]",
-      "finalizer = runpy.run_path(str(plugin / 'scripts' / 'finalize_scan_contract.py'))",
-      "result = finalizer['_sarif_result'](finding, 0)",
-      "regions = {location['physicalLocation']['artifactLocation']['uri']: location['physicalLocation']['region'] for location in result['locations']}",
-      "print(json.dumps(regions, sort_keys=True))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python!, "-I", "-B", "-c", script, PLUGIN_ROOT],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toMatchObject({
+    const finding = exampleFindings().findings[0]!;
+    finding["codeEvidence"] = [
+      {
+        id: "canonical-source",
+        path: "src/canonical.py",
+        startLine: 12,
+        code: "canonical_source()",
+      },
+    ];
+    finding["code_evidence"] = [
+      {
+        id: "legacy-sink",
+        path: "src/legacy.py",
+        startLine: 37,
+        endLine: 39,
+        code: "legacy_sink()",
+      },
+      {
+        id: "legacy-null-end",
+        path: "src/null_end.py",
+        startLine: 48,
+        endLine: null,
+        code: "null_end()",
+      },
+      {
+        id: "legacy-reversed-end",
+        path: "src/reversed_end.py",
+        startLine: 59,
+        endLine: 58,
+        code: "reversed_end()",
+      },
+      {
+        id: "legacy-text-end",
+        path: "src/text_end.py",
+        startLine: 70,
+        endLine: "71",
+        code: "text_end()",
+      },
+      {
+        id: "legacy-zero-start",
+        path: "src/zero.py",
+        startLine: 0,
+        code: "zero_start()",
+      },
+      {
+        id: "legacy-unsafe-path",
+        path: "../outside.py",
+        startLine: 81,
+        code: "unsafe_path()",
+      },
+    ];
+    const result = run<JsonObject>({ operation: "sarif", finding });
+    expect(result).toMatchObject({
       "src/canonical.py": { startLine: 12, endLine: 12 },
       "src/legacy.py": { startLine: 37, endLine: 39 },
       "src/null_end.py": { startLine: 48, endLine: 48 },
       "src/reversed_end.py": { startLine: 59, endLine: 59 },
       "src/text_end.py": { startLine: 70, endLine: 70 },
     });
-    expect(
-      JSON.parse(new TextDecoder().decode(result.stdout)),
-    ).not.toHaveProperty("src/zero.py");
-    expect(
-      JSON.parse(new TextDecoder().decode(result.stdout)),
-    ).not.toHaveProperty("../outside.py");
+    expect(result).not.toHaveProperty("src/zero.py");
+    expect(result).not.toHaveProperty("../outside.py");
   });
 });
