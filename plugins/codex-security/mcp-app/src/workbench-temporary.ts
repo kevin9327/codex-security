@@ -3,7 +3,6 @@ import {
   chmodSync,
   closeSync,
   constants,
-  lchmodSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -309,7 +308,11 @@ function resetPermissions(path: string): void {
       unixBinding().clearFileFlags(encodePosixPath(path), false),
       path,
     );
-    pathCall(path, () => lchmodSync(encodePosixPath(path), 0o700));
+    // Node's lchmod opens for writing, which fails on read-only directories.
+    checkedErrno(
+      unixBinding().chmodNoFollow(encodePosixPath(path), 0o700),
+      path,
+    );
   } else if (windows) windowsFiles().chmod(widePath(path), 0o700);
   else if (!stat(path, false).isSymbolicLink())
     pathCall(path, () => chmodSync(encodePosixPath(path), 0o700));

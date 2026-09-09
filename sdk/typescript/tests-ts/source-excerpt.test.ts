@@ -365,7 +365,7 @@ test("treats unavailable Git as an absent source", () => {
         path: "source.txt",
       },
     ],
-    { PATH: "" },
+    { PATH: "", Path: "" },
   )[0]!;
   expect(response.result).toBeNull();
   expect(response.queries).toHaveLength(1);

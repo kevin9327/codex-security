@@ -9,7 +9,7 @@ import {
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
@@ -234,7 +234,7 @@ test("archives all recorded artifact paths while retaining external paths", () =
         path:
           kind === "manifest"
             ? join(root, "outside.json")
-            : `${archivedScanDir}/${path}`,
+            : `${archivedScanDir}/${path}`.replaceAll("/", sep),
       })),
   );
 });

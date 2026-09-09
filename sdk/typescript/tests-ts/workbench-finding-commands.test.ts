@@ -368,6 +368,7 @@ test("reviewed patches proceed through apply, verification and triage with persi
     { cwd: s.target, encoding: "utf8" },
   );
   expect(applied.status, applied.stderr).toBe(0);
+  const appliedBytes = readFileSync(join(s.target, "source.ts"));
   const setState = (version: number, state: string) => [
     "set-finding-remediation",
     ...args,
@@ -421,7 +422,7 @@ test("reviewed patches proceed through apply, verification and triage with persi
   const stale = helper(close, s, undefined, env);
   expect(stale.status).toBe(1);
   expect(stale.stderr).toContain("Working-tree contents changed");
-  writeFileSync(join(s.target, "source.ts"), "changed source\n");
+  writeFileSync(join(s.target, "source.ts"), appliedBytes);
   expect(finding(run(close), s.occurrenceId)["triage"]).toMatchObject({
     status: "closed",
     closeReason: "already_fixed",

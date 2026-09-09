@@ -472,10 +472,7 @@ test("cost reconciliation preserves the caller transaction when BEGIN fails and 
 test.skipIf(process.platform !== "darwin")(
   "usage accepts macOS system rollout aliases",
   () => {
-    for (const temporaryRoot of [
-      tmpdir().replace(/^\/private(?=\/var\/)/u, ""),
-      "/tmp",
-    ]) {
+    for (const temporaryRoot of ["/var/tmp", "/tmp"]) {
       const directory = mkdtempSync(join(temporaryRoot, "scan-usage-alias-"));
       try {
         const input = request();

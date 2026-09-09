@@ -82,6 +82,8 @@ export interface UnixBinding {
   ): { errno: number; path: Buffer | null };
   /** Clears macOS file flags before cleanup; other Unix hosts return ENOTSUP. */
   clearFileFlags(path: Buffer, followSymlinks: boolean): number;
+  /** Calls macOS lchmod without opening the path; other Unix hosts return ENOTSUP. */
+  chmodNoFollow(path: Buffer, mode: number): number;
   readLinkAt(directory: number, name: Buffer): { errno: number; value: Buffer };
   fileLock(
     descriptor: number,

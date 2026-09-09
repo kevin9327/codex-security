@@ -381,9 +381,16 @@ test("coverage receipt normalization survives late failure and closes opened fil
   const result = run([
     request("coverage", [manifest, value], { trace: true }),
   ])[0]!;
-  expect(result.error).toBe(
-    "coverage.surfaces[0].receiptRefs[1]: expected a file inside the scan directory",
-  );
+  if (process.platform === "win32") {
+    expect(result.error).toStartWith(
+      "[Errno 2] coverage.surfaces[0].receiptRefs[1]: CreateFileW for ",
+    );
+    expect(result.error).toContain(join(scanRoot, "artifacts", "missing"));
+  } else {
+    expect(result.error).toBe(
+      "coverage.surfaces[0].receiptRefs[1]: expected a file inside the scan directory",
+    );
+  }
   expect(
     ((after(result) as [Table, Table])[1]["surfaces"] as Table[])[0]![
       "receiptRefs"
@@ -475,9 +482,16 @@ test("writeup and hardening file requirements skip absent metadata and reject sy
     request("hardening", { hardening: null }),
   ]);
   for (const result of [results[0]!, results[1]!, results[3]!]) success(result);
-  expect(results[2]!.error).toBe(
-    "findings[0].writeup.reportPath: expected a file inside the scan directory",
-  );
+  if (process.platform === "win32") {
+    expect(results[2]!.error).toStartWith(
+      "[Errno 2] findings[0].writeup.reportPath: CreateFileW for ",
+    );
+    expect(results[2]!.error).toContain(join(scanRoot, "missing.md"));
+  } else {
+    expect(results[2]!.error).toBe(
+      "findings[0].writeup.reportPath: expected a file inside the scan directory",
+    );
+  }
   if (process.platform !== "win32") {
     symlinkSync(
       join(scanRoot, "artifacts/a.json"),

@@ -113,7 +113,9 @@ describe("native workbench connection and target persistence", () => {
         CODEX_HOME: "~/custom",
       }).stateDir,
     ).toBe(join(home, "custom", ...base));
-    expect(run({ action: "paths" }, "  ").stateDir).toBe(join(directory, "  "));
+    const whitespace = run({ action: "paths" }, "  ");
+    expect(whitespace.error).toBeUndefined();
+    expect(whitespace.stateDir).toBe(join(directory, "  "));
     expect(
       run({ action: "paths" }, "relative/./nested/../state").stateDir,
     ).toBe(join(directory, "relative", "state"));

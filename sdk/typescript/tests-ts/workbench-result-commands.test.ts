@@ -12,10 +12,10 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 import { stringifyJson } from "../../../plugins/codex-security/mcp-app/src/helpers/python-json";
 import type { Operation, Request } from "./support/navigation-fixture";
 import { PLUGIN_ROOT } from "./plugin-root";
+import { readSqliteRows } from "./support/read-sqlite";
 
 const root = realpathSync(
   mkdtempSync(join(tmpdir(), "workbench-result-commands-")),
@@ -158,26 +158,17 @@ test.each(["database-info", "get-workspace"])(
       expect(response.status).toBe(1);
       expect(response.stderr).toContain("workspace not found");
     }
-    const database = new Database(join(state, "workbench.sqlite3"), {
-      readonly: true,
-    });
-    try {
-      const rows = database
-        .query<
-          { applied_at: string },
-          []
-        >("SELECT applied_at FROM schema_migrations ORDER BY version")
-        .all();
-      expect(rows.length).toBeGreaterThan(0);
-      for (const row of rows) {
-        expect(row.applied_at).toMatch(
-          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{6})?Z$/,
-        );
-        expect(Date.parse(row.applied_at)).toBeGreaterThanOrEqual(before);
-        expect(Date.parse(row.applied_at)).toBeLessThanOrEqual(after);
-      }
-    } finally {
-      database.close();
+    const rows = readSqliteRows<{ applied_at: string }>(
+      join(state, "workbench.sqlite3"),
+      "SELECT applied_at FROM schema_migrations ORDER BY version",
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.applied_at).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{6})?Z$/,
+      );
+      expect(Date.parse(row.applied_at)).toBeGreaterThanOrEqual(before);
+      expect(Date.parse(row.applied_at)).toBeLessThanOrEqual(after);
     }
   },
 );
@@ -241,7 +232,7 @@ test("scan and workspace commands assemble actual finding results and enforce th
   expect(rejected.status).toBe(1);
   expect(rejected.stdout).toBe("");
   expect(rejected.stderr).toBe(
-    "Codex Security workspace not found in this thread.\n",
+    `Codex Security workspace not found in this thread.${process.platform === "win32" ? "\r\n" : "\n"}`,
   );
 });
 

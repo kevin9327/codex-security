@@ -77,6 +77,21 @@ mod unix {
     }
 
     #[napi]
+    pub fn chmod_no_follow(path_bytes: Buffer, mode: u32) -> napi::Result<i32> {
+        let path = path(path_bytes)?;
+        #[cfg(target_os = "macos")]
+        {
+            let result = unsafe { lchmod(path.as_ptr(), mode as libc::mode_t) };
+            Ok(if result < 0 { last_errno() } else { 0 })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (path, mode);
+            Ok(libc::ENOTSUP)
+        }
+    }
+
+    #[napi]
     pub fn read_copy_stat(
         source: Buffer,
         follow_symlinks: bool,

@@ -97,6 +97,14 @@ jobs:
         id: windows-temp
         shell: pwsh
         run: ./sdk/typescript/scripts/prepare-windows-test-root.ps1
+      - name: Install ripgrep on Windows
+        if: runner.os == 'Windows'
+        run: choco install ripgrep --yes --no-progress
+      - name: Install ripgrep on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
       - name: Test runner mode
         env:
           TEMP: ${{ steps.windows-temp.outputs.path || runner.temp }}

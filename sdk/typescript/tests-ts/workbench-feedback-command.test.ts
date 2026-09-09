@@ -176,7 +176,9 @@ test("the SDK and helper return feedback without Python and leave scan rows inta
   const absent = helper(["--scan-id", "cccccccc"]);
   expect(absent.status).toBe(1);
   expect(absent.stdout).toBe("");
-  expect(absent.stderr).toBe("Codex Security scan not found.\n");
+  expect(absent.stderr).toBe(
+    `Codex Security scan not found.${process.platform === "win32" ? "\r\n" : "\n"}`,
+  );
   expect(helper([]).status).toBe(2);
   expect(helper(["--scan", current]).status).toBe(0);
   expect(helper(["--help"]).status).toBe(0);

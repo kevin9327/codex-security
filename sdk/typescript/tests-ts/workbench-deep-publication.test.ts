@@ -163,7 +163,7 @@ test("publication copies use hard links and overwrite existing files with metada
   );
 });
 
-test("copy failures preserve the source and report path and string arguments correctly", () => {
+test("copy failures preserve the source and retain platform error semantics", () => {
   const { source, destination } = paths();
   writeFileSync(source, "source");
   linkSync(source, destination);
@@ -175,11 +175,14 @@ test("copy failures preserve the source and report path and string arguments cor
     sourceIsPath: true,
     destinationIsPath: true,
   })[0]!;
-  expect(strings.error).toContain("are the same file");
-  expect(strings.error).not.toContain("Path(");
-  expect(pathArguments.error).toContain(
-    process.platform === "win32" ? "WindowsPath(" : "PosixPath(",
-  );
+  if (process.platform === "win32") {
+    expect(strings.error).toStartWith("[WinError 32]");
+    expect(pathArguments.error).toBe(strings.error);
+  } else {
+    expect(strings.error).toContain("are the same file");
+    expect(strings.error).not.toContain("Path(");
+    expect(pathArguments.error).toContain("PosixPath(");
+  }
   expect(readFileSync(source, "utf8")).toBe("source");
 });
 

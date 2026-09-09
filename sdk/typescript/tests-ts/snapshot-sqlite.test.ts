@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root.js";
+import { readSqliteRows } from "./support/read-sqlite";
 
 const node = Bun.which("node")!;
 const helper = join(PLUGIN_ROOT, "mcp", "helpers.mjs");
@@ -38,12 +39,10 @@ function create(path: string) {
   return db;
 }
 function rows(path: string) {
-  const db = new Database(path, { readonly: true });
-  try {
-    return db.query("SELECT rowid, value FROM records ORDER BY rowid").all();
-  } finally {
-    db.close();
-  }
+  return readSqliteRows(
+    path,
+    "SELECT rowid, value FROM records ORDER BY rowid",
+  );
 }
 function run(root: string, args: string[], env = process.env) {
   return spawnSync(node, [helper, "snapshot-sqlite", ...args], {
@@ -84,16 +83,12 @@ describe("SQLite snapshots", () => {
         { rowid: 41, value: "sealed" },
         { rowid: 99, value: "retained" },
       ]);
-      const copied = new Database(f.destination, { readonly: true });
-      try {
-        expect(
-          copied
-            .query("SELECT name FROM sqlite_master WHERE name='obsolete'")
-            .all(),
-        ).toEqual([]);
-      } finally {
-        copied.close();
-      }
+      expect(
+        readSqliteRows(
+          f.destination,
+          "SELECT name FROM sqlite_master WHERE name='obsolete'",
+        ),
+      ).toEqual([]);
       const standalone = join(f.root, "standalone.sqlite3");
       copyFileSync(f.destination, standalone);
       expect(rows(standalone)).toEqual(rows(f.destination));

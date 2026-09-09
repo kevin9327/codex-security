@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  lchmodSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -194,6 +195,7 @@ test.skipIf(process.platform === "win32")(
     chmodSync(write(path, "a-b", "dash\n"), 0o644);
     chmodSync(write(path, "a/file", Buffer.from([0, 255, 10])), 0o600);
     symlinkSync("a/file", join(path, "a-link"));
+    if (process.platform === "darwin") lchmodSync(join(path, "a-link"), 0o777);
     const digest =
       "codex-security-snapshot/v1:sha256:5a66ed809f9ecae49bb6eb085cc0b223d09e6cc7b19185c3391f597f1cc060d9";
     expect(directoryDigest(path)).toBe(digest);
@@ -281,13 +283,15 @@ test.skipIf(process.platform === "win32")(
   "POSIX byte filenames and symlink targets survive content snapshots",
   () => {
     const path = root();
-    const raw = Buffer.concat([
-      Buffer.from(path + "/file-"),
-      Buffer.from([255]),
-    ]);
+    const filenameBytes =
+      process.platform === "darwin" ? Buffer.from("λ") : Buffer.from([255]);
+    const raw = Buffer.concat([Buffer.from(path + "/file-"), filenameBytes]);
     writeFileSync(raw, "bytes");
     const digest = directoryDigest(path);
-    symlinkSync(Buffer.from([0x74, 0xff]), Buffer.from(join(path, "link")));
+    symlinkSync(
+      Buffer.concat([Buffer.from("t"), filenameBytes]),
+      Buffer.from(join(path, "link")),
+    );
     const linked = directoryDigest(path);
     expect(linked).not.toBe(digest);
     writeFileSync(raw, "changed");

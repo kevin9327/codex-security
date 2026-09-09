@@ -22,6 +22,8 @@ import { PLUGIN_ROOT } from "./plugin-root";
 import type { Request, Response } from "./support/workbench-copy-fixture";
 
 const directory = realpathSync(mkdtempSync(join(tmpdir(), "workbench-copy-")));
+const filenameBytes =
+  process.platform === "darwin" ? Buffer.from("λ") : Buffer.from([255]);
 const fixture = join(directory, "fixture.cjs"),
   windowsPolicy = join(directory, "windows-policy.cjs"),
   node = Bun.which("node")!;
@@ -194,13 +196,14 @@ test.skipIf(process.platform === "win32")(
     const source = root(),
       destination = join(root(), "copy");
     const file = write(source, "file", "data"),
-      raw = Buffer.concat([Buffer.from(source + "/raw-"), Buffer.from([255])]);
+      raw = Buffer.concat([Buffer.from(source + "/raw-"), filenameBytes]);
     writeFileSync(raw, "raw");
     chmodSync(file, 0o751);
     chmodSync(source, 0o711);
     const seconds = 1_700_000_000;
     utimesSync(file, seconds, seconds + 1);
-    symlinkSync(Buffer.from([0x6d, 0xff]), join(source, "link"));
+    const linkTarget = Buffer.concat([Buffer.from("m"), filenameBytes]);
+    symlinkSync(linkTarget, join(source, "link"));
     const before = statSync(file, { bigint: true });
     expect(
       run({ kind: "directory", source, destination })[0]?.result,
@@ -212,10 +215,10 @@ test.skipIf(process.platform === "win32")(
     expect(statSync(destination).mode & 0o7777).toBe(0o711);
     expect(
       readlinkSync(join(destination, "link"), { encoding: "buffer" }),
-    ).toEqual(Buffer.from([0x6d, 0xff]));
+    ).toEqual(linkTarget);
     expect(
       readFileSync(
-        Buffer.concat([Buffer.from(destination + "/raw-"), Buffer.from([255])]),
+        Buffer.concat([Buffer.from(destination + "/raw-"), filenameBytes]),
       ).toString(),
     ).toBe("raw");
   },
@@ -234,7 +237,7 @@ test("missing sources and existing destinations fail before writing files", () =
     { kind: "directory", source, destination },
   );
   expect(responses[0]?.error).toContain("missing");
-  expect(responses[1]?.error).toContain(destination);
+  expect(responses[1]?.error).toContain(destination.replaceAll("\\", "\\\\"));
   expect(existsSync(join(destination, "file"))).toBe(false);
   expect(existsSync(join(destination, "copy"))).toBe(false);
 });
@@ -300,7 +303,7 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
-test.skipIf(process.platform === "win32")(
+test.skipIf(process.platform === "win32" || process.platform === "darwin")(
   "copy failures retain undecodable filename bytes in every error field",
   () => {
     const source = root(),
@@ -438,10 +441,7 @@ test.skipIf(process.platform === "win32")(
   () => {
     const source = repository(),
       destination = join(root(), "copy");
-    const raw = Buffer.concat([
-      Buffer.from(source + "/raw-"),
-      Buffer.from([255]),
-    ]);
+    const raw = Buffer.concat([Buffer.from(source + "/raw-"), filenameBytes]);
     writeFileSync(raw, "raw");
     symlinkSync("scope/source.bin", join(source, "link"));
     expect(run({ kind: "git", source, destination })[0]?.result).toBe(
@@ -450,7 +450,7 @@ test.skipIf(process.platform === "win32")(
     expect(readlinkSync(join(destination, "link"))).toBe("scope/source.bin");
     expect(
       readFileSync(
-        Buffer.concat([Buffer.from(destination + "/raw-"), Buffer.from([255])]),
+        Buffer.concat([Buffer.from(destination + "/raw-"), filenameBytes]),
       ).toString(),
     ).toBe("raw");
     expect(spawnSync("mkfifo", [join(source, "pipe")]).status).toBe(0);

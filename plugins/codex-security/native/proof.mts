@@ -201,6 +201,37 @@ function clearFileFlagsProof(root: string) {
   }
 }
 
+function chmodNoFollowProof(root: string) {
+  const path = rawPath(root, fixtureName("chmod", 0xf6));
+  assert.throws(() => native.chmodNoFollow(Buffer.from([0]), 0o700));
+  if (process.platform !== "darwin") {
+    assert.equal(native.chmodNoFollow(path, 0o700), errno.ENOTSUP);
+    return "unsupported on this Unix host";
+  }
+  assert.equal(native.chmodNoFollow(path, 0o700), errno.ENOENT);
+  writeFileSync(path, "retained", { mode: 0o400 });
+  const directory = Buffer.concat([path, Buffer.from("-directory")]);
+  const link = Buffer.concat([path, Buffer.from("-link")]);
+  mkdirSync(directory, { mode: 0o500 });
+  symlinkSync(path, link);
+  try {
+    assert.equal(native.chmodNoFollow(link, 0o700), 0);
+    assert.equal(lstatSync(link).mode & 0o777, 0o700);
+    assert.equal(statSync(path).mode & 0o777, 0o400);
+    assert.equal(native.chmodNoFollow(path, 0o700), 0);
+    assert.equal(statSync(path).mode & 0o777, 0o700);
+    assert.equal(readFileSync(path, "utf8"), "retained");
+    assert.equal(native.chmodNoFollow(directory, 0o700), 0);
+    assert.equal(statSync(directory).mode & 0o777, 0o700);
+    unlinkSync(path);
+    assert.equal(native.chmodNoFollow(link, 0o600), 0);
+    assert.equal(lstatSync(link).mode & 0o777, 0o600);
+    return "macOS read-only file, directory, and symlink permissions passed";
+  } finally {
+    chmodSync(directory, 0o700);
+  }
+}
+
 function accountProof() {
   let currentHomeMatches: boolean | null = null;
   try {
@@ -729,6 +760,7 @@ if (process.argv[2] === "lock-worker") {
           rawProcess: rawProcessProof(root),
           copyMetadata: copyMetadataProof(root),
           clearFileFlags: clearFileFlagsProof(root),
+          chmodNoFollow: chmodNoFollowProof(root),
           descriptors,
           accounts,
           directories,

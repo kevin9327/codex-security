@@ -196,15 +196,18 @@ test("output paths allow an absent leaf only after checking its existing parent 
   expect(readFileSync(file, "utf8")).toBe("original bytes\n");
 });
 
-test("POSIX links, inaccessible paths and raw filename bytes retain the original path behavior", () => {
+test("POSIX links, inaccessible paths and encoded filenames retain the original path behavior", () => {
   if (process.platform === "win32") return;
   const alias = join(scan, "alias"),
     broken = join(scan, "broken"),
-    raw = `${scan}/raw-\udcff`;
+    raw = `${scan}/raw-${process.platform === "darwin" ? "λ" : "\udcff"}`;
   symlinkSync(file, alias);
   symlinkSync("missing-target", broken);
   writeFileSync(
-    Buffer.concat([Buffer.from(`${scan}/raw-`), Buffer.from([255])]),
+    Buffer.concat([
+      Buffer.from(`${scan}/raw-`),
+      process.platform === "darwin" ? Buffer.from("λ") : Buffer.from([255]),
+    ]),
     "raw",
   );
   const nul = `${scan}/nul\0leaf`,

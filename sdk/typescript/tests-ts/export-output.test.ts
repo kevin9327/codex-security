@@ -217,9 +217,16 @@ test("existing output is checked against opened artifacts while absent output sk
   const failed = run([
     request(second.scanDir, second.output, { trace: true }),
   ])[0]!;
-  expect(failed.error).toBe(
-    "sealed artifact missing.json: expected a file inside the scan directory",
-  );
+  if (process.platform === "win32") {
+    expect(failed.error).toStartWith(
+      "[Errno 2] sealed artifact missing.json: CreateFileW for ",
+    );
+    expect(failed.error).toContain(join(second.scanDir, "missing.json"));
+  } else {
+    expect(failed.error).toBe(
+      "sealed artifact missing.json: expected a file inside the scan directory",
+    );
+  }
   expect(content(second.output)).toBe("existing");
   const third = setup();
   writeFileSync(third.output, "existing");
