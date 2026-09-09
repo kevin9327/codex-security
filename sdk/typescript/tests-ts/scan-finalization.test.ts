@@ -13,10 +13,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { build } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root";
-import { reportFaultPlugin } from "./support/report-fault";
+import { buildReportFixture } from "./support/build-report-fixture";
 import type { Request, Response } from "./support/scan-finalization-fixture";
 
 type Table = Record<string, unknown>;
@@ -26,8 +25,8 @@ const directory = realpathSync(
 const fixture = join(directory, "fixture.cjs"),
   node = Bun.which("node")!;
 const documents = ["scan-manifest.json", "findings.json", "coverage.json"];
-beforeAll(async () => {
-  await build({
+beforeAll(() => {
+  buildReportFixture(node, {
     entryPoints: [
       fileURLToPath(
         new URL("./support/scan-finalization-fixture.ts", import.meta.url),
@@ -43,7 +42,6 @@ beforeAll(async () => {
         pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
       ),
     },
-    plugins: [reportFaultPlugin],
   });
 });
 afterAll(() => rmSync(directory, { recursive: true, force: true }));

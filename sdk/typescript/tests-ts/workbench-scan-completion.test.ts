@@ -10,7 +10,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { build } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   parseJson,
@@ -21,7 +20,7 @@ import type {
   Request,
   Response,
 } from "./support/workbench-scan-completion-fixture";
-import { reportFaultPlugin } from "./support/report-fault";
+import { buildReportFixture } from "./support/build-report-fixture";
 import { PLUGIN_ROOT } from "./plugin-root";
 
 type Table = Record<string, unknown>;
@@ -43,8 +42,8 @@ const cost = stringifyJson(
   },
   { compact: true },
 );
-beforeAll(async () => {
-  await build({
+beforeAll(() => {
+  buildReportFixture(node, {
     entryPoints: [
       fileURLToPath(
         new URL(
@@ -63,7 +62,6 @@ beforeAll(async () => {
         pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
       ),
     },
-    plugins: [reportFaultPlugin],
   });
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
