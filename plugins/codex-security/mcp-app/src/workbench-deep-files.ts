@@ -9,6 +9,7 @@ import { JsonFloat, jsonTypeName, pythonRepr } from "./helpers/python-json";
 import { appendPath, pathKey, relativePath } from "./helpers/rank-selection";
 import { resolvedPath } from "./helpers/resolve-path";
 import { expandHome, parsedPath } from "./helpers/resolve-security-md";
+import { requireCanonicalScanDirectory } from "./workbench-files";
 import { WorkbenchValidationError } from "./workbench-validation";
 
 type CanonicalScanDirectory = (path: string) => string;
@@ -108,6 +109,29 @@ export function deepScanOutputPath(
   const output = appendPath(parent, basename(supplied));
   requireSamePath(output, supplied, label);
   return output;
+}
+
+export function canonicalDiscoveryArtifacts(scan: Row): Record<string, string> {
+  const directory = appendPath(
+    parsedPath(scan.get("scan_dir") as string),
+    "artifacts/02_discovery",
+  );
+  return {
+    inScopeFilesPath: deepScanPath(
+      scan,
+      appendPath(directory, "in_scope_files.txt"),
+      "Canonical in-scope inventory path",
+      "file",
+      requireCanonicalScanDirectory,
+    ),
+    candidateLedgerPath: deepScanPath(
+      scan,
+      appendPath(directory, "candidate_ledger.jsonl"),
+      "Canonical candidate ledger path",
+      "file",
+      requireCanonicalScanDirectory,
+    ),
+  };
 }
 
 export function deepScanDeadlineReached(run: Row, now: () => string): boolean {
