@@ -210,9 +210,9 @@ const OWNER_QUESTION_BATCH_SIZE = 3;
 async function writePolicyArtifact(
   path: string,
   content: string,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<void> {
-  signal.throwIfAborted();
+  signal?.throwIfAborted();
   const file = await open(path, "wx", 0o600);
   try {
     await file.chmod(0o600);
@@ -1285,51 +1285,11 @@ export async function applySecurityPolicy(
     if (recoveryDirectory !== null)
       requireOutputOutsideRepositories(protectedRoots, recoveryDirectory);
     if (alreadyApplied && recoveryDirectory !== null) {
-      const candidates: string[] = [];
-      for (const entry of await readdir(recoveryDirectory, {
-        withFileTypes: true,
-      })) {
-        if (
-          !entry.isFile() ||
-          !/^recovery-SECURITY-[0-9a-f-]{36}\.md$/u.test(entry.name)
-        )
-          continue;
-        const candidate = await requireScanFile(
-          recoveryDirectory,
-          entry.name,
-          "security policy recovery",
-          options.signal,
-        );
-        if ((await readSecurityPolicy(candidate)) === draft.previousContent)
-          candidates.push(candidate);
-      }
-      const targetDirectory = dirname(target.targetPath);
-      const canonicalTargetDirectory = await realpath(targetDirectory);
-      for (const entry of await readdir(targetDirectory, {
-        withFileTypes: true,
-      })) {
-        if (
-          !entry.isFile() ||
-          !/^\.SECURITY\.md\.[0-9a-f-]{36}\.tmp\.previous$/u.test(entry.name)
-        )
-          continue;
-        const candidate = join(targetDirectory, entry.name);
-        const metadata = await lstat(candidate);
-        if (
-          !metadata.isFile() ||
-          metadata.isSymbolicLink() ||
-          dirname(await realpath(candidate)) !== canonicalTargetDirectory
-        )
-          continue;
-        if ((await readSecurityPolicy(candidate)) === draft.previousContent)
-          candidates.push(candidate);
-      }
-      if (candidates.length !== 1) {
-        throw new CodexSecurityError(
-          "The installed SECURITY.md cannot be verified without its original recovery file.",
-        );
-      }
-      verificationRecoveryPath = candidates[0]!;
+      verificationRecoveryPath = await readPolicyRecovery(
+        recoveryDirectory,
+        target.targetPath,
+        options.signal,
+      );
     }
     const pluginPath = options.pluginPath ?? draft.pluginPath;
     if (draft.customPlugin && pluginPath === undefined) {
@@ -1367,10 +1327,15 @@ export async function applySecurityPolicy(
         options.signal,
       );
       options.signal?.throwIfAborted();
+      const applicationId = randomUUID();
       const temporary = join(
         dirname(target.targetPath),
-        `.SECURITY.md.${randomUUID()}.tmp`,
+        `.SECURITY.md.${applicationId}.tmp`,
       );
+      const retainedRecovery =
+        recoveryDirectory === null
+          ? null
+          : join(recoveryDirectory, `recovery-SECURITY-${applicationId}.md`);
       try {
         const temporaryHandle = await open(
           temporary,
@@ -1436,20 +1401,36 @@ export async function applySecurityPolicy(
         options.signal?.throwIfAborted();
         if (draft.previousContent === null) {
           await installPolicyFile(temporary, target.targetPath, python);
-        } else
+        } else {
+          const receiptPath = join(
+            recoveryDirectory!,
+            await policyReceiptName(temporary),
+          );
+          const receiptTemporary = `${receiptPath}.${applicationId}.tmp`;
+          try {
+            await writePolicyArtifact(
+              receiptTemporary,
+              `${JSON.stringify({ applicationId })}\n`,
+              options.signal,
+            );
+            await rename(receiptTemporary, receiptPath);
+          } finally {
+            await rm(receiptTemporary, { force: true }).catch(() => undefined);
+          }
           recoveryPath = await replaceExistingPolicy(
             temporary,
             target.targetPath,
             draft.previousContent,
-            recoveryDirectory!,
+            retainedRecovery!,
             python,
             options.signal,
           );
+        }
         written = true;
         if (recoveryPath !== null)
           recoveryPath = await retainPolicyRecovery(
             recoveryPath,
-            recoveryDirectory!,
+            retainedRecovery!,
           );
       } finally {
         // Preserve the write or recovery outcome if temporary cleanup fails.
@@ -2118,11 +2099,56 @@ async function securityPolicyFileGeneration(path: string): Promise<string> {
   ].join(":");
 }
 
+async function policyReceiptName(path: string): Promise<string> {
+  const { dev, ino } = await stat(path, { bigint: true });
+  return `policy-application-${dev}-${ino}.json`;
+}
+
+async function readPolicyRecovery(
+  directory: string,
+  targetPath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const receipt = await requireScanFile(
+    directory,
+    await policyReceiptName(targetPath),
+    "security policy application record",
+    signal,
+  );
+  const { applicationId } = z
+    .object({ applicationId: z.string().uuid() })
+    .parse(JSON.parse(await readFile(receipt, "utf8")));
+  const local = join(
+    dirname(targetPath),
+    `.SECURITY.md.${applicationId}.tmp.previous`,
+  );
+  const metadata = await lstat(local).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (metadata === null)
+    return await requireScanFile(
+      directory,
+      `recovery-SECURITY-${applicationId}.md`,
+      "security policy recovery",
+      signal,
+    );
+  // Until the original is moved, the artifact path may just be a reservation.
+  if (
+    !metadata.isFile() ||
+    dirname(await realpath(local)) !== dirname(targetPath)
+  )
+    throw new CodexSecurityError(
+      "The security policy recovery path is not a regular file beside its target.",
+    );
+  return local;
+}
+
 async function replaceExistingPolicy(
   temporary: string,
   targetPath: string,
   previousContent: string,
-  recoveryDirectory: string,
+  retainedRecovery: string,
   python: string,
   signal?: AbortSignal,
 ): Promise<string> {
@@ -2252,7 +2278,7 @@ async function replaceExistingPolicy(
     }
     throw new SecurityPolicyRecoveryError(
       targetPath,
-      await retainPolicyRecovery(recoveryPath, recoveryDirectory),
+      await retainPolicyRecovery(recoveryPath, retainedRecovery),
       { cause },
     );
   }
@@ -2261,9 +2287,8 @@ async function replaceExistingPolicy(
 
 async function retainPolicyRecovery(
   recoveryPath: string,
-  directory: string,
+  retained: string,
 ): Promise<string> {
-  const retained = join(directory, `recovery-SECURITY-${randomUUID()}.md`);
   try {
     await writeFile(retained, "", { flag: "wx", mode: 0o600 });
   } catch {

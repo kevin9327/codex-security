@@ -1387,6 +1387,57 @@ describe("security policy review and application", () => {
     }
   });
 
+  test("keeps repeated applications bound to their own recovery files", async () => {
+    const f = await fixture();
+    const target = join(f.repository, "SECURITY.md");
+    const original = "# Existing policy\n";
+    await writeFile(target, original);
+    const draft = await f.generate();
+    const recoveries: string[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await writeFile(target, original);
+      const applied = await applySecurityPolicy(draft);
+      expect(applied.status).toBe("written");
+      expect(recoveries).not.toContain(applied.recoveryPath!);
+      recoveries.push(applied.recoveryPath!);
+      const installed = await stat(target, { bigint: true });
+      expect((await applySecurityPolicy(draft)).status).toBe("unchanged");
+      expect((await stat(target, { bigint: true })).ino).toBe(installed.ino);
+    }
+    for (const recovery of recoveries)
+      expect(await readFile(recovery, "utf8")).toBe(original);
+    await writeFile(recoveries[0]!, "# Reconciled earlier editor save\n");
+    expect((await applySecurityPolicy(draft)).status).toBe("unchanged");
+    expect(await readFile(target, "utf8")).toBe(POLICY);
+  });
+
+  test("retries an application interrupted while relocating its recovery file", async () => {
+    const f = await fixture();
+    const target = join(f.repository, "SECURITY.md");
+    const original = "# Existing policy\n";
+    await writeFile(target, original);
+    const draft = await f.generate();
+    const applied = await applySecurityPolicy(draft);
+    const { dev, ino } = await stat(target, { bigint: true });
+    const { applicationId } = JSON.parse(
+      await readFile(
+        join(f.outputDir, `policy-application-${dev}-${ino}.json`),
+        "utf8",
+      ),
+    );
+    const local = join(
+      f.repository,
+      `.SECURITY.md.${applicationId}.tmp.previous`,
+    );
+    await rename(applied.recoveryPath!, local);
+    // Recreate the state between reserving the artifact and moving the original.
+    await writeFile(applied.recoveryPath!, "", { flag: "wx", mode: 0o600 });
+    expect((await applySecurityPolicy(draft)).status).toBe("unchanged");
+    expect(await readFile(target, "utf8")).toBe(POLICY);
+    expect(await readFile(local, "utf8")).toBe(original);
+    expect((await stat(target, { bigint: true })).ino).toBe(ino);
+  });
+
   test("rechecks the reviewed bytes after the resolver returns", async () => {
     for (const change of ["remove", "replace"] as const) {
       const f = await fixture();
@@ -1485,8 +1536,8 @@ describe("security policy review and application", () => {
         ...fsPromises,
         readdir: async (...args: Parameters<typeof originalReaddir>) => {
           const entries = await originalReaddir(...args);
-          // Skip the initial checks and recovery lookup; edit during the final alias walk.
-          if (args[0] === f.repository && ++traversals === 4) {
+          // Skip the initial and post-resolver checks; edit during the final alias walk.
+          if (args[0] === f.repository && ++traversals === 3) {
             changed = true;
             if (change === "inode") {
               await rename(target, join(f.root, "replaced-policy"));

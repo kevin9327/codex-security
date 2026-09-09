@@ -411,7 +411,9 @@ The artifact directory contains:
 | `previous-SECURITY.md` | Original policy used for the diff and overwrite checks.   |
 | `policy-draft.json`    | Target, policy hashes, revision, model, and review notes. |
 
-An update may also retain `recovery-SECURITY-*.md` files.
+An update also writes a `policy-application-*.json` record that binds the installed
+file to its recovery copy. Keep the record with the saved draft so
+retries verify the correct recovery file, including after repeated applications.
 
 Keep supporting documents private until reviewed for disclosure. A generated
 threat scenario is neither owner approval nor a confirmed vulnerability.
