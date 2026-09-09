@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { hasCompletedCustomValidation } from "./custom-validation.js";
+
 import {
   execFile as execFileCallback,
   execFileSync,
@@ -2041,6 +2043,9 @@ export async function main(
           scanArguments = scanArgumentsFromRecipe(
             saved["recipe"],
             saved["scanId"],
+            undefined,
+            saved["completionReady"] === true &&
+              hasCompletedCustomValidation(saved["checkpoint"]),
           );
           if (saved["resumeMode"] === "checkpoint") {
             scanArguments.continuationScanId = saved["scanId"];
@@ -4910,6 +4915,7 @@ function scanArgumentsFromRecipe(
   recipe: JsonValue | undefined,
   parentScanId: string,
   validationPromptFile?: string,
+  completedCustomValidation = false,
 ): ScanArguments {
   if (recipe === undefined || !isJsonObject(recipe)) {
     throw new CodexSecurityError(
@@ -4918,7 +4924,8 @@ function scanArgumentsFromRecipe(
   }
   if (
     recipe["validationMode"] === "custom" &&
-    validationPromptFile === undefined
+    validationPromptFile === undefined &&
+    !completedCustomValidation
   ) {
     throw new CodexSecurityError(
       "This scan used custom validation. Supply --validation-prompt-file to rerun it.",
@@ -7369,7 +7376,11 @@ async function executeScan(
       if (
         recipe !== undefined &&
         isJsonObject(recipe) &&
-        recipe["validationMode"] === "custom"
+        recipe["validationMode"] === "custom" &&
+        !(
+          context["completionReady"] === true &&
+          hasCompletedCustomValidation(context["checkpoint"])
+        )
       )
         return;
       if (typeof context["unavailable"] !== "string") {

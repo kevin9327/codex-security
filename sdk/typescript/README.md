@@ -746,7 +746,11 @@ The scan saves candidates and results, including suppressed and deferred
 cases, under `artifacts/custom-validation/`. Coverage is incomplete if setup
 fails, output is incomplete or invalid, or any candidate is deferred. An
 incompatible plugin stops the scan; validation never falls back to the default.
-Repeat `--validation-prompt-file` on reruns.
+Discovery candidates are checkpointed before custom validation starts, and validated
+decisions are checkpointed before publishing the final files. If all source work
+and custom validation are saved, `scans resume SCAN_ID` finishes local export
+without another model call. Missing evidence or unfinished work still requires
+the original validation prompt. Repeat `--validation-prompt-file` on reruns.
 
 ### Publish findings to Cloud
 

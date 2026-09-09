@@ -82,6 +82,7 @@ import {
 } from "./contract.js";
 import {
   runCustomValidation,
+  hasCompletedCustomValidation,
   writeCustomValidationStatus,
 } from "./custom-validation.js";
 import {
@@ -796,6 +797,17 @@ export class CodexSecurity {
     let completionCost: ScanCost | null = null;
     let previousCost: ScanCost | null = null;
     let completeFromCheckpoint = false;
+    let continuingCustomValidation = false;
+    const requireContinuationValidation = () => {
+      if (
+        continuingCustomValidation &&
+        options.validationPrompt === undefined &&
+        !completeFromCheckpoint
+      )
+        throw new CodexSecurityError(
+          "This scan requires its original custom validation instructions; use scans rerun with --validation-prompt-file.",
+        );
+    };
     let inferenceStarted = false;
     let completionSourceThreadId: string | undefined;
     const requireContinuationBudget = () => {
@@ -995,13 +1007,8 @@ export class CodexSecurity {
             throw new CodexSecurityError(
               "The saved scan has no semantic checkpoints to continue.",
             );
-          if (
-            savedRecipe["validationMode"] === "custom" &&
-            options.validationPrompt === undefined
-          )
-            throw new CodexSecurityError(
-              "This scan requires its original custom validation instructions; use scans rerun with --validation-prompt-file.",
-            );
+          continuingCustomValidation =
+            savedRecipe["validationMode"] === "custom";
           const sourceThreadId =
             savedThreadId ?? resumeContext["sourceThreadId"];
           completionSourceThreadId =
@@ -1009,7 +1016,10 @@ export class CodexSecurity {
           completeFromCheckpoint =
             mode === "standard" &&
             resumeContext["completionReady"] === true &&
-            completionSourceThreadId !== undefined;
+            completionSourceThreadId !== undefined &&
+            (!continuingCustomValidation ||
+              hasCompletedCustomValidation(resumeContext["checkpoint"]));
+          requireContinuationValidation();
           previousCost = savedScanCost(resumeContext["cost"]);
           if (previousCost === null) {
             const inheritedCost = savedScanCost(resumeContext["previousCost"]);
@@ -1334,7 +1344,7 @@ export class CodexSecurity {
         options.maxCostUsd,
         deepScanOptions(options),
       );
-      if (options.validationPrompt !== undefined)
+      if (options.validationPrompt !== undefined || continuingCustomValidation)
         recipe["validationMode"] = "custom";
       const registration =
         options.resumeScanId !== undefined
@@ -1486,7 +1496,10 @@ export class CodexSecurity {
         completeFromCheckpoint =
           mode === "standard" &&
           seeded["completionReady"] === true &&
-          completionSourceThreadId !== undefined;
+          completionSourceThreadId !== undefined &&
+          (!continuingCustomValidation ||
+            hasCompletedCustomValidation(continuationCheckpoint));
+        requireContinuationValidation();
         requireContinuationBudget();
         if (completeFromCheckpoint) {
           notifyObserver(
@@ -1854,6 +1867,16 @@ export class CodexSecurity {
               prompt: options.validationPrompt,
               falsePositives: falsePositiveExamples,
               signal,
+              checkpoint: async (path, validated) => {
+                await workbench(workbenchOptions, [
+                  "record-scan-checkpoint",
+                  "--scan-id",
+                  scanId,
+                  "--checkpoint-path",
+                  path,
+                ]);
+                customValidationComplete = validated;
+              },
               run: async (validationPrompt, outputSchema) => {
                 if (scopeFileCount !== null)
                   reportProgress({

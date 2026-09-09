@@ -823,8 +823,22 @@ def merge_saved_results(
                         (candidate_owner(item, owner), item["candidateId"]), item["disposition"]
                     )
     # Only the current parent may claim that another worker finding was absorbed.
-    # A superseded checkpoint must not suppress a newer independent result.
-    for draft in [parent] if parent else []:
+    # Standard root checkpoints also preserve the findings their validation replaced;
+    # Deep worker snapshots must not gain authority over another worker's evidence.
+    represented_parents = [parent] if parent else []
+    accepted_root_paths = set()
+    if binding.get("scanMode", "deep" if workers else "standard") != "deep":
+        accepted_root_paths = {
+            relative
+            for relative in current_checkpoint_paths or []
+            if Path(relative).parent == Path("checkpoints") and relative in drafts_by_path
+        }
+        represented_parents += [
+            drafts_by_path[relative]
+            for relative in dict.fromkeys(current_checkpoint_paths or [])
+            if relative in accepted_root_paths
+        ]
+    for draft in represented_parents:
         for finding in draft["findings"]:
             if valid_finding(finding):
                 canonical_key = _finding_key(finding)
@@ -1009,7 +1023,11 @@ def merge_saved_results(
                         previous_history = previous.get("provenance", {}).pop(
                             "previousFindings", []
                         )
-                    elif _finding_strength(finding) > _finding_strength(retained):
+                    elif (
+                        relative in accepted_root_paths
+                        and _digest(_finding_content(retained))
+                        in represented_history.get(key, set())
+                    ) or _finding_strength(finding) > _finding_strength(retained):
                         previous = copy.deepcopy(retained)
                         previous_history = previous["provenance"].pop("previousFindings", [])
                         retained = finding
