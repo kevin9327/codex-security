@@ -730,7 +730,7 @@ def merge_saved_results(
     represented_candidates: dict[tuple[str, str, Any, Any, Any], str | None] = {}
     represented_history: dict[str, set[str]] = {}
     represented_candidate_history: dict[tuple[str, str, Any, Any, Any], set[str]] = {}
-    rejected_history: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    rejected_history: dict[tuple[str | None, str], list[dict[str, Any]]] = {}
     stopped_parent_seal = bool(
         stopped and parent_manifest and parent_manifest["scan"].get("sealedAt")
     )
@@ -758,14 +758,19 @@ def merge_saved_results(
     }
     # Continuation supplies accepted checkpoints in newest-first receipt order.
     # Retention-only snapshots cannot reopen a later validation decision.
-    current_drafts = (
-        [
-            current_sources.pop(relative)
-            for relative in dict.fromkeys(current_checkpoint_paths or [])
-            if relative in current_sources
-        ]
-        + ([(None, parent)] if parent else [])
-        + list(current_sources.values())
+    current_drafts = [
+        current_sources.pop(relative)
+        for relative in dict.fromkeys(current_checkpoint_paths or [])
+        if relative in current_sources
+    ]
+    parent_drafts = [(None, parent)] if parent else []
+    worker_drafts = list(current_sources.values())
+    # Explicit legacy recovery reads newer worker decisions alongside a sealed
+    # historical projection, which must not override those decisions.
+    current_drafts += (
+        worker_drafts + parent_drafts
+        if allow_frozen_legacy_parent
+        else parent_drafts + worker_drafts
     )
     latest_decisions: dict[tuple[str | None, str], str] = {}
     for owner, draft in current_drafts:
@@ -886,12 +891,10 @@ def merge_saved_results(
             if relative == "parent" and parent_manifest:
                 finding = copy.deepcopy(value)
                 _ensure_finding_identity(finding, candidate_only=True)
-                provenance = finding.get("provenance") if isinstance(finding, dict) else None
-                owner = provenance.get("workerId") if isinstance(provenance, dict) else None
+                owner = _candidate_owner(finding, None)
                 candidate_id = finding_candidate_id(finding) if isinstance(finding, dict) else None
                 if (
-                    stopped_parent_seal
-                    and isinstance(owner, str)
+                    (stopped_parent_seal or accepted_checkpoints)
                     and candidate_id
                     and latest_decisions.get((owner, candidate_id))
                     in {"rejected", "not_applicable"}
@@ -902,7 +905,12 @@ def merge_saved_results(
                     finding_positions.setdefault(_finding_key(finding), len(findings))
                 findings.append(finding)
                 continue
-            if relative != "parent" and parent and value in parent["findings"]:
+            if (
+                relative != "parent"
+                and parent
+                and value in parent["findings"]
+                and value in findings
+            ):
                 continue
             if not isinstance(value, dict):
                 warnings.append(f"Retained malformed finding evidence in {relative}.")

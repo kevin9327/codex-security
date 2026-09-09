@@ -693,7 +693,21 @@ def test_checkpoint_rebind_preserves_nested_source_owners(workbench_api):
 
 
 @pytest.mark.parametrize(
-    "outcome", ["deadline", "reported", "rejected", "other_worker", "grandchild"]
+    "outcome",
+    [
+        "deadline",
+        "reported",
+        "rejected",
+        "other_worker",
+        "grandchild",
+        "accepted_partial",
+        "archived_partial",
+        "rejected_partial",
+        "unaccepted_partial",
+        "completed_partial",
+        "root_accepted_partial",
+        "root_rejected_partial",
+    ],
 )
 def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
     tmp_path: Path, outcome: str
@@ -815,12 +829,75 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
             for item in grandchild["checkpoint"]["sources"][0]["coverage"]["deferred"]
         } == {worker_id, other_worker_id}
         child_dir, child_id = grandchild_dir, grandchild_id
+    extra = outcome.endswith("_partial")
+    if extra:
+        with sqlite3.connect(state / "workbench.sqlite3") as connection:
+            output = Path(
+                connection.execute(
+                    "SELECT artifact_dir FROM deep_scan_workers WHERE id = ?", (worker_id,)
+                ).fetchone()[0]
+            )
+            connection.execute(
+                "UPDATE deep_scan_workers SET status = 'canceled' WHERE id = ?", (worker_id,)
+            )
+        new_finding = json.loads(json.dumps(finding))
+        new_finding["title"] = "New finding after continuation"
+        new_finding["identity"]["anchor"] = "new-after-continuation"
+        new_finding["extensions"]["candidateId"] = "new-candidate"
+        new_finding["provenance"]["candidateId"] = "new-candidate"
+        new_finding["provenance"].pop("preservedIdentity", None)
+        current = semantic(child_id, ["clean.ts"])
+        current["findings"] = [finding, new_finding]
+        current["coverage"]["deferred"] = [
+            {"candidateId": "new-pending", "reason": "Validation still pending"}
+        ]
+        checkpoint_output = child_dir if outcome.startswith("root_") else output
+        checkpoint_path = write_checkpoint(checkpoint_output / "checkpoints", current)
+        if outcome != "unaccepted_partial":
+            save(state, child_id, checkpoint_path)
+        else:
+            (output / "result.json").write_text(json.dumps(current))
+        if outcome == "archived_partial":
+            archived = output.parent / "attempts" / "attempt-01"
+            archived.parent.mkdir()
+            output.rename(archived)
+            output.mkdir()
+        if outcome in {"rejected_partial", "completed_partial", "root_rejected_partial"}:
+            current["findings"] = [] if outcome == "root_rejected_partial" else [finding]
+            current["coverage"]["deferred"] = []
+            current["coverage"]["surfaces"] = [
+                {
+                    "id": "new-review",
+                    "candidateId": "saved-candidate"
+                    if outcome == "root_rejected_partial"
+                    else "new-candidate",
+                    "label": "New candidate review",
+                    "disposition": "rejected",
+                    "receiptRefs": [],
+                    "reason": "Existing control prevents the candidate",
+                    "provenance": {"workerId": worker_id},
+                }
+            ]
+            if outcome == "rejected_partial":
+                save(state, child_id, write_checkpoint(output / "checkpoints", current))
+            elif outcome == "completed_partial":
+                current["complete"] = True
+                current["coverage"]["completeness"] = "complete"
+                result_path = output / "result.json"
+                result_path.write_text(json.dumps(current))
+                with sqlite3.connect(state / "workbench.sqlite3") as connection:
+                    connection.execute(
+                        "UPDATE deep_scan_workers SET status = 'succeeded', result_manifest_path = ? WHERE id = ?",
+                        (str(result_path), worker_id),
+                    )
     # Publish what the coordinator actually completed. The expired case has no
     # discoveries; the other cases explicitly account for the inherited candidate.
     completed = semantic(child_id, ["clean.ts", "pending.ts"])
     completed["complete"] = True
     completed["findings"] = (
-        [finding] if outcome in {"reported", "other_worker", "grandchild"} else []
+        [finding]
+        if outcome in {"reported", "other_worker", "grandchild", "root_rejected_partial"}
+        else []
     )
     completed["coverage"].update(
         completeness="partial" if outcome == "deadline" else "complete", deferred=[]
@@ -849,6 +926,9 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
             }
         ]
     (child_dir / "coverage.json").write_text(json.dumps(coverage))
+    if outcome.startswith("root_"):
+        # An accepted root decision may be newer than its materialized report.
+        save(state, child_id, write_checkpoint(child_dir / "checkpoints", current))
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         connection.execute(
             "UPDATE deep_scan_runs SET status = 'succeeded', phase = 'terminal', manifest_path = ? WHERE scan_id = ?",
@@ -860,11 +940,43 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
     assert (child_dir / "scan-manifest.json").read_bytes() == first_seal
     result = json.loads((child_dir / "findings.json").read_text())
     coverage = json.loads((child_dir / "coverage.json").read_text())
-    assert len(result["findings"]) == (0 if outcome == "rejected" else 1)
-    if outcome in {"deadline", "other_worker", "grandchild"}:
+    assert len(result["findings"]) == (
+        0
+        if outcome in {"rejected", "root_rejected_partial"}
+        else 2
+        if outcome in {"accepted_partial", "archived_partial", "root_accepted_partial"}
+        else 1
+    )
+    if extra:
+        assert any(
+            item["title"] == "New finding after continuation" for item in result["findings"]
+        ) == (outcome in {"accepted_partial", "archived_partial", "root_accepted_partial"})
+        if outcome == "root_rejected_partial":
+            assert any(
+                item.get("candidateId") == "saved-candidate" and item["disposition"] == "rejected"
+                for item in coverage["surfaces"]
+            )
+        if outcome in {"rejected_partial", "completed_partial"}:
+            assert any(
+                item.get("candidateId") == "new-candidate" and item["disposition"] == "rejected"
+                for item in coverage["surfaces"]
+            )
+    if extra:
+        assert coverage["completeness"] == (
+            "complete" if outcome == "completed_partial" else "partial"
+        )
+        if outcome in {"accepted_partial", "archived_partial", "root_accepted_partial"}:
+            assert any(item.get("candidateId") == "new-pending" for item in coverage["deferred"])
+        elif outcome == "unaccepted_partial":
+            assert any(
+                item.get("candidateId") == "saved-candidate" for item in coverage["deferred"]
+            )
+        else:
+            assert not coverage["deferred"]
+    elif outcome in {"deadline", "other_worker", "grandchild"}:
         assert coverage["completeness"] == "partial"
         assert any(item.get("candidateId") == "saved-candidate" for item in coverage["deferred"])
-        if outcome != "deadline":
+        if outcome in {"other_worker", "grandchild"}:
             assert {item["provenance"]["workerId"] for item in coverage["deferred"]} == {
                 other_worker_id
             }
@@ -876,4 +988,4 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
         assert connection.execute(
             "SELECT COUNT(*) FROM deep_scan_workers WHERE scan_id = ? AND status = 'succeeded'",
             (child_id,),
-        ).fetchone() == (0,)
+        ).fetchone() == (int(outcome == "completed_partial"),)

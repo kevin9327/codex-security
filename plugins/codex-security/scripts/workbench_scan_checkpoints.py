@@ -966,7 +966,7 @@ def continued_deep_documents(
     if scan["mode"] != "deep" or relative is None:
         return None
     saved = connection.execute(
-        "SELECT snapshot_json FROM scan_checkpoints WHERE scan_id = ? AND checkpoint_path = ? "
+        "SELECT sequence, snapshot_json FROM scan_checkpoints WHERE scan_id = ? AND checkpoint_path = ? "
         "AND acceptance_id = ?",
         (scan["id"], relative, scan["continuation_checkpoint_acceptance_id"]),
     ).fetchone()
@@ -977,12 +977,41 @@ def continued_deep_documents(
     if digest != _digest(json.loads(saved["snapshot_json"])):
         raise SystemExit("The continuation's inherited checkpoint changed after it was saved.")
     workers = connection.execute(
-        "SELECT * FROM deep_scan_workers WHERE scan_id = ? AND status = 'succeeded'",
+        "SELECT * FROM deep_scan_workers WHERE scan_id = ?",
         (scan["id"],),
     ).fetchall()
     frozen = {relative: digest}
+    worker_sources = {
+        Path(worker["artifact_dir"]).relative_to(root).as_posix(): worker
+        for worker in workers
+        if worker["kind"] in {"discovery", "dedup"}
+    }
+    current_checkpoints = []
+    accepted = connection.execute(
+        "SELECT * FROM scan_checkpoints WHERE scan_id = ? AND sequence > ? AND sequence IN "
+        "(SELECT MAX(sequence) FROM scan_checkpoints WHERE scan_id = ? GROUP BY source_path) "
+        "ORDER BY sequence DESC",
+        (scan["id"], saved["sequence"], scan["id"]),
+    ).fetchall()
+    for checkpoint in accepted:
+        source = checkpoint["source_path"]
+        worker = worker_sources.get(source)
+        if (source != "." and worker is None) or (worker and worker["status"] == "succeeded"):
+            continue
+        path = checkpoint["checkpoint_path"]
+        locations = checkpoint_artifact_sources(
+            root, source, path, checkpoint["content_sha256"], checkpoint["acceptance_id"]
+        )
+        path = (locations[0] / "checkpoints" / Path(path).name).relative_to(root).as_posix()
+        _, accepted_digest = _read_saved_result(
+            root, path, scan["id"], kind=worker["kind"] if worker else None
+        )
+        if accepted_digest != _digest(json.loads(checkpoint["snapshot_json"])):
+            raise SystemExit("An accepted continuation checkpoint changed after it was saved.")
+        frozen[path] = accepted_digest
+        current_checkpoints.append(path)
     for worker in workers:
-        if worker["kind"] not in {"discovery", "dedup"}:
+        if worker["status"] != "succeeded" or worker["kind"] not in {"discovery", "dedup"}:
             continue
         result_path = Path(worker["result_manifest_path"]).relative_to(root).as_posix()
         _, worker_digest = _read_saved_result(root, result_path, scan["id"], kind=worker["kind"])
@@ -998,5 +1027,6 @@ def continued_deep_documents(
         frozen_source_digests=frozen,
         allow_frozen_legacy_parent=True,
         preserve_sources={relative},
+        current_checkpoint_paths=current_checkpoints,
         rebase_receipts=True,
     )

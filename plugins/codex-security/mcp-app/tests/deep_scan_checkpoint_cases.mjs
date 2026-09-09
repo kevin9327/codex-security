@@ -299,6 +299,19 @@ export async function testResumedDiscoveryDeadlines({
         savedCheckpoints.set(checkpoint, contents);
       }
       assert.ok(savedCheckpoints.size > 0);
+      const claimDedup = store.claimDedup.bind(store);
+      store.claimDedup = async (input) => {
+        if (input.workerIds.length === 1) {
+          assert.equal(
+            [...store.workers.values()].some((worker) => (
+              worker.kind === "discovery" && ["queued", "running"].includes(worker.status)
+            )),
+            false,
+            "The workbench permits the final singleton reducer only after discoveries settle."
+          );
+        }
+        return await claimDedup(input);
+      };
       const finish = store.finish.bind(store);
       store.finish = async (input) => {
         assert.equal(
