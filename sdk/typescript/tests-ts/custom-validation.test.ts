@@ -326,8 +326,6 @@ describe("custom validation", () => {
       const scanDir = join(root, "scan");
       const codexHome = join(root, "codex-home");
       const stateDir = join(root, "state");
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
       await mkdir(join(repository, "src"), { recursive: true });
       await writeFile(join(repository, "src/extract.py"), "# source fixture\n");
       await mkdir(scanDir, { mode: 0o700 });
@@ -364,11 +362,11 @@ describe("custom validation", () => {
       const workbench = (args: readonly string[], input?: string) =>
         runWorkbench(
           {
-            python: python!,
             pluginRoot: PLUGIN_ROOT,
             environment: {
               PATH: process.env["PATH"],
               CODEX_SECURITY_STATE_DIR: stateDir,
+              PYTHON: join(root, "missing-python"),
             },
           },
           args,
@@ -377,7 +375,10 @@ describe("custom validation", () => {
       const client = new TestClient(
         {},
         {
-          environment: { CODEX_SECURITY_STATE_DIR: stateDir },
+          environment: {
+            CODEX_SECURITY_STATE_DIR: stateDir,
+            PYTHON: join(root, "missing-python"),
+          },
           prepareRuntime: async () => {
             const runtime = preparedRuntime(codexHome);
             runtime.plugin.version = (
@@ -387,7 +388,6 @@ describe("custom validation", () => {
             ).version;
             return runtime;
           },
-          resolvePluginPython: async () => python!,
           prepareOutputDir: async () => scanDir,
           createCodex: (options) => {
             expect(options.config?.["mcp_servers"]).toMatchObject({
@@ -624,7 +624,8 @@ describe("custom validation", () => {
     for (const prompt of [standard, diff]) {
       expect(prompt).toContain("custom_pending");
       expect(prompt).toContain("extensions.customValidationSurfaceIds");
-      expect(prompt).not.toContain("finalize_scan_contract.py");
+      expect(prompt).not.toContain("--helper finalize-scan-contract");
+      expect(prompt).not.toContain("<python_command>");
     }
     const changed = await temporaryDirectory();
     await mkdir(join(changed, "skills/security-diff-scan"), {

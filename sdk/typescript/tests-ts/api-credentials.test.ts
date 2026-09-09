@@ -146,12 +146,6 @@ describe("CodexSecurity orchestration", () => {
     await mkdir(ambientHome, { mode: 0o700 });
     await mkdir(scanDir, { mode: 0o700 });
     await writeFile(join(ambientHome, "auth.json"), "{}\n");
-    const interpreter =
-      process.env["PYTHON"] ??
-      Bun.which("python") ??
-      Bun.which("py") ??
-      Bun.which("python3");
-    expect(interpreter).not.toBeNull();
     let capturedConfigPath: string | undefined;
     let capturedCodexHome: string | undefined;
     const unrelatedProjects = Object.fromEntries(
@@ -186,7 +180,6 @@ describe("CodexSecurity orchestration", () => {
       },
       {
         environment: { CODEX_HOME: ambientHome },
-        resolvePluginPython: async () => interpreter!,
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => ({

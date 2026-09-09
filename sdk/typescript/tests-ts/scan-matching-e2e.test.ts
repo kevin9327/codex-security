@@ -17,7 +17,7 @@ import type {
   JsonObject,
   ScanManifest,
 } from "../src/index.js";
-import { resolvePluginPython, runWorkbench } from "../src/runtime.js";
+import { runWorkbench } from "../src/runtime.js";
 import {
   matchScanFindings,
   type ScanComparisonInput,
@@ -52,7 +52,6 @@ test("matches sealed scan history end to end without merging related findings", 
     await mkdtemp(join(tmpdir(), "codex-security-matching-")),
   );
   try {
-    const python = await resolvePluginPython();
     const repository = join(root, "repository");
     const state = join(root, "state");
     await mkdir(join(repository, "src"), { recursive: true });
@@ -62,6 +61,7 @@ test("matches sealed scan history end to end without merging related findings", 
     );
     const environment = {
       PATH: process.env["PATH"],
+      PYTHON: join(root, "missing-python"),
       CODEX_SECURITY_STATE_DIR: state,
     };
     const workbench = (
@@ -70,7 +70,7 @@ test("matches sealed scan history end to end without merging related findings", 
       signal?: AbortSignal,
     ) =>
       runWorkbench(
-        { python, pluginRoot: PLUGIN_ROOT, environment, signal },
+        { pluginRoot: PLUGIN_ROOT, environment, signal },
         args,
         input,
       );

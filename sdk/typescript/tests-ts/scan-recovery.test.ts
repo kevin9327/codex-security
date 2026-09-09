@@ -1,4 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
+import type { Request } from "./support/scan-recovery-fixture.js";
 import {
   cp,
   mkdir,
@@ -10,7 +14,14 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { runWorkbench } from "../src/runtime.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 
@@ -76,13 +87,55 @@ type SarifDocument = {
 };
 
 type ScanFixture = {
-  python: string;
   repository: string;
   stateDir: string;
   scanDir: string;
   scanId: string;
   registration: Record<string, unknown>;
 };
+
+const probeDirectory = realpathSync(
+  mkdtempSync(join(tmpdir(), "scan-recovery-probe-")),
+);
+const probePath = join(probeDirectory, "probe.cjs");
+const node = Bun.which("node")!;
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/scan-recovery-fixture.ts", import.meta.url),
+      ),
+    ],
+    outfile: probePath,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+  }),
+);
+afterAll(() => rmSync(probeDirectory, { recursive: true, force: true }));
+function nativeProbe(
+  request: Request,
+  stateDirectory?: string,
+): Record<string, unknown> {
+  const result = spawnSync(node, [probePath], {
+    input: JSON.stringify(request),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PYTHON: "/unavailable/python",
+      CODEX_SECURITY_STATE_DIR: stateDirectory,
+    },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stderr).toBe("");
+  return JSON.parse(result.stdout) as Record<string, unknown>;
+}
 
 const temporaryDirectories: string[] = [];
 
@@ -109,10 +162,10 @@ async function workbench(
 ) {
   return runWorkbench(
     {
-      python: fixture.python,
       pluginRoot: PLUGIN_ROOT,
       environment: {
         PATH: process.env["PATH"],
+        PYTHON: "/unavailable/python",
         CODEX_SECURITY_STATE_DIR: fixture.stateDir,
       },
     },
@@ -129,9 +182,6 @@ async function startDraftScan(
     await mkdtemp(join(tmpdir(), "codex-security-scan-recovery-")),
   );
   temporaryDirectories.push(root);
-  const python =
-    process.env["PYTHON"] ?? Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
 
   const target = join(
     root,
@@ -177,7 +227,6 @@ async function startDraftScan(
   }
 
   const fixture: ScanFixture = {
-    python: python!,
     repository: target,
     stateDir: join(root, "state"),
     scanDir,
@@ -367,44 +416,12 @@ describe("malformed scan artifact recovery", () => {
         findings: Array<{ occurrenceId: string }>;
       }
     ).findings[0]!.occurrenceId;
-    const probe = spawnSync(
-      fixture.python,
-      [
-        "-I",
-        "-B",
-        "-c",
-        [
-          "import json, sys",
-          "sys.path.insert(0, sys.argv[1])",
-          "import workbench_db as workbench",
-          "calls = []",
-          "original = workbench.scan_result",
-          "def count_result(connection, scan, **kwargs):",
-          "    calls.append(kwargs.get('occurrence_id'))",
-          "    return original(connection, scan, **kwargs)",
-          "workbench.scan_result = count_result",
-          "with workbench.connect() as connection:",
-          "    ordinary = workbench.scan_context(connection, sys.argv[2])",
-          "    ordinary_calls = len(calls)",
-          "    calls.clear()",
-          "    selected = workbench.scan_context(connection, sys.argv[2], sys.argv[3])",
-          "print(json.dumps({'ordinaryCalls': ordinary_calls, 'selectedCalls': len(calls), 'ordinaryCount': len(ordinary['scan']['findings']), 'selectedCount': len(selected['scan']['findings']), 'workspaceCount': len(selected['workspace']['results']['findings']), 'selectedIncluded': any(finding['occurrenceId'] == sys.argv[3] for finding in selected['scan']['findings'])}))",
-        ].join("\n"),
-        join(PLUGIN_ROOT, "scripts"),
-        fixture.scanId,
-        occurrenceId,
-      ],
-      {
-        encoding: "utf8",
-        env: {
-          PATH: process.env["PATH"],
-          CODEX_SECURITY_STATE_DIR: fixture.stateDir,
-        },
-      },
-    );
-
-    expect(probe.status, probe.stderr).toBe(0);
-    expect(JSON.parse(probe.stdout)).toEqual({
+    expect(
+      nativeProbe(
+        { action: "context", scanId: fixture.scanId, occurrenceId },
+        fixture.stateDir,
+      ),
+    ).toEqual({
       ordinaryCalls: 1,
       selectedCalls: 2,
       ordinaryCount: 20,
@@ -445,29 +462,12 @@ describe("malformed scan artifact recovery", () => {
         );
       }
       if (kind === "nested") {
-        const copied = spawnSync(
-          fixture.python,
-          [
-            "-I",
-            "-B",
-            "-c",
-            [
-              "import sys",
-              "from pathlib import Path",
-              "sys.path.insert(0, sys.argv[1])",
-              "import workbench_target as target",
-              "source = Path(sys.argv[2])",
-              "checkout = target.copy_git_worktree_files(source, Path(sys.argv[3]), ())",
-              "git_dir = Path(target.git_output(source, 'rev-parse', '--absolute-git-dir'))",
-              "assert target.worktree_content_digest_for_context(checkout, '.', git_dir=git_dir, work_tree=checkout) == target.worktree_content_digest(source)",
-            ].join("\n"),
-            join(PLUGIN_ROOT, "scripts"),
-            fixture.repository,
-            join(fixture.stateDir, "checkout"),
-          ],
-          { encoding: "utf8" },
-        );
-        expect(copied.status, copied.stderr).toBe(0);
+        const copied = nativeProbe({
+          action: "copy",
+          source: fixture.repository,
+          destination: join(fixture.stateDir, "checkout"),
+        });
+        expect(copied["copied"]).toBe(copied["original"]);
       }
     }
   });
