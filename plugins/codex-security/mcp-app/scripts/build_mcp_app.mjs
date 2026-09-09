@@ -34,7 +34,8 @@ export async function buildMcpApp({ output }) {
     // https://github.com/node-unicode/node-unicode-data/blob/main/LICENSE-MIT.txt
     ["@unicode/unicode-15.0.0 (MIT)", "scripts/licenses/UNICODE-DATA-MIT.txt"],
     ["Unicode data", "node_modules/py-ast/dist/LICENSE-UNICODE"],
-    ["Python derived parser data", "node_modules/py-ast/dist/LICENSE-PYTHON"]
+    ["Python derived parser data", "node_modules/py-ast/dist/LICENSE-PYTHON"],
+    ["CPython numerical routines", "scripts/licenses/PYTHON-NUMERICS.txt"]
   ];
   const notices = await Promise.all(frontendLicenses.map(async ([name, path]) =>
     `${name}\n${"=".repeat(name.length)}\n\n${(await readFile(join(root, path), "utf8")).trim()}\n`

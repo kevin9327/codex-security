@@ -1,8 +1,13 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
+import type { Operation } from "./support/imported-findings-fixture";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import type { Finding, FindingsDocument } from "../src/models.js";
 import type { FindingDedupeGroup } from "../src/finding-dedupe-groups.js";
 import { resolvePluginPython, runCodexCommand } from "../src/runtime.js";
@@ -173,15 +178,31 @@ test("dashboard serves only findings and groups, and never calls an embedding pr
   );
 });
 
-test("initializes and serves dashboard reads before a retained command needs Python", async () => {
+test("serves every findings operation without Python", async () => {
   const { environment } = await fixture();
   const store = new SqliteFindingsStore({
     ...environment,
     PYTHON: join(environment.CODEX_SECURITY_STATE_DIR, "missing-python"),
+    PATH: "",
   });
   const base = await start(store);
   expect((await dashboard(base)).overview).toEqual({ findings: 0, groups: 0 });
-  await expect(store.list({ limit: 1, offset: 0 })).rejects.toThrow("PYTHON");
+  const entries = [embedded(1), embedded(2)];
+  await store.insert(entries, "repository-a");
+  expect((await store.list({ limit: 1, offset: 0 })).total).toBe(2);
+  expect(
+    (
+      await store.findPotentialDuplicates(entries[0]!.finding.findingId, {
+        allRepositories: true,
+      })
+    ).potentialDuplicates,
+  ).toEqual([entries[1]!.finding]);
+  const groups = await store.storeDedupeGroups([
+    entries.map((entry) => entry.finding.findingId),
+  ]);
+  expect(await store.listDedupeGroups(entries[0]!.finding.findingId)).toEqual(
+    groups,
+  );
 });
 
 test("dashboard browses imported findings and overlapping groups without local runs", async () => {
@@ -200,10 +221,7 @@ test("dashboard browses imported findings and overlapping groups without local r
     [first.findingId, second.findingId],
     [second.findingId, third.findingId],
   ]);
-  const before = await database(
-    environment,
-    "print(json.dumps(list(db.iterdump())))",
-  );
+  const before = await database(environment, "snapshot");
   const page = await dashboard(base, {
     limit: "1",
     repository: "repository-a",
@@ -257,9 +275,7 @@ test("dashboard browses imported findings and overlapping groups without local r
   expect(
     (await dashboard(base, { view: "findings", id: "not-stored" })).detail,
   ).toBeNull();
-  expect(
-    await database(environment, "print(json.dumps(list(db.iterdump())))"),
-  ).toEqual(before);
+  expect(await database(environment, "snapshot")).toEqual(before);
 });
 
 async function getGroups(
@@ -271,7 +287,73 @@ async function getGroups(
   return (await response.json()) as FindingDedupeGroup[];
 }
 
+const nativeDirectory = mkdtempSync(join(tmpdir(), "findings-native-"));
+const nativeFixture = join(nativeDirectory, "fixture.cjs");
+const node = Bun.which("node")!;
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/imported-findings-fixture.ts", import.meta.url),
+      ),
+    ],
+    outfile: nativeFixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+  }),
+);
+afterAll(() => rmSync(nativeDirectory, { recursive: true, force: true }));
+async function nativeDatabase(
+  environment: NodeJS.ProcessEnv,
+  operation: Operation,
+) {
+  const child = spawnSync(
+    node,
+    [
+      nativeFixture,
+      join(environment["CODEX_SECURITY_STATE_DIR"]!, "workbench.sqlite3"),
+    ],
+    {
+      input: JSON.stringify({ operations: [operation] }),
+      encoding: "utf8",
+      env: { ...environment, PATH: "" },
+      maxBuffer: Infinity,
+    },
+  );
+  expect(child.status, child.stderr).toBe(0);
+  const result = JSON.parse(child.stdout).results[0] as {
+    value: unknown;
+    error?: string;
+    queries: { sql: string; parameters: unknown[] }[];
+  };
+  expect(result.error).toBeUndefined();
+  return result;
+}
 async function database(
+  environment: NodeJS.ProcessEnv,
+  sql: string,
+  parameters: string[] = [],
+  format: "rows" | "json" | "scalar" = "rows",
+): Promise<unknown> {
+  const { value } = await nativeDatabase(
+    environment,
+    sql === "snapshot"
+      ? { type: "snapshot" }
+      : { type: "sql", sql, parameters },
+  );
+  if (format === "rows") return value;
+  const first = (value as unknown[][])[0]![0];
+  return format === "json" ? (JSON.parse(first as string) as unknown) : first;
+}
+
+async function pythonDatabase(
   environment: NodeJS.ProcessEnv,
   script: string,
   input?: unknown,
@@ -330,10 +412,9 @@ test("bulk insert preserves complete findings and embeddings without creating sc
   expect(
     await database(
       environment,
-      `print(json.dumps({
-    "vectors": [{"findingId": row[0], "model": row[1], "vector": json.loads(row[2])} for row in db.execute("SELECT finding_id, model, vector_json FROM finding_embeddings ORDER BY finding_id")],
-    "scans": db.execute("SELECT COUNT(*) FROM scans").fetchone()[0]
-}))`,
+      `SELECT json_object('vectors', (SELECT json_group_array(json_object('findingId', finding_id, 'model', model, 'vector', json(vector_json))) FROM (SELECT * FROM finding_embeddings ORDER BY finding_id)), 'scans', (SELECT COUNT(*) FROM scans))`,
+      [],
+      "json",
     ),
   ).toEqual({
     vectors: findings.map((finding, index) => ({
@@ -402,10 +483,9 @@ test("persists overlapping dedupe groups idempotently without changing findings 
   expect(
     await database(
       environment,
-      `print(json.dumps({
-    "memberships": db.execute("SELECT COUNT(*) FROM finding_dedupe_group_members").fetchone()[0],
-    "embeddings": [list(row) for row in db.execute("SELECT finding_id, model, vector_json FROM finding_embeddings ORDER BY finding_id")]
-}))`,
+      `SELECT json_object('memberships', (SELECT COUNT(*) FROM finding_dedupe_group_members), 'embeddings', (SELECT json_group_array(json_array(finding_id, model, vector_json)) FROM (SELECT * FROM finding_embeddings ORDER BY finding_id)))`,
+      [],
+      "json",
     ),
   ).toEqual({
     memberships: 6,
@@ -445,10 +525,9 @@ test("rolls back the entire dedupe batch if a finding is missing and rejects inv
   expect(
     await database(
       environment,
-      `print(json.dumps({
-    "groups": db.execute("SELECT COUNT(*) FROM finding_dedupe_groups").fetchone()[0],
-    "memberships": db.execute("SELECT COUNT(*) FROM finding_dedupe_group_members").fetchone()[0]
-}))`,
+      `SELECT json_object('groups', (SELECT COUNT(*) FROM finding_dedupe_groups), 'memberships', (SELECT COUNT(*) FROM finding_dedupe_group_members))`,
+      [],
+      "json",
     ),
   ).toEqual({ groups: 1, memberships: 2 });
   for (const groups of [
@@ -533,13 +612,15 @@ test("upserts retries and rolls back the entire batch on identity conflicts", as
   expect(
     await database(
       environment,
-      `print(json.dumps([json.loads(row[0]) for row in db.execute("SELECT vector_json FROM finding_embeddings")]))`,
+      "SELECT json_group_array(json(vector_json)) FROM finding_embeddings",
+      [],
+      "json",
     ),
   ).toEqual([[0, 0.5]]);
   expect(
     await database(
       environment,
-      "print(json.dumps([list(row) for row in db.execute('SELECT repository_id, finding_id FROM finding_repositories')]))",
+      "SELECT repository_id, finding_id FROM finding_repositories",
     ),
   ).toEqual([["repository-a", original.findingId]]);
 });
@@ -617,10 +698,8 @@ test("SQLite filters repository and embedding compatibility before exact cosine 
   ).rejects.toMatchObject({ code: "finding_not_indexed" });
   await database(
     environment,
-    `with db:
-    db.execute("UPDATE finding_embeddings SET vector_json = '[0,0]' WHERE finding_id = ?", (json.load(sys.stdin),))
-print("null")`,
-    foreign.finding.findingId,
+    "UPDATE finding_embeddings SET vector_json = '[0,0]' WHERE finding_id = ?",
+    [foreign.finding.findingId],
   );
   expect(
     (
@@ -642,35 +721,28 @@ test("SQLite reads only IDs and vectors before fetching the anchor and stable to
   const entries = Array.from({ length: 61 }, (_, index) => embedded(index + 1));
   await store.insert(entries, "repository-a");
   await store.insert([entries[1]!], "repository-b");
-  const { result, queries } = (await database(
-    environment,
-    `from workbench_findings import find_potential_duplicates
-queries = []
-db.set_trace_callback(queries.append)
-result = find_potential_duplicates(db, json.load(sys.stdin), "repository-a")
-print(json.dumps({"result": result, "queries": queries}))`,
-    entries[0]!.finding.findingId,
-  )) as {
-    result: { finding: Finding; potentialDuplicates: Finding[] };
-    queries: string[];
-  };
+  const { value: result, queries } = await nativeDatabase(environment, {
+    type: "duplicates",
+    id: entries[0]!.finding.findingId,
+    repository: "repository-a",
+  });
   expect(result).toEqual({
     finding: entries[0]!.finding,
     potentialDuplicates: entries.slice(1, 51).map((entry) => entry.finding),
   });
-  const reads = queries.filter((query) => query.startsWith("SELECT"));
+  const reads = queries.filter((query) => query.sql.startsWith("SELECT"));
   expect(reads).toHaveLength(3);
-  expect(reads[0]).toStartWith(
+  expect(reads[0]!.sql).toStartWith(
     "SELECT embeddings.model, embeddings.vector_json ",
   );
-  expect(reads[1]).toStartWith(
+  expect(reads[1]!.sql).toStartWith(
     "SELECT embeddings.finding_id, embeddings.vector_json ",
   );
-  expect(reads[1]).toContain("repositories.repository_id = 'repository-a'");
-  expect(reads[2]).toStartWith(
+  expect(reads[1]!.parameters[0]).toBe("repository-a");
+  expect(reads[2]!.sql).toStartWith(
     "SELECT id, details_json FROM findings WHERE id IN (",
   );
-  const loadedIds = [...reads[2]!.matchAll(/csf_[0-9a-f]+/g)].map(([id]) => id);
+  const loadedIds = reads[2]!.parameters;
   expect(loadedIds).toEqual(
     entries.slice(0, 51).map((entry) => entry.finding.findingId),
   );
@@ -680,7 +752,7 @@ print(json.dumps({"result": result, "queries": queries}))`,
         allRepositories: true,
       })
     ).potentialDuplicates,
-  ).toEqual(result.potentialDuplicates);
+  ).toEqual((result as { potentialDuplicates: Finding[] }).potentialDuplicates);
 });
 
 test("imports persist repository associations and keep untagged findings in explicit all-repository scope", async () => {
@@ -726,7 +798,7 @@ test("imports persist repository associations and keep untagged findings in expl
   expect(
     await database(
       environment,
-      "print(json.dumps([list(row) for row in db.execute('SELECT repository_id, finding_id FROM finding_repositories ORDER BY repository_id, finding_id')]))",
+      "SELECT repository_id, finding_id FROM finding_repositories ORDER BY repository_id, finding_id",
     ),
   ).toEqual([
     ["repository-a", findings[0]!.findingId],
@@ -814,7 +886,9 @@ test("embedding failure leaves no partial findings or vectors", async () => {
   expect(
     await database(
       environment,
-      `print(db.execute("SELECT COUNT(*) FROM finding_embeddings").fetchone()[0])`,
+      "SELECT COUNT(*) FROM finding_embeddings",
+      [],
+      "scalar",
     ),
   ).toBe(0);
 });
@@ -835,7 +909,7 @@ test("does not start when storage initialization fails", async () => {
 test("migrates existing complete scan findings and invalidates stale embeddings on CLI updates", async () => {
   const { store, environment } = await fixture();
   const original = finding();
-  await database(
+  await pythonDatabase(
     environment,
     `from workbench_schema import MIGRATIONS, apply_migrations
 finding = json.load(sys.stdin)
@@ -855,7 +929,7 @@ print("null")`,
     original,
   ]);
   expect(
-    await database(
+    await pythonDatabase(
       environment,
       "print(json.dumps([list(row) for row in db.execute('SELECT repository_id, finding_id FROM finding_repositories')]))",
     ),
@@ -868,9 +942,9 @@ print("null")`,
 with db:
     index_findings(db, "scan", {"findings": [json.load(sys.stdin)]}, "2026-01-02T00:00:00Z")
 print(db.execute("SELECT COUNT(*) FROM finding_embeddings").fetchone()[0])`;
-  expect(await database(environment, update, original)).toBe(1);
+  expect(await pythonDatabase(environment, update, original)).toBe(1);
   const changed = { ...original, summary: "A newer scan updated this finding" };
-  expect(await database(environment, update, changed)).toBe(0);
+  expect(await pythonDatabase(environment, update, changed)).toBe(0);
   await expect(
     store.findPotentialDuplicates(original.findingId, {
       allRepositories: true,
@@ -879,9 +953,9 @@ print(db.execute("SELECT COUNT(*) FROM finding_embeddings").fetchone()[0])`;
   expect((await store.list({ limit: 50, offset: 0 })).findings).toEqual([
     changed,
   ]);
-  await database(environment, update, finding(2));
+  await pythonDatabase(environment, update, finding(2));
   expect(
-    await database(
+    await pythonDatabase(
       environment,
       "print(json.dumps([list(row) for row in db.execute('SELECT repository_id, finding_id FROM finding_repositories ORDER BY finding_id')]))",
     ),

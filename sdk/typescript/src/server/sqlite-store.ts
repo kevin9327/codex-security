@@ -1,7 +1,6 @@
 import {
   bundledPluginRoot,
   codexSecurityStateDirectory,
-  resolvePluginPython,
   runWorkbench,
   type WorkbenchCommandOptions,
 } from "../runtime.js";
@@ -20,7 +19,6 @@ import type {
 
 export class SqliteFindingsStore implements FindingsStore {
   private options?: Promise<Omit<WorkbenchCommandOptions, "python">>;
-  private python?: Promise<string>;
 
   constructor(private readonly environment: NodeJS.ProcessEnv = process.env) {}
 
@@ -114,12 +112,7 @@ export class SqliteFindingsStore implements FindingsStore {
 
   private async run(args: string[], input?: string) {
     const options = await (this.options ??= this.resolveOptions());
-    if (args[0] === "dashboard" || args[0] === "database-info")
-      return await runWorkbench(options, args, input);
-    const python = await (this.python ??= resolvePluginPython({
-      environment: options.environment,
-    }));
-    return await runWorkbench({ ...options, python }, args, input);
+    return await runWorkbench(options, args, input);
   }
 
   private async resolveOptions(): Promise<

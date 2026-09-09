@@ -10,7 +10,7 @@ import { rankPoolCommand } from "./src/helpers/rank-pool";
 import { bindRepoScopesCommand } from "./src/helpers/bind-repo-scopes";
 import { snapshotSqliteCommand } from "./src/helpers/snapshot-sqlite";
 import { generateInScopeFilesCommand } from "./src/helpers/generate-in-scope-files";
-import { workbenchReadCommand } from "./src/helpers/workbench-read";
+import { workbenchCommand } from "./src/helpers/workbench-command";
 import { generateRankInputCommand } from "./src/helpers/generate-rank-input";
 import { configPreflightCommand } from "./src/helpers/config-preflight-command";
 
@@ -69,8 +69,16 @@ if (command === "resolve-security-md") {
   });
 } else if (command === "generate-in-scope-files") {
   process.exitCode = generateInScopeFilesCommand(args, posixHome);
-} else if (command === "dashboard" || command === "database-info") {
-  void workbenchReadCommand(command).then((status) => {
+} else if (
+  command === "dashboard" ||
+  command === "database-info" ||
+  command === "store-findings" ||
+  command === "list-stored-findings" ||
+  command === "find-potential-duplicates" ||
+  command === "store-dedupe-groups" ||
+  command === "list-dedupe-groups"
+) {
+  void workbenchCommand(command, args).then((status) => {
     process.exitCode = status;
   });
 } else if (
@@ -83,7 +91,7 @@ if (command === "resolve-security-md") {
   process.exitCode = configPreflightCommand(args);
 } else {
   console.error(
-    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | database-info | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight> [options]",
+    "Usage: launch_codex_security_mcp[.cmd] --helper <resolve-security-md | normalize-candidates | validate-patch-risk-assessment | copy-deep-review-input | select-deep-review-input | make-rank-shards | validate-rank-shard | merge-rank-outputs | make-rank-pool-plan | validate-rank-worker | validate-rank-pool | bind-repo-scopes | snapshot-sqlite | generate-in-scope-files | dashboard | database-info | store-findings | list-stored-findings | find-potential-duplicates | store-dedupe-groups | list-dedupe-groups | make-repo-rank-input | make-repo-scope-input | make-diff-rank-input | config-preflight> [options]",
   );
   process.exitCode = 2;
 }

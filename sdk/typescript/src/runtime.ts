@@ -1541,7 +1541,15 @@ export async function runWorkbench(
 ): Promise<JsonObject> {
   let stdout: string;
   try {
-    const node = args[0] === "dashboard" || args[0] === "database-info";
+    const node = [
+      "dashboard",
+      "database-info",
+      "store-findings",
+      "list-stored-findings",
+      "find-potential-duplicates",
+      "store-dedupe-groups",
+      "list-dedupe-groups",
+    ].includes(args[0] ?? "");
     const command = node
       ? process.execPath
       : options.python ??

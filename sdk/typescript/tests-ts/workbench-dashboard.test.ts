@@ -335,8 +335,8 @@ test("the SDK initializes and reads through the packaged helper on the actual No
   expect(child.stderr).toBe("");
   const result = JSON.parse(child.stdout) as {
     result: DashboardSnapshot;
-    retainedError: string;
+    page: { total: number };
   };
   expect(result.result.overview).toEqual({ findings: 0, groups: 0 });
-  expect(result.retainedError).toContain("PYTHON");
+  expect(result.page.total).toBe(0);
 });

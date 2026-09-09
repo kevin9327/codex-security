@@ -151,7 +151,11 @@ const integerPattern = new RegExp(
 const negativeNumber = new RegExp(
   `^-(?:(?:${decimalDigit.source})+|(?:${decimalDigit.source})*\\.(?:${decimalDigit.source})+)\\n?$`,
 );
-function integer(value: string, option: string): bigint {
+function integer(
+  value: string,
+  option: string,
+  maximum = Number(process.env["PYTHONINTMAXSTRDIGITS"] || 4300),
+): bigint {
   const text = value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
   const invalid = (): never => {
     throw new ArgumentError(
@@ -166,7 +170,6 @@ function integer(value: string, option: string): bigint {
     while (decimalDigit.test(String.fromCodePoint(start - 1))) start--;
     return String((point - start) % 10);
   }).join("");
-  const maximum = Number(process.env["PYTHONINTMAXSTRDIGITS"] || 4300);
   if (maximum && normalized.replace(/^[+-]/u, "").length > maximum) invalid();
   return BigInt(normalized);
 }
@@ -176,7 +179,9 @@ export function argumentsFor(
   required: readonly string[],
   integerOptions: readonly string[] = [],
   optional: Readonly<Record<string, readonly string[] | undefined>> = {},
-  onOption?: (name: string, value: string | bigint, raw: string) => void,
+  onOption?: (name: string, value: string | bigint | true, raw: string) => void,
+  booleanOptions: readonly string[] = [],
+  integerMaxDigits?: number,
 ): Record<string, string | bigint | true> {
   const names = [
     ...new Set([
@@ -184,6 +189,7 @@ export function argumentsFor(
       "help",
       ...integerOptions,
       ...Object.keys(optional),
+      ...booleanOptions,
     ]),
   ];
   const values: Record<string, string | bigint | true> = {};
@@ -226,6 +232,15 @@ export function argumentsFor(
         );
       return { help: true };
     }
+    if (booleanOptions.includes(name)) {
+      if (equals !== -1)
+        throw new ArgumentError(
+          `argument --${name}: ignored explicit argument ${pythonRepr(arg.slice(equals + 1))}`,
+        );
+      onOption?.(name, true, "");
+      values[name] = true;
+      continue;
+    }
     let value: string;
     if (equals !== -1) value = arg.slice(equals + 1);
     else {
@@ -238,7 +253,9 @@ export function argumentsFor(
       throw new ArgumentError(
         `argument --${name}: invalid choice: ${pythonRepr(value)} (choose from ${choices.join(", ")})`,
       );
-    const parsed = integerOptions.includes(name) ? integer(value, name) : value;
+    const parsed = integerOptions.includes(name)
+      ? integer(value, name, integerMaxDigits)
+      : value;
     onOption?.(name, parsed, value);
     values[name] = parsed;
   }

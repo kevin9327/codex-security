@@ -7,13 +7,8 @@ async function main() {
   const store = new SqliteFindingsStore(process.env);
   await store.initialize();
   const result = await store.dashboard(query);
-  let retainedError: string | undefined;
-  try {
-    await store.list({ limit: 1, offset: 0 });
-  } catch (error) {
-    retainedError = (error as Error).message;
-  }
-  process.stdout.write(JSON.stringify({ result, retainedError }));
+  const page = await store.list({ limit: 1, offset: 0 });
+  process.stdout.write(JSON.stringify({ result, page }));
 }
 void main().catch((error: unknown) => {
   console.error(error);

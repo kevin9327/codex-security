@@ -3,6 +3,8 @@ import fullFolds from "@unicode/unicode-15.0.0/Case_Folding/F/symbols.js";
 import type { Connection, Parameter, Row } from "../../native/sqlite.mjs";
 import { JsonFloat, parseJson } from "./helpers/python-json";
 
+import { listDedupeGroups } from "./workbench-findings";
+
 type PaginationValue = bigint | JsonFloat | boolean;
 function numeric(value: PaginationValue): bigint | number {
   return value instanceof JsonFloat
@@ -51,38 +53,6 @@ SELECT groups.id, groups.id AS title,
     (SELECT COUNT(*) FROM finding_dedupe_group_members WHERE group_id = groups.id) AS memberCount
 FROM finding_dedupe_groups AS groups`,
 };
-
-export function listDedupeGroups(connection: Connection, findingId: string) {
-  const groups = new Map<
-    string,
-    { groupId: string; findingIds: string[]; createdAt: string }
-  >();
-  for (const row of connection
-    .prepare(
-      `
-        SELECT groups.id, groups.created_at, members.finding_id
-        FROM finding_dedupe_group_members AS matched
-        JOIN finding_dedupe_groups AS groups ON groups.id = matched.group_id
-        JOIN finding_dedupe_group_members AS members ON members.group_id = groups.id
-        WHERE matched.finding_id = ?
-        ORDER BY groups.created_at, groups.id, members.finding_id
-        `,
-    )
-    .iterate([findingId])) {
-    const id = row.get("id") as string;
-    let group = groups.get(id);
-    if (group === undefined) {
-      group = {
-        groupId: id,
-        findingIds: [],
-        createdAt: row.get("created_at") as string,
-      };
-      groups.set(id, group);
-    }
-    group.findingIds.push(row.get("finding_id") as string);
-  }
-  return { groups: [...groups.values()] };
-}
 
 function item(row: Row) {
   return {

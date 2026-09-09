@@ -11,10 +11,10 @@ import {
 import {
   casefold,
   dashboard,
-  listDedupeGroups,
   type DashboardQuery,
 } from "../../../../plugins/codex-security/mcp-app/src/workbench-dashboard";
-import { timestamp } from "../../../../plugins/codex-security/mcp-app/src/helpers/workbench-read";
+import { listDedupeGroups } from "../../../../plugins/codex-security/mcp-app/src/workbench-findings";
+import { timestamp } from "../../../../plugins/codex-security/mcp-app/src/helpers/workbench-command";
 import {
   parseJson,
   stringifyJson,
