@@ -16,8 +16,11 @@ import { createWorkspace, saveWorkspace } from "../workbench-setup";
 import { WorkbenchValidationError } from "../workbench-validation";
 import { decodePosixBytes } from "./posix-path";
 import { stringifyJson } from "./python-json";
-import { ArgumentError, argumentsFor, print } from "./rank-worklists";
-import { decodePythonUtf8 } from "./utf8";
+import { print } from "./rank-worklists";
+import {
+  parseWorkbenchCommandArguments,
+  type WorkbenchCommandSpecification,
+} from "./workbench-command-arguments";
 import { timestamp } from "./utc-timestamp";
 
 type Command =
@@ -29,12 +32,6 @@ type Command =
   | "register-cli-scan"
   | "set-scan-thread"
   | "get-scan-recipe";
-interface Specification {
-  required: string[];
-  options: Record<string, readonly string[] | undefined>;
-  flags?: string[];
-  exclusive?: { names: string[]; required?: boolean }[];
-}
 const diffOptions = {
   "diff-target-kind": ["working_tree", "commit", "range"],
   "diff-base-revision": undefined,
@@ -47,7 +44,7 @@ const launchOptions = {
   model: undefined,
   "reasoning-effort": undefined,
 };
-const specifications: Record<Command, Specification> = {
+const specifications: Record<Command, WorkbenchCommandSpecification> = {
   "create-workspace": {
     required: ["workspace-id"],
     options: {
@@ -120,67 +117,13 @@ export async function workbenchLifecycleCommand(
   command: Command,
   args: string[],
 ): Promise<number> {
-  const spec = specifications[command];
-  const argument = (name: string) =>
-    `--${name}${spec.flags?.includes(name) ? "" : ` ${spec.options[name] ? `{${spec.options[name]!.join(",")}}` : name.toUpperCase().replaceAll("-", "_")}`}`;
-  const optional = [
-    ...Object.keys(spec.options).filter(
-      (name) => !spec.required.includes(name),
-    ),
-    ...(spec.flags ?? []),
-  ];
-  const usage = `usage: launch_codex_security_mcp[.cmd] --helper ${command} [-h] ${[...spec.required.map(argument), ...optional.map((name) => `[${argument(name)}]`)].join(" ")}`;
-  let options: ReturnType<typeof argumentsFor>;
-  try {
-    // The existing CLI consumes this transport before parsing any command options.
-    if (args.includes("--user-context-stdin")) {
-      if (
-        args.filter((value) => value === "--user-context-stdin").length !== 1 ||
-        args.includes("--user-context")
-      )
-        throw new ArgumentError("pass exactly one user-context transport");
-      args = args.map((value) =>
-        value === "--user-context-stdin"
-          ? `--user-context=${decodePythonUtf8(readFileSync(0))}`
-          : value,
-      );
-    }
-    const selected = new Map<number, string>();
-    options = argumentsFor(
-      args,
-      spec.required,
-      [],
-      spec.options,
-      (name) => {
-        for (const [index, group] of (spec.exclusive ?? []).entries()) {
-          if (!group.names.includes(name)) continue;
-          const prior = selected.get(index);
-          if (prior !== undefined && prior !== name)
-            throw new ArgumentError(
-              `argument --${name}: not allowed with argument --${prior}`,
-            );
-          selected.set(index, name);
-        }
-      },
-      spec.flags ?? [],
-      4300,
-      [],
-      (spec.exclusive ?? [])
-        .filter((group) => group.required)
-        .map((group) => group.names),
-    );
-    if (options["help"]) {
-      print(
-        `${usage}\n\noptions:\n  -h, --help  show this help message and exit\n  ${[...spec.required, ...optional].map(argument).join("\n  ")}`,
-      );
-      return 0;
-    }
-  } catch (error) {
-    if (!(error instanceof ArgumentError)) throw error;
-    print(usage, true);
-    print(`${command}: error: ${error.message}`, true);
-    return 2;
-  }
+  const parsed = parseWorkbenchCommandArguments(
+    command,
+    args,
+    specifications[command],
+  );
+  if (typeof parsed === "number") return parsed;
+  const options = parsed.values;
   const text = (name: string) => (options[name] as string | undefined) ?? null;
   const context = {
     now: () =>
