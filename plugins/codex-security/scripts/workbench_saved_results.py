@@ -1022,6 +1022,7 @@ def merge_saved_results(
                 "rejected",
                 "not_applicable",
             }:
+                rejected_history.setdefault((owner, candidate_id), []).append(finding)
                 surfaces = coverage.get("surfaces")
                 for item in surfaces if isinstance(surfaces, list) else []:
                     if (

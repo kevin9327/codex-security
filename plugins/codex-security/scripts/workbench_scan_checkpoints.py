@@ -795,6 +795,9 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
     from workbench_saved_results import (
         _candidate_owner,
         _digest,
+        _finding_content,
+        _finding_key,
+        _read_saved_parent_result,
         _read_saved_result,
         _saved_result_sources,
         merge_saved_results,
@@ -901,6 +904,24 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             )
         else:
             parent_root = Path(parent["scan_dir"])
+            try:
+                _, canonical = _read_saved_parent_result(parent_root, parent["id"])
+            except (ContractError, OSError, ValueError) as exc:
+                if (parent_root / "scan-manifest.json").exists():
+                    warnings.append(f"Could not read the saved parent draft: {exc}")
+            else:
+                coverage = {
+                    **canonical["coverage"],
+                    "completeness": "partial",
+                    "reviewedFiles": [],
+                }
+                if isinstance(coverage.get("deferred"), list):
+                    coverage["deferred"] = [
+                        item
+                        for item in coverage["deferred"]
+                        if not isinstance(item, dict) or item.get("id") != "scan-stopped"
+                    ]
+                sources.append({**canonical, "source": ".", "coverage": coverage})
             accepted_sources = {source["source"] for source in sources}
             parent_workers = connection.execute(
                 "SELECT * FROM deep_scan_workers WHERE scan_id = ?", (parent["id"],)
@@ -977,6 +998,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         current_checkpoints = []
         retained_checkpoints = set()
         seed_sources = {}
+        validated_findings = set()
         for source in sources:
             snapshot = {
                 "scanId": child["id"],
@@ -1019,6 +1041,11 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 sealed_artifacts=sealed_artifacts,
                 worker_sources=worker_sources if worker and worker["kind"] == "dedup" else None,
             )
+            if source.get("customValidationComplete"):
+                validated_findings.update(
+                    (_finding_key(finding), _digest(_finding_content(finding)))
+                    for finding in snapshot["findings"]
+                )
             missing_reports |= missing
             if missing:
                 # A stronger retained copy can become canonical during merging.
@@ -1166,6 +1193,10 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             publish_head=False,
             custom_validation_complete=all(
                 source["customValidationComplete"] for source in checkpoint["sources"]
+            )
+            and all(
+                (_finding_key(finding), _digest(_finding_content(finding))) in validated_findings
+                for finding in findings["findings"]
             ),
         )
         connection.execute(
