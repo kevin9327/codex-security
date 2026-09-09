@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import { sep } from "node:path";
-import type { Connection, Parameter } from "../../native/sqlite.mjs";
+import type { Connection, Parameter, Row } from "../../native/sqlite.mjs";
+import { preflightInteger } from "./helpers/preflight-config";
 import {
   pathText,
   widePath,
@@ -25,6 +26,80 @@ export interface ScanQuery {
   scanRoot?: string;
   offset: bigint;
   limit?: bigint;
+}
+
+export function storedScanCostFields(
+  value: string | null,
+): Record<string, unknown> {
+  const stored =
+    value === null
+      ? null
+      : parseJson(value, false, preflightInteger, (value) => {
+          throw new Error(`invalid JSON number ${value}`);
+        });
+  return !object(stored)
+    ? {}
+    : !("usage" in stored)
+      ? { cost: stored }
+      : {
+          usage: stored["usage"],
+          ...(object(stored["cost"]) ? { cost: stored["cost"] } : {}),
+        };
+}
+
+export interface FindingOccurrenceQuery {
+  query?: string | null;
+  severity?: string | null;
+  status?: string | null;
+}
+export function findingOccurrenceConditions(
+  scanId: string,
+  { query = null, severity = null, status = null }: FindingOccurrenceQuery = {},
+): [string, string[]] {
+  const conditions = ["occurrences.scan_id = ?"],
+    values = [scanId];
+  if (severity !== null) {
+    conditions.push("occurrences.severity = ?");
+    values.push(severity);
+  }
+  if (status !== null) {
+    conditions.push("COALESCE(triage.status, 'open') = ?");
+    values.push(status);
+  }
+  if (query) {
+    const search = casefold(trim(query));
+    if (search) {
+      conditions.push(
+        "(instr(lower(occurrences.title), ?) > 0 OR instr(lower(occurrences.summary), ?) > 0 OR EXISTS (SELECT 1 FROM finding_locations AS locations WHERE locations.occurrence_id = occurrences.id AND instr(lower(locations.relative_path), ?) > 0))",
+      );
+      values.push(search, search, search);
+    }
+  }
+  return [conditions.join(" AND "), values];
+}
+export function findingOccurrenceRows(
+  connection: Connection,
+  scanId: string,
+  options: FindingOccurrenceQuery & { offset: bigint; limit: bigint },
+): Row[] {
+  const [conditions, values] = findingOccurrenceConditions(scanId, options);
+  return connection
+    .prepare(
+      `
+    SELECT occurrences.id, occurrences.finding_id, occurrences.title,
+      occurrences.summary, occurrences.severity, occurrences.confidence,
+      occurrences.remediation, occurrences.details_json, occurrences.created_at
+    FROM finding_occurrences AS occurrences
+    LEFT JOIN finding_triage AS triage ON triage.occurrence_id = occurrences.id
+    WHERE ${conditions}
+    ORDER BY CASE occurrences.severity
+      WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2
+      WHEN 'low' THEN 3 WHEN 'informational' THEN 4 ELSE 5 END,
+      occurrences.created_at, occurrences.id
+    LIMIT ? OFFSET ?
+  `,
+    )
+    .all([...values, options.limit, options.offset]);
 }
 type RepositoryOrigin = readonly [host: string, path: string];
 const latest = (left: string, right: string) =>
@@ -308,20 +383,7 @@ export function listScans(connection: Connection, args?: ScanQuery) {
     .slice(0, limit === undefined ? undefined : Number(limit))
     .map((record) => {
       const row = record.toObject();
-      const stored =
-        row["cost_json"] === null
-          ? null
-          : parseJson(row["cost_json"] as string, false, BigInt, (value) => {
-              throw new Error(`invalid JSON number ${value}`);
-            });
-      const cost = !object(stored)
-        ? {}
-        : !("usage" in stored)
-          ? { cost: stored }
-          : {
-              usage: stored["usage"],
-              ...(object(stored["cost"]) ? { cost: stored["cost"] } : {}),
-            };
+      const cost = storedScanCostFields(row["cost_json"] as string | null);
       return {
         completedAt: row["completed_at"],
         continuationThreadId: row["continuation_thread_id"],

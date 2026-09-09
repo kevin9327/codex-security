@@ -1,5 +1,5 @@
 import decimalDigit from "@unicode/unicode-15.0.0/General_Category/Decimal_Number/regex.js";
-import type { Connection } from "../../native/sqlite.mjs";
+import type { Connection, Row } from "../../native/sqlite.mjs";
 import {
   JsonFloat,
   object,
@@ -300,7 +300,7 @@ export function boundedOutputText(
 export function requireOccurrence(
   connection: Connection,
   occurrenceId: string | null,
-): Record<string, unknown> {
+): Row {
   const normalized = optionalText(occurrenceId, 256);
   if (normalized === null)
     throw new WorkbenchValidationError("occurrence-id is required.");
@@ -311,5 +311,5 @@ export function requireOccurrence(
     throw new WorkbenchValidationError(
       "Codex Security finding occurrence not found.",
     );
-  return row.toObject();
+  return row;
 }

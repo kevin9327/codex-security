@@ -83,10 +83,9 @@ const results = cases.map((item) => {
             "record",
             1n,
           ]);
-          return validation.requireOccurrence(
-            c,
-            args["value"] as string | null,
-          );
+          return validation
+            .requireOccurrence(c, args["value"] as string | null)
+            .toObject();
         } finally {
           c.close();
         }
