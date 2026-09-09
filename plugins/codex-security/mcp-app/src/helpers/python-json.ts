@@ -1,6 +1,6 @@
+import { decodePythonUtf8, UnicodeDecodeError } from "./utf8";
 import otherCategory from "@unicode/unicode-15.0.0/General_Category/Other/regex.js";
 import separatorCategory from "@unicode/unicode-15.0.0/General_Category/Separator/regex.js";
-import { decodeUtf8 } from "./utf8";
 import { TomlDate } from "./toml-date.js";
 
 // Preserve Python's integer/float distinction and arbitrary-size JSON integers.
@@ -102,7 +102,12 @@ export function stringifyJson(
 export class JsonSyntaxError extends Error {}
 
 // json.loads(bytes) detects UTF-8/16/32 and decodes with surrogatepass.
-export function parseJsonBytes(bytes: Buffer): unknown {
+export function parseJsonBytes(
+  bytes: Buffer,
+  rejectDuplicates = false,
+  parseInteger?: (source: string) => bigint,
+  parseConstant?: (source: string) => unknown,
+): unknown {
   let width = 1;
   let little = true;
   let offset = 0;
@@ -130,30 +135,18 @@ export function parseJsonBytes(bytes: Buffer): unknown {
   }
   let text = "";
   if (width === 1) {
-    let start = offset;
-    for (let index = offset; index + 2 < bytes.length; index++) {
-      const second = bytes[index + 1]!;
-      const third = bytes[index + 2]!;
-      if (
-        bytes[index] === 0xed &&
-        second >= 0xa0 &&
-        second <= 0xbf &&
-        third >= 0x80 &&
-        third <= 0xbf
-      ) {
-        text += decodeUtf8(bytes.subarray(start, index));
-        text += String.fromCharCode(
-          0xd000 | ((second & 0x3f) << 6) | (third & 0x3f),
-        );
-        index += 2;
-        start = index + 1;
-      }
-    }
-    text += decodeUtf8(bytes.subarray(start));
+    text = decodePythonUtf8(bytes.subarray(offset), true);
   } else {
-    if ((bytes.length - offset) % width !== 0)
-      throw new Error(`Truncated UTF-${width * 8} JSON input`);
+    const encoding = `utf-${width * 8}-${little ? "le" : "be"}`;
     for (let index = offset; index < bytes.length; index += width) {
+      if (index + width > bytes.length)
+        throw new UnicodeDecodeError(
+          encoding,
+          bytes,
+          index,
+          bytes.length,
+          "truncated data",
+        );
       const point =
         width === 2
           ? little
@@ -162,10 +155,18 @@ export function parseJsonBytes(bytes: Buffer): unknown {
           : little
             ? bytes.readUInt32LE(index)
             : bytes.readUInt32BE(index);
+      if (point > 0x10ffff)
+        throw new UnicodeDecodeError(
+          encoding,
+          bytes,
+          index,
+          index + width,
+          "code point not in range(0x110000)",
+        );
       text += String.fromCodePoint(point);
     }
   }
-  return parseJson(text);
+  return parseJson(text, rejectDuplicates, parseInteger, parseConstant);
 }
 
 export function parseJson(
@@ -175,11 +176,26 @@ export function parseJson(
   parseConstant: (source: string) => unknown = (source) =>
     new JsonFloat(source),
 ): unknown {
-  const tokens = [
-    ...source.matchAll(
-      /"(?:\\[\s\S]|[^"\\])*"|[{}\[\]:,]|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|-?Infinity|NaN|[^ \t\r\n]/gu,
-    ),
-  ];
+  // Scan strings directly: repeated escapes can exhaust V8's regex stack.
+  const lexer =
+    /"|[{}\[\]:,]|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|-?Infinity|NaN|[^ \t\r\n]/gu;
+  const tokens: RegExpExecArray[] = [];
+  let token: RegExpExecArray | null;
+  while ((token = lexer.exec(source)) !== null) {
+    if (token[0] === '"') {
+      let end = lexer.lastIndex;
+      while (end < source.length) {
+        const character = source[end++]!;
+        if (character === "\\") end++;
+        else if (character === '"') {
+          token[0] = source.slice(token.index, end);
+          break;
+        }
+      }
+      lexer.lastIndex = Math.min(end, source.length);
+    }
+    tokens.push(token);
+  }
   let index = 0;
   const position = () => tokens[index]?.index ?? source.length;
   function error(message: string, offset = position()): never {
