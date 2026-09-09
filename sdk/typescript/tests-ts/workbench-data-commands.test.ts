@@ -196,6 +196,49 @@ test("comparison, exports and publication receipts use sealed scans without Pyth
   expect(missing.stderr).toContain("No saved matches");
   result(["save-scan-comparison", ...pair, "--matches-json", matches], s);
   result(["save-scan-comparison", ...pair, "--matches-json-stdin"], s, matches);
+  const conflicting = helper(
+    [
+      "save-scan-comparison",
+      ...pair,
+      "--matches-json",
+      matches,
+      "--matches-json-stdin",
+    ],
+    s,
+    matches,
+  );
+  expect(conflicting.status).toBe(2);
+  expect(conflicting.stderr).toContain("not allowed with argument");
+  const occurrence = (scanId: string) =>
+    snapshot(s)["finding_occurrences"]!.find(
+      (row) => row["scan_id"] === scanId,
+    )!["id"] as string;
+  const reason = "Synthetic comparison 🙂 " + "x".repeat(64 * 1024);
+  const oversized = JSON.stringify({
+    matches: [
+      {
+        beforeOccurrenceIds: [occurrence(before.scanId)],
+        afterOccurrenceIds: [occurrence(after.scanId)],
+        confidence: "high",
+        reason,
+      },
+    ],
+    uncertain: [],
+  });
+  result(
+    ["save-scan-comparison", ...pair, "--matches-json-stdin"],
+    s,
+    oversized,
+  );
+  expect(
+    (
+      JSON.parse(
+        snapshot(s)["scan_comparisons"]![0]!["result_json"] as string,
+      ) as {
+        matches: { reason: string }[];
+      }
+    ).matches[0]!.reason,
+  ).toBe(reason);
   result(["compare-scans", ...pair, "--require-matches"], s);
   expect(snapshot(s)["scan_comparisons"]).toHaveLength(1);
   for (const format of ["json", "csv", "sarif"]) {
