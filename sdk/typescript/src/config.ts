@@ -153,7 +153,7 @@ export function modelProviderConfigOverride(config: JsonObject): string[] {
     : [`model_providers=${inlineToml(config["model_providers"])}`];
 }
 
-function inlineToml(value: JsonValue): string {
+export function inlineToml(value: JsonValue): string {
   if (Array.isArray(value)) return `[${value.map(inlineToml).join(",")}]`;
   if (isObject(value)) {
     return `{${Object.entries(value)

@@ -30,6 +30,7 @@ test("dedupe resolves a workflow's pinned scan and passes the workflow ID to the
   deps.deduplicateScan = async (scanId, options) => {
     expect(scanId).toBe("exact-scan");
     expect(options.workflowId).toBe("workflow-example");
+    expect(options.sourceMcp).toBe("sourcegraph");
     return {
       scanId,
       uniqueFindingIds: [],
@@ -42,6 +43,8 @@ test("dedupe resolves a workflow's pinned scan and passes the workflow ID to the
     await main(
       [
         "dedupe",
+        "--source-mcp",
+        "sourcegraph",
         "--workflow-id",
         "workflow-example",
         "--findings-url",

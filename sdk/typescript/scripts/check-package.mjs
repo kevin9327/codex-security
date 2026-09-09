@@ -201,6 +201,7 @@ const distFiles = new Set(
     "runtime",
     "scan-activity",
     "scan-comparison",
+    "source-mcp",
     "scan-dashboard",
     "scan-history-renderer",
     "scan-logs",

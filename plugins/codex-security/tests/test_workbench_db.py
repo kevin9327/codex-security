@@ -44,6 +44,67 @@ GIT_UNAVAILABLE_WARNING = (
     "The scanned Git repository became unavailable while the scan was running; "
     "results were saved for the original revision."
 )
+
+
+@pytest.mark.parametrize("paths,expected", [([], 3), (["src"], 2)])
+def test_source_mcp_registers_committed_sparse_scope(tmp_path, paths, expected):
+    target = tmp_path / "target"
+    initialize_git_repository(target)
+    (target / "src").mkdir()
+    (target / "src" / "app.ts").write_text("export const value = 1;\n")
+    (target / "src" / "SECURITY.md").write_text("Check authorization.\n")
+    subprocess.run(["git", "add", "."], cwd=target, check=True)
+    subprocess.run(["git", "commit", "-qm", "source"], cwd=target, check=True)
+    subprocess.run(["git", "sparse-checkout", "set", "--cone", "docs"], cwd=target, check=True)
+    assert not (target / "src").exists()
+    scan_dir = tmp_path / "scan"
+    scan_dir.mkdir(mode=0o700)
+    recipe = {
+        "config": {},
+        "mode": "standard",
+        "repository": str(target),
+        "sourceMcp": "sourcegraph",
+        "target": {"kind": "paths" if paths else "repository", "paths": paths},
+    }
+    registered = run_workbench(
+        tmp_path / "state",
+        "register-cli-scan",
+        "--scan-dir",
+        str(scan_dir),
+        "--repository",
+        str(target),
+        "--recipe-json",
+        json.dumps(recipe),
+    )
+    assert registered["scopeFileCount"] == expected
+    assert (
+        registered["targetRevision"]
+        == subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=target,
+            text=True,
+        ).strip()
+    )
+    saved = run_workbench(tmp_path / "state", "get-scan-recipe", "--scan-id", registered["scanId"])
+    assert saved["recipe"]["sourceMcp"] == "sourcegraph"
+    assert not (target / "src").exists()
+
+
+def test_source_mcp_recipe_rejects_local_changes(tmp_path, workbench_api):
+    target = tmp_path / "target"
+    initialize_git_repository(target)
+    recipe = {
+        "config": {},
+        "mode": "standard",
+        "repository": str(target),
+        "sourceMcp": "sourcegraph",
+        "target": {"kind": "repository", "paths": []},
+    }
+    (target / "README.md").write_text("local change\n")
+    with pytest.raises(SystemExit, match="clean Git checkout"):
+        workbench_api["parse_scan_recipe"](json.dumps(recipe), target)
+
+
 BUDGET_COST = {
     "model": "gpt-5.6-sol",
     "inputTokens": 1250,

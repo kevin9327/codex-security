@@ -20,6 +20,11 @@ codex-security scan /path/to/directory
 
 For CI, set `OPENAI_API_KEY` instead of signing in.
 
+For large repositories, `codex-security scan /path/to/repository --source-mcp sourcegraph`
+uses a configured MCP server for committed source reads and supports sparse
+checkouts. See [MCP source access](sdk/typescript/README.md#read-committed-source-through-mcp)
+for configuration, authentication, and supported targets.
+
 ## TypeScript SDK
 
 Codex Security is a Javascript package:

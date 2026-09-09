@@ -1,3 +1,5 @@
+import { writeFile } from "node:fs/promises";
+import { readSourceMcpRuntime } from "./source-mcp.js";
 import { execFile as nodeExecFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -86,6 +88,11 @@ export async function prepareCodexSecurityReviewItems(
   }
 
   const destination = await artifactDestination(context, inventoryComponents, label);
+  const source = await readSourceMcpRuntime(context.repoRoot, context.scanId);
+  if (source !== undefined) {
+    await writeFile(destination, source.files.map((path) => path + "\n").join(""), { mode: 0o600 });
+    return { reviewItemsTotal: (await readReviewItems(context)).length };
+  }
   const pythonCommand = context.pythonCommand ?? await resolvePythonCommand();
   const helper = join(context.pluginRoot, "scripts", "generate_in_scope_files.py");
   const arguments_ = [

@@ -113,6 +113,7 @@ from workbench_schema import (
 from workbench_source_excerpt import finding_source_excerpt, safe_source_path
 from workbench_target import (
     clean_worktree_content_digest,
+    committed_source_paths,
     copy_directory_excluding,
     copy_git_worktree_files,
     directory_content_digest,
@@ -129,6 +130,7 @@ from workbench_target import (
     require_remediation_target,
     require_scan_target_identity,
     scan_target_warning,
+    validate_scan_recipe_source,
     worktree_content_digest,
     worktree_content_digest_for_context,
 )
@@ -1693,16 +1695,26 @@ def register_cli_scan(connection: sqlite3.Connection, args: argparse.Namespace) 
             diff_target["contentDigest"] = worktree_content_digest(repository)
     mode = "diff" if diff_target is not None else recipe["mode"]
     target_identity = scan_target_identity(repository, diff_target)
-    scope_file_count = (
-        directory_snapshot_regular_file_count(repository)
-        if not paths
-        else sum(
-            1
-            if (repository / path).is_file()
-            else directory_snapshot_regular_file_count(repository / path)
-            for path in paths
+    if recipe.get("sourceMcp"):
+        scope_file_count = len(
+            committed_source_paths(
+                repository,
+                paths,
+                diff_target["baseRevision"] if diff_target else None,
+                head=target_identity[0],
+            )
         )
-    )
+    else:
+        scope_file_count = (
+            directory_snapshot_regular_file_count(repository)
+            if not paths
+            else sum(
+                1
+                if (repository / path).is_file()
+                else directory_snapshot_regular_file_count(repository / path)
+                for path in paths
+            )
+        )
     parent_scan_id = (
         require_uuid(args.parent_scan_id, "parent-scan-id")
         if args.parent_scan_id is not None
@@ -1852,17 +1864,7 @@ def parse_scan_recipe(value: str, repository: Path) -> dict[str, Any]:
         raise SystemExit("A scoped scan launch recipe must include at least one target path.")
     if target["kind"] != "paths" and paths:
         raise SystemExit("Only scoped scan launch recipes can include target paths.")
-    for path in paths:
-        candidate = PurePosixPath(path)
-        if (
-            not path
-            or candidate.is_absolute()
-            or ".." in candidate.parts
-            or "\\" in path
-            or not (repository / candidate).exists()
-            or not (repository / candidate).resolve().is_relative_to(repository)
-        ):
-            raise SystemExit("Scan launch recipe target paths must exist inside the repository.")
+    validate_scan_recipe_source(repository, recipe)
     if target["kind"] in {"refs", "working_tree"}:
         if not isinstance(target.get("base"), str) or not isinstance(target.get("head"), str):
             raise SystemExit("Diff scan launch recipes require resolved base and head revisions.")

@@ -303,6 +303,61 @@ Scans are report-only by default. Set `--fail-on-severity high` to exit with
 `1` if a completed scan finds high or critical issues. Incomplete scans exit
 with `2`, writing available results to stdout and a coverage warning to stderr.
 
+### Read committed source through MCP
+
+Use `--source-mcp NAME` to require an existing Codex MCP server for source
+reads, search, and navigation. Omitting it preserves the local-source workflow.
+The name selects a server, so the CLI does not depend on a particular provider
+or distribute its executable.
+
+For example, configure a [Sourcegraph MCP endpoint](https://sourcegraph.com/docs/api/mcp)
+in your user `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`):
+
+```toml
+[mcp_servers.sourcegraph]
+url = "https://sourcegraph.example.com/.api/mcp"
+env_http_headers = { Authorization = "SOURCEGRAPH_AUTHORIZATION" }
+```
+
+Set `SOURCEGRAPH_AUTHORIZATION` in the calling environment to the complete
+`token <access-token>` value, using your usual secret manager. Then run:
+
+```bash
+codex-security scan /path/to/repository --source-mcp sourcegraph --path src
+codex-security scan /path/to/repository --source-mcp sourcegraph --mode deep
+codex-security dedupe --scan latest --findings-url http://localhost:3000 --source-mcp sourcegraph
+```
+
+The SDK equivalents are `security.run(repository, { sourceMcp: "sourcegraph" })`
+and `deduplicateScan(scanId, { findingsUrl, sourceMcp: "sourcegraph" })`.
+Scan commands can also supply native `mcp_servers` settings through existing
+`--codex` overrides. A missing or disabled server fails configuration validation;
+a selected server that cannot initialize prevents the model session from running.
+`--dry-run` validates local configuration and target metadata without connecting
+to the server. Saved scan recipes retain the server name for reruns; they do not
+store its endpoint or credentials. If the initial scan supplied the server only
+through `--codex`, configure that name in your user Codex config before rerunning.
+
+A clean Git checkout with an `origin` remote is still required. Sparse checkouts
+and partial clones are supported: local Git supplies commit and tree metadata,
+while the selected MCP supplies source content. The committed-file inventory
+includes regular tracked files absent from the sparse checkout; committed diffs
+also include deleted files at the base revision. Source reads and inherited
+`SECURITY.md` policies must match the approved repository and exact revision.
+Unavailable revisions, truncated reads, and policy-based exclusions must remain
+visible in coverage. Dedupe uses finding-cited revisions when supplied.
+
+This mode cannot inspect uncommitted changes, so `--working-tree`, dirty checkouts,
+and `scan --patch` are unsupported. Materialize source before running a separate
+patch workflow. This is source browsing through MCP, not a checkoutless Git or
+patch backend.
+
+The selected server is required in Standard scans, Deep workers, and dedupe
+reviews. Credentials are supplied to the native MCP host and excluded from the
+model's shell environment. Use environment-backed HTTP authentication for this
+workflow: OAuth credentials stored in a different Codex home are not imported.
+Neither Sourcegraph's CLI nor a custom MCP transport is needed.
+
 ### Generate mock scan results
 
 Use `--mock` to populate a Standard scan with synthetic test data in seconds,

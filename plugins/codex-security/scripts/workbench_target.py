@@ -11,7 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
 # Some plugin hosts launch Python with safe-path isolation enabled.
@@ -774,6 +774,77 @@ def scan_target_warning(scan: sqlite3.Row) -> str | None:
             "results were saved for the original revision or snapshot."
         )
     return None
+
+
+def committed_source_paths(
+    target: Path, scopes: list[str], base: str | None = None, head: str = "HEAD"
+) -> list[str]:
+    """Enumerate committed regular files without materializing sparse source blobs."""
+    paths: set[str] = set()
+    for revision in [head] if base is None else [head, base]:
+        tree = git_bytes(target, "ls-tree", "-r", "-z", "--full-tree", revision)
+        if tree is None:
+            raise SystemExit("Source MCP requires the selected Git commit and tree metadata.")
+        for entry in tree.split(b"\0"):
+            metadata, separator, name = entry.partition(b"\t")
+            if separator and metadata.startswith((b"100644 blob ", b"100755 blob ")):
+                paths.add(os.fsdecode(name))
+    if base is not None:
+        changed = git_bytes(
+            target,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "--no-renames",
+            "-r",
+            "-z",
+            base,
+            head,
+        )
+        if changed is None:
+            raise SystemExit("Source MCP could not enumerate the committed diff.")
+        paths.intersection_update(os.fsdecode(path) for path in changed.split(b"\0"))
+    return sorted(
+        path
+        for path in paths
+        if not scopes
+        or any(scope == "." or path == scope or path.startswith(scope + "/") for scope in scopes)
+    )
+
+
+def validate_scan_recipe_source(repository: Path, recipe: dict[str, Any]) -> None:
+    source_mcp = recipe.get("sourceMcp")
+    target = recipe["target"]
+    for path in target["paths"]:
+        candidate = PurePosixPath(path)
+        if (
+            not path
+            or candidate.is_absolute()
+            or ".." in candidate.parts
+            or "\\" in path
+            or (source_mcp is None and not (repository / candidate).exists())
+            or not (repository / candidate).resolve().is_relative_to(repository)
+        ):
+            raise SystemExit("Scan launch recipe target paths must exist inside the repository.")
+    if source_mcp is None:
+        return
+    if not isinstance(source_mcp, str) or not source_mcp.strip():
+        raise SystemExit("Scan launch recipe sourceMcp must name a configured MCP server.")
+    if target["kind"] == "working_tree":
+        raise SystemExit("Source MCP cannot read uncommitted working-tree changes.")
+    if git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all") != b"":
+        raise SystemExit("Source MCP requires a clean Git checkout.")
+    current_revision = git_revision(repository)
+    if recipe.get("repositoryRevision", current_revision) != current_revision or (
+        target["kind"] == "refs" and target.get("head") != current_revision
+    ):
+        raise SystemExit("Repository HEAD changed before the source MCP scan started.")
+    committed_paths = committed_source_paths(repository, [], head=current_revision)
+    for path in target["paths"]:
+        if not any(
+            path == "." or item == path or item.startswith(path + "/") for item in committed_paths
+        ):
+            raise SystemExit("Scan launch recipe target path must contain committed source files.")
 
 
 def main() -> None:
