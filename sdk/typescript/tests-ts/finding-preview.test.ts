@@ -1,230 +1,326 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
-import { PLUGIN_ROOT } from "./plugin-root.js";
+import { fileURLToPath } from "node:url";
+import { buildSync } from "esbuild";
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import type { Request, Response } from "./support/finding-preview-fixture";
 
-function projectFindingDetails(original: Record<string, unknown>) {
-  const python = Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-  expect(python).not.toBeNull();
-
-  const program = [
-    "import json, sys",
-    "sys.path.insert(0, sys.argv[1])",
-    "from finding_preview import bounded_finding_details",
-    "original = json.loads(sys.stdin.read())",
-    "projected = {name: bounded_finding_details(details) for name, details in original.items()}",
-    "print(json.dumps({'projected': projected, 'original': original}))",
-  ].join("\n");
-  const result = Bun.spawnSync(
-    [python!, "-I", "-B", "-c", program, join(PLUGIN_ROOT, "scripts")],
-    {
-      stdin: new TextEncoder().encode(JSON.stringify(original)),
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-
-  expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-  return JSON.parse(new TextDecoder().decode(result.stdout));
+const root = mkdtempSync(join(tmpdir(), "finding-preview-"));
+const fixture = join(root, "fixture.cjs");
+const node = Bun.which("node")!;
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/finding-preview-fixture.ts", import.meta.url),
+      ),
+    ],
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+  }),
+);
+afterAll(() => rmSync(root, { recursive: true, force: true }));
+function run(requests: Request[]): Response[] {
+  const child = spawnSync(node, [fixture], {
+    input: JSON.stringify(requests),
+    encoding: "utf8",
+    env: { ...process.env, PATH: "" },
+    maxBuffer: Infinity,
+  });
+  expect(child.status, child.stderr).toBe(0);
+  const responses = JSON.parse(child.stdout) as Response[];
+  for (const result of responses) {
+    expect(result.error).toBeUndefined();
+    expect(result.unchanged).toBe(true);
+  }
+  return responses;
+}
+interface Preview {
+  rootCause: { summary: string; evidenceRefs: string[] };
+  validation: {
+    summary: string;
+    method: string;
+    evidenceRefs: string[];
+    counterEvidence: string[];
+  };
+  attackPath: {
+    [key: string]: unknown;
+    reachability?: string;
+    preconditions?: string[];
+    evidenceRefs?: string[];
+  };
+  writeup: { reportPath: string };
+  codeEvidence: { id: string; code: string; role?: string }[];
+  code_evidence?: unknown;
+  preventiveControls: string[];
+  remediationTests: string[];
+}
+function details(value: unknown): Preview {
+  return JSON.parse(
+    run([{ source: JSON.stringify(value) }])[0]!.result!,
+  ) as Preview;
 }
 
-describe("bundled finding previews", () => {
-  test("normalizes attack-path assessments without changing stored finding details", () => {
-    const original = {
-      scalar: {
-        attackPath: {
-          impact: "Native memory corruption is possible.",
-          likelihood: "medium",
-        },
-      },
-      structured: {
-        attackPath: {
-          impact: { level: "low", rationale: "Synthetic assessment." },
-          likelihood: null,
-        },
-      },
-      absentAssessments: {
-        attackPath: { narrative: "Synthetic attack path." },
-      },
-      absentAttackPath: {
-        rootCause: { summary: "Synthetic root cause." },
-      },
-      bothEvidenceAliases: {
-        codeEvidence: [{ id: "canonical", code: "canonical_source()" }],
-        code_evidence: [{ id: "legacy", code: "legacy_source()" }],
-        rootCause: { summary: "Synthetic root cause." },
-      },
-      bothRootCauseAliases: {
-        rootCause: { code: "SELECT * FROM users" },
-        root_cause: {
-          code: "os.system(user_input)",
-          evidence_refs: ["legacy-source"],
-          language: "python",
-          summary: "The destination is not contained.",
-        },
-      },
-      invalidLegacyEvidenceFields: {
-        code_evidence: [
-          {
-            id: "legacy-source",
-            code: "dangerous_call()",
-            startLine: 0,
-            endLine: "12",
-            label: 7,
-            role: { kind: "sink" },
-          },
-        ],
-      },
-      malformedCanonicalRootCause: {
-        rootCause: { summary: 42 },
-        root_cause: {
-          summary: "The valid legacy root cause.",
-          evidence_refs: ["legacy-root"],
-        },
-        code_evidence: [{ id: "legacy-root", code: "legacy_root()" }],
-      },
-    };
-    expect(projectFindingDetails(original)).toEqual({
-      projected: {
-        scalar: {
-          attackPath: {
-            impact: { rationale: "Native memory corruption is possible." },
-            likelihood: { level: "medium" },
-          },
-        },
-        structured: original.structured,
-        absentAssessments: original.absentAssessments,
-        absentAttackPath: original.absentAttackPath,
-        bothEvidenceAliases: {
-          codeEvidence: [
-            { id: "canonical", code: "canonical_source()" },
-            { id: "legacy", code: "legacy_source()" },
-          ],
-          rootCause: { summary: "Synthetic root cause." },
-        },
-        bothRootCauseAliases: {
-          rootCause: {
-            code: "SELECT * FROM users",
-            evidenceRefs: ["legacy-source"],
-            summary: "The destination is not contained.",
-          },
-        },
-        invalidLegacyEvidenceFields: {
-          code_evidence: [{ id: "legacy-source", code: "dangerous_call()" }],
-        },
-        malformedCanonicalRootCause: {
-          rootCause: {
-            summary: "The valid legacy root cause.",
-            evidenceRefs: ["legacy-root"],
-          },
-          code_evidence: [{ id: "legacy-root", code: "legacy_root()" }],
-        },
-      },
-      original,
-    });
+test("reserves diagnostics and evidence when finding fields exceed presentation budgets", () => {
+  const bounded = details({
+    attackPath: {
+      blindspots: ["x".repeat(20_000)],
+      summary: "Upload reaches a write. " + "x".repeat(20_000),
+      reachability: "Authenticated uploaders",
+      preconditions: ["Extraction is enabled"],
+      evidenceRefs: ["evidence-0"],
+    },
+    codeEvidence: Array.from({ length: 10 }, (_, index) => ({
+      id: `evidence-${index}`,
+      label: "Long source excerpt",
+      path: "src/archive.py",
+      startLine: 40,
+      role: index === 0 ? "user_input" : "propagation",
+      code: "\\\\\n😀".repeat(5_000),
+      explanation: "Write before check",
+    })),
+    rootCause: {
+      code: "x".repeat(20_000),
+      summary: "Check follows write. " + "x".repeat(20_000),
+      evidenceRefs: ["evidence-0"],
+    },
+    validation: {
+      evidence: ["x".repeat(20_000)],
+      summary: "Reproduced. " + "x".repeat(20_000),
+      method: "focused test",
+      evidenceRefs: ["evidence-0"],
+      futureMetadata: "x".repeat(20_000),
+      counterEvidence: ["Mitigations unverified"],
+    },
+    writeup: {
+      reportPath: "findings/example/report.md",
+      untrustedExtra: "x".repeat(20_000),
+    },
+    evidenceExcerpt: "x".repeat(20_000),
   });
-
-  test("preserves nested attack-path string arrays without relaxing section depth", () => {
-    const original = {
-      supported: {
-        attackPath: {
-          dataflow: { evidenceRefs: ["source-to-sink"] },
-          reachability: { preconditions: ["The handler is reachable."] },
-        },
-      },
-      tooDeep: {
-        attackPath: {
-          dataflow: {
-            nested: { evidenceRefs: ["must remain depth-limited"] },
-          },
-        },
-      },
-    };
-
-    expect(projectFindingDetails(original)).toEqual({
-      projected: {
-        supported: original.supported,
-        tooDeep: {
-          attackPath: {
-            dataflow: {
-              nested: { evidenceRefs: [null] },
-            },
-          },
-        },
-      },
-      original,
-    });
-  });
-
-  test("preserves counter-evidence under the validation preview budget", () => {
-    const original = {
-      finding: {
-        validation: {
-          evidence: ["x".repeat(20_000)],
-          summary: `The traversal was reproduced. ${"x".repeat(20_000)}`,
-          method: "focused extraction test",
-          evidenceRefs: ["evidence-0"],
-          futureMetadata: "x".repeat(20_000),
-          counterEvidence: ["Known mitigations remain unverified."],
-        },
-      },
-    };
-
-    const result = projectFindingDetails(original);
-
-    expect(result.projected.finding.validation.counterEvidence).toEqual([
-      "Known mitigations remain unverified.",
-    ]);
-    expect(result.original).toEqual(original);
-  });
-
-  test("deduplicates evidence before applying the preview limit", () => {
-    const original = {
-      finding: {
-        codeEvidence: [
-          { id: "shared", code: "canonical_shared()" },
-          { id: "shared", code: "duplicate_shared()" },
-          { id: "canonical-two", code: "canonical_two()" },
-          { id: "canonical-three", code: "canonical_three()" },
-        ],
-        code_evidence: [
-          { id: "shared", code: "legacy_shared()" },
-          { id: "legacy-four", code: "legacy_four()" },
-          { id: "legacy-five", code: "legacy_five()" },
-        ],
-      },
-    };
-
-    const result = projectFindingDetails(original);
-
-    expect(
-      result.projected.finding.codeEvidence.map(
-        (item: { id: string }) => item.id,
-      ),
-    ).toEqual(["shared", "canonical-two", "canonical-three", "legacy-four"]);
-    expect(result.projected.finding.codeEvidence[0].code).toBe(
-      "canonical_shared()",
+  expect(bounded.rootCause.summary.startsWith("Check follows write.")).toBe(
+    true,
+  );
+  expect(bounded.rootCause.evidenceRefs).toEqual(["evidence-0"]);
+  expect(bounded.validation.summary.startsWith("Reproduced.")).toBe(true);
+  expect(bounded.validation.method).toBe("focused test");
+  expect(bounded.validation.evidenceRefs).toEqual(["evidence-0"]);
+  expect(bounded.validation.counterEvidence).toEqual([
+    "Mitigations unverified",
+  ]);
+  expect(bounded.attackPath.reachability).toBe("Authenticated uploaders");
+  expect(bounded.attackPath.preconditions).toEqual(["Extraction is enabled"]);
+  expect(bounded.attackPath.evidenceRefs).toEqual(["evidence-0"]);
+  expect(bounded.writeup).toEqual({ reportPath: "findings/example/report.md" });
+  expect(bounded.codeEvidence).toHaveLength(4);
+  expect(bounded.codeEvidence[0]!.role).toBe("user_input");
+  const ascii = (value: unknown) =>
+    JSON.stringify(value).replace(
+      /[\u007f-\uffff]/g,
+      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
     );
-    expect(result.original).toEqual(original);
-  });
+  for (const evidence of bounded.codeEvidence)
+    expect(ascii(evidence.code).length).toBeLessThanOrEqual(1_500);
+  expect(ascii(bounded).length).toBeLessThanOrEqual(16_000);
+});
 
-  test("filters malformed evidence before applying the preview limit", () => {
-    const original = {
-      finding: {
-        code_evidence: [
-          null,
-          "junk",
-          {},
-          { id: "empty", code: "" },
-          { id: "valid", code: "valid_source()" },
-        ],
+test("merges legacy root-cause fields while keeping matching code language and evidence order", () => {
+  const sources = [
+    {
+      rootCause: { code: "first()" },
+      root_cause: {
+        code: "second()",
+        evidence_refs: ["legacy"],
+        language: "python",
+        summary: "A summary",
       },
-    };
+    },
+    {
+      rootCause: { summary: 42 },
+      root_cause: { summary: "Legacy summary", evidence_refs: ["legacy"] },
+    },
+    {
+      rootCause: "Canonical text",
+      root_cause: {
+        evidenceRefs: ["b", "a", "b"],
+        code: "first()",
+        language: "python",
+      },
+    },
+    {
+      rootCause: { summary: "\u001c\u0085" },
+      root_cause: { summary: "Nonempty", language: "typescript" },
+    },
+  ];
+  const responses = run(
+    sources.map((value) => ({ action: "root", source: JSON.stringify(value) })),
+  );
+  expect(responses.map((row) => JSON.parse(row.result!))).toEqual([
+    [
+      "rootCause",
+      { code: "first()", summary: "A summary", evidenceRefs: ["legacy"] },
+    ],
+    ["rootCause", { summary: "Legacy summary", evidenceRefs: ["legacy"] }],
+    [
+      "rootCause",
+      {
+        summary: "Canonical text",
+        code: "first()",
+        evidenceRefs: ["b", "a"],
+        language: "python",
+      },
+    ],
+    ["rootCause", { summary: "Nonempty", language: "typescript" }],
+  ]);
+});
 
-    const result = projectFindingDetails(original);
-
-    expect(result.projected.finding.code_evidence).toEqual([
-      { id: "valid", code: "valid_source()" },
-    ]);
-    expect(result.original).toEqual(original);
+test("filters malformed evidence before deduplication and limiting, preserving input objects", () => {
+  const bounded = details({
+    codeEvidence: [
+      null,
+      "junk",
+      {},
+      { id: "empty", code: "" },
+      {
+        id: "shared",
+        code: "canonical()",
+        startLine: 0,
+        endLine: "12",
+        label: 7,
+        role: {},
+      },
+      { id: "shared", code: "duplicate()" },
+      { id: "two", code: "two()" },
+      { id: "three", code: "three()" },
+    ],
+    code_evidence: [
+      { id: "shared", code: "legacy()" },
+      { id: "four", code: "four()" },
+      { id: "five", code: "five()" },
+    ],
+    preventiveControls: ["Validate paths"],
+    remediationTests: ["Reject invalid entries"],
+    rootCause: { summary: "Summary" },
   });
+  expect(bounded.codeEvidence.map((item: { id: string }) => item.id)).toEqual([
+    "shared",
+    "two",
+    "three",
+    "four",
+  ]);
+  expect(bounded.codeEvidence[0]).toEqual({
+    id: "shared",
+    code: "canonical()",
+  });
+  expect(bounded.code_evidence).toBeUndefined();
+  expect(bounded.preventiveControls).toEqual(["Validate paths"]);
+  expect(bounded.remediationTests).toEqual(["Reject invalid entries"]);
+  const numeric = JSON.parse(
+    run([
+      {
+        source:
+          '{"codeEvidence":[{"id":"x","code":"x()","startLine":1.0,"endLine":null}]}',
+      },
+    ])[0]!.result!,
+  );
+  expect(numeric.codeEvidence[0]).toEqual({
+    id: "x",
+    code: "x()",
+    endLine: null,
+  });
+});
+
+test("normalizes scalar assessments with Python's case matching and preserves structured values", () => {
+  for (const level of ["medium", "HIGH", "hıgh", "hİgh", "unKnown"])
+    expect(
+      details({ attackPath: { impact: "A description", likelihood: level } })
+        .attackPath,
+    ).toEqual({
+      impact: { rationale: "A description" },
+      likelihood: { level },
+    });
+  expect(
+    details({
+      attackPath: {
+        impact: { level: "high", why: "Writable destination" },
+        likelihood: null,
+      },
+    }).attackPath,
+  ).toEqual({
+    impact: { level: "high", why: "Writable destination" },
+    likelihood: null,
+  });
+  expect(
+    details({ attackPath: { summary: "Only summary" } }).attackPath,
+  ).toEqual({ summary: "Only summary" });
+});
+
+test("counts ASCII JSON bytes and cuts strings at Python code-point boundaries", () => {
+  const responses = run(
+    [0, 1, 2, 3, 7, 8, 14, 15, 16].map((maximum) => ({
+      action: "text",
+      source: JSON.stringify("é😀\n"),
+      maximum,
+    })),
+  );
+  expect(responses.map((row) => JSON.parse(row.result!))).toEqual([
+    ["", 2],
+    ["", 2],
+    ["", 2],
+    ["", 2],
+    ["", 2],
+    ["é", 8],
+    ["é", 8],
+    ["é", 8],
+    ["é", 8],
+  ]);
+  const lone = run([{ action: "text", source: '"\\ud800x"', maximum: 8 }])[0]!;
+  expect(JSON.parse(lone.result!)).toEqual(["\ud800", 8]);
+});
+
+test("retains ordered keys, scalar types, truncated-key collisions, and remaining budgets", () => {
+  const responses = run([
+    { action: "value", source: '{"2":"a","1":"b","0":"c"}', maximum: 18 },
+    { action: "value", source: "[1,1.0,-0.0,true,null]", maximum: 100 },
+    { action: "value", source: "[[[1]]]", maximum: 100, maxDepth: 2 },
+    { action: "value", source: '"nonempty"', maximum: 1 },
+    {
+      action: "value",
+      source: JSON.stringify({
+        ["x".repeat(600) + "a"]: 1,
+        ["x".repeat(600) + "b"]: 2,
+      }),
+      maximum: 2_000,
+    },
+  ]);
+  expect(responses[0]!.result).toBe('{"2": "a", "1": "b"}');
+  expect(responses[0]!.remaining).toBe(1);
+  expect(responses[1]!.result).toBe("[1, 1.0, -0.0, true, null]");
+  expect(JSON.parse(responses[2]!.result!)).toEqual([[null]]);
+  expect(responses[3]!.remaining).toBe(0);
+  expect(JSON.parse(responses[3]!.result!)).toBe("");
+  expect(Object.entries(JSON.parse(responses[4]!.result!))).toEqual([
+    ["x".repeat(510), 2],
+  ]);
+});
+
+test("reserves both guidance lists when diagnostics and guidance are large", () => {
+  const bounded = details({
+    rootCause: { summary: "r".repeat(10_000) },
+    validation: { summary: "v".repeat(10_000) },
+    attackPath: { narrative: "a".repeat(10_000) },
+    evidenceExcerpt: "e".repeat(20_000),
+    remediationTests: ["😀".repeat(20_000)],
+    preventiveControls: ["é".repeat(20_000)],
+  });
+  expect(bounded.rootCause).toBeDefined();
+  expect(bounded.validation).toBeDefined();
+  expect(bounded.attackPath).toBeDefined();
+  expect(bounded.remediationTests[0]!.length).toBeGreaterThan(0);
+  expect(bounded.preventiveControls[0]!.length).toBeGreaterThan(0);
 });
