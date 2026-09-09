@@ -142,7 +142,12 @@ async function savedScan(
       reviewedFiles: ["reviewed.ts"],
     },
   };
-  async function checkpoint(directory: string, id: string, value: object) {
+  async function checkpoint(
+    directory: string,
+    id: string,
+    value: object,
+    customValidationComplete = false,
+  ) {
     const contents = JSON.stringify(value) + "\n";
     const path = join(
       directory,
@@ -151,12 +156,13 @@ async function savedScan(
     );
     await mkdir(join(directory, "checkpoints"), { recursive: true });
     await writeFile(path, contents);
-    await command([
+    return command([
       "record-scan-checkpoint",
       "--scan-id",
       id,
       "--checkpoint-path",
       path,
+      ...(customValidationComplete ? ["--custom-validation-complete"] : []),
     ]);
   }
   await checkpoint(scanDir, scanId, snapshot);
@@ -827,40 +833,131 @@ test.each([true, false])(
   },
 );
 
-async function saveCompleteCheckpoint(f: Fixture, missingReceipt = false) {
+async function saveCompleteCheckpoint(
+  f: Fixture,
+  missingReceipt = false,
+  customValidationComplete = f.recipe.validationMode === "custom",
+) {
   const current = (
     await f.command(["get-cli-scan-resume", "--scan-id", f.scanId])
   )["checkpoint"] as {
     sources: Array<{ findings: object[]; coverage: object }>;
   };
-  await f.checkpoint(f.scanDir, f.scanId, {
-    scanId: f.scanId,
-    complete: true,
-    ...(f.recipe.validationMode === "custom"
-      ? { scope: { validationMode: "custom" } }
-      : {}),
-    findings: current.sources[0]!.findings,
-    coverage: {
-      ...current.sources[0]!.coverage,
-      completeness: "complete",
-      deferred: [],
-      reviewedFiles: ["pending.ts", "reviewed.ts"],
-      ...(missingReceipt
-        ? {
-            surfaces: [
-              {
-                id: "missing-receipt",
-                candidateId: "candidate-1",
-                label: "Interrupted receipt write",
-                disposition: "rejected",
-                receiptRefs: ["artifacts/review/never-written.json"],
-              },
-            ],
-          }
+  await f.checkpoint(
+    f.scanDir,
+    f.scanId,
+    {
+      scanId: f.scanId,
+      complete: true,
+      ...(f.recipe.validationMode === "custom"
+        ? { scope: { validationMode: "custom" } }
         : {}),
+      findings: current.sources[0]!.findings,
+      coverage: {
+        ...current.sources[0]!.coverage,
+        completeness: "complete",
+        deferred: [],
+        reviewedFiles: ["pending.ts", "reviewed.ts"],
+        ...(missingReceipt
+          ? {
+              surfaces: [
+                {
+                  id: "missing-receipt",
+                  candidateId: "candidate-1",
+                  label: "Interrupted receipt write",
+                  disposition: "rejected",
+                  receiptRefs: ["artifacts/review/never-written.json"],
+                },
+              ],
+            }
+          : {}),
+      },
     },
-  });
+    customValidationComplete,
+  );
 }
+
+test.each(["missing", "incomplete"])(
+  "custom discovery cannot authorize recovery with %s validation results",
+  async (results) => {
+    const f = await savedScan({ running: true, custom: true });
+    await saveCompleteCheckpoint(f, false, false);
+    if (results === "incomplete") {
+      await mkdir(join(f.scanDir, "artifacts/custom-validation"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(f.scanDir, "artifacts/custom-validation/results.json"),
+        JSON.stringify({
+          scanId: f.scanId,
+          status: "incomplete",
+          validations: [],
+        }),
+      );
+    }
+    await f.command([
+      "fail-scan",
+      "--scan-id",
+      f.scanId,
+      "--message",
+      "Custom discovery did not return a pending-validation draft",
+      "--cost-json",
+      JSON.stringify(previousCost),
+    ]);
+    let calls = 0;
+    const outcome = await resume(f, () => {
+      calls++;
+      throw new Error("Unvalidated custom findings must not resume");
+    });
+    expect(outcome.code, outcome.stderr).toBe(2);
+    expect(outcome.stderr).toContain("--validation-prompt-file");
+    expect(calls).toBe(0);
+  },
+);
+
+test.each([false, true])(
+  "later model checkpoint cannot reuse custom-validation authority (same bytes: %s)",
+  async (sameBytes) => {
+    const f = await savedScan({ running: true, custom: true });
+    await saveCompleteCheckpoint(f);
+    const accepted = (
+      await f.command(["get-cli-scan-resume", "--scan-id", f.scanId])
+    )["checkpoint"] as {
+      sources: Array<{
+        checkpointPath: string;
+        acceptanceId: string;
+        customValidationComplete: boolean;
+      }>;
+    };
+    expect(accepted.sources[0]!.customValidationComplete).toBe(true);
+    const snapshot = JSON.parse(
+      await readFile(
+        join(f.scanDir, accepted.sources[0]!.checkpointPath),
+        "utf8",
+      ),
+    );
+    expect(snapshot).not.toHaveProperty("customValidationComplete");
+    if (!sameBytes) snapshot.findings[0].title = "A later unvalidated finding";
+    await f.checkpoint(f.scanDir, f.scanId, snapshot);
+    const latest = (
+      await f.command(["get-cli-scan-resume", "--scan-id", f.scanId])
+    )["checkpoint"] as typeof accepted;
+    expect(latest.sources[0]!.acceptanceId).not.toBe(
+      accepted.sources[0]!.acceptanceId,
+    );
+    expect(latest.sources[0]!.customValidationComplete).toBe(false);
+    let calls = 0;
+    const outcome = await resume(f, () => {
+      calls++;
+      throw new Error(
+        "A newer unvalidated checkpoint needs the original instructions",
+      );
+    });
+    expect(outcome.code, outcome.stderr).toBe(2);
+    expect(outcome.stderr).toContain("--validation-prompt-file");
+    expect(calls).toBe(0);
+  },
+);
 
 test.each(["available", "exhausted", "unknown"] as const)(
   "receipt recovery continues in one command only when the saved budget permits (%s)",
@@ -995,50 +1092,64 @@ test("a hard-killed checkpoint-only continuation retains its inherited cost", as
   ).toMatchObject({ cost: previousCost });
 });
 
-test("a complete Standard checkpoint retries final export without another model call or cost", async () => {
-  const f = await savedScan({ running: true, maxCostUsd: 10 });
-  await saveCompleteCheckpoint(f);
-  await f.command([
-    "fail-scan",
-    "--scan-id",
-    f.scanId,
-    "--message",
-    "Synthetic export failure after completed analysis",
-    "--cost-json",
-    JSON.stringify(previousCost),
-  ]);
-  // Native logs are unnecessary when analysis and spend are already durable.
-  await rm(join(f.codexHome, "sessions"), { recursive: true });
-  await writeFile(
-    join(f.codexHome, "sessions"),
-    "Unavailable native history\n",
-  );
-  const parent = await readFile(join(f.scanDir, "scan-manifest.json"), "utf8");
-  let modelCalls = 0;
-  const noModel = () => {
-    modelCalls++;
-    throw new Error("No Codex client is needed to finish saved results");
-  };
-  const failedExport = await resume(f, noModel, { failExport: true });
-  expect(failedExport.code).not.toBe(0);
-  expect(failedExport.stderr).toContain("Synthetic local export failure");
-  const scans = (await f.command(["list-scans", "--repository", f.repository]))[
-    "scans"
-  ] as Array<{ scanId: string; parentScanId: string }>;
-  const failedChild = scans.find((scan) => scan.parentScanId === f.scanId)!;
-  const outcome = await resume({ ...f, scanId: failedChild.scanId }, noModel);
-  expect(outcome.code, outcome.stderr).toBe(0);
-  expect(modelCalls).toBe(0);
-  expect(outcome.stderr).toContain("without another model call");
-  expect(await readFile(join(f.scanDir, "scan-manifest.json"), "utf8")).toBe(
-    parent,
-  );
-  const result = JSON.parse(outcome.stdout);
-  expect(result.cost).toEqual(previousCost);
-  expect(result.threadId).toBe(f.threadId);
-  expect(result.coverage.completeness).toBe("complete");
-  expect(result.findings.findings).toHaveLength(1);
-});
+test.each([false, true])(
+  "a complete Standard checkpoint retries final export without another model call or cost (custom: %s)",
+  async (custom) => {
+    const f = await savedScan({ running: true, maxCostUsd: 10, custom });
+    await saveCompleteCheckpoint(f);
+    await f.command([
+      "fail-scan",
+      "--scan-id",
+      f.scanId,
+      "--message",
+      "Synthetic export failure after completed analysis",
+      "--cost-json",
+      JSON.stringify(previousCost),
+    ]);
+    // Native logs are unnecessary when analysis and spend are already durable.
+    await rm(join(f.codexHome, "sessions"), { recursive: true });
+    await writeFile(
+      join(f.codexHome, "sessions"),
+      "Unavailable native history\n",
+    );
+    const parent = await readFile(
+      join(f.scanDir, "scan-manifest.json"),
+      "utf8",
+    );
+    let modelCalls = 0;
+    const noModel = () => {
+      modelCalls++;
+      throw new Error("No Codex client is needed to finish saved results");
+    };
+    const failedExport = await resume(f, noModel, { failExport: true });
+    expect(failedExport.code).not.toBe(0);
+    expect(failedExport.stderr).toContain("Synthetic local export failure");
+    const scans = (
+      await f.command(["list-scans", "--repository", f.repository])
+    )["scans"] as Array<{ scanId: string; parentScanId: string }>;
+    const failedChild = scans.find((scan) => scan.parentScanId === f.scanId)!;
+    const childContext = await f.command([
+      "get-cli-scan-resume",
+      "--scan-id",
+      failedChild.scanId,
+    ]);
+    expect(childContext["checkpoint"]).toMatchObject({
+      sources: [expect.objectContaining({ customValidationComplete: custom })],
+    });
+    const outcome = await resume({ ...f, scanId: failedChild.scanId }, noModel);
+    expect(outcome.code, outcome.stderr).toBe(0);
+    expect(modelCalls).toBe(0);
+    expect(outcome.stderr).toContain("without another model call");
+    expect(await readFile(join(f.scanDir, "scan-manifest.json"), "utf8")).toBe(
+      parent,
+    );
+    const result = JSON.parse(outcome.stdout);
+    expect(result.cost).toEqual(previousCost);
+    expect(result.threadId).toBe(f.threadId);
+    expect(result.coverage.completeness).toBe("complete");
+    expect(result.findings.findings).toHaveLength(1);
+  },
+);
 
 test.each(["prepare-scan-completion", "complete-scan"])(
   "checkpoint-only resume reports source changes before %s",

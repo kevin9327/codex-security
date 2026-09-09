@@ -2312,6 +2312,7 @@ export class CodexSecurity {
                         scanId,
                         "--checkpoint-path",
                         path,
+                        ...(validated ? ["--custom-validation-complete"] : []),
                       ]);
                       customValidationComplete = validated;
                     },

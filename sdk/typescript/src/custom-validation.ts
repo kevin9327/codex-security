@@ -517,11 +517,8 @@ export function hasCompletedCustomValidation(checkpoint: unknown): boolean {
     sources.length > 0 &&
     sources.every((source: unknown) => {
       if (typeof source !== "object" || source === null) return false;
-      const scope = (source as Record<string, unknown>)["scope"];
       return (
-        typeof scope === "object" &&
-        scope !== null &&
-        (scope as Record<string, unknown>)["validationMode"] === "custom"
+        (source as Record<string, unknown>)["customValidationComplete"] === true
       );
     })
   );

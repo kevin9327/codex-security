@@ -3557,11 +3557,9 @@ def main() -> None:
         elif args.command == "write-scan-draft":
             result = write_scan_draft(connection, args)
         elif args.command == "record-scan-checkpoint":
-            scan = require_scan(connection, args.scan_id)
-            with scan_completion_lock(scan["id"]):
-                result = scan_checkpoints.record_checkpoint(
-                    connection, scan, Path(args.checkpoint_path), now()
-                )
+            result = scan_checkpoints.record_scan_checkpoint(
+                _WORKBENCH_DB_CONTEXT, connection, args
+            )
         elif args.command == "continue-scan-checkpoint":
             result = scan_checkpoints.continue_checkpoint(_WORKBENCH_DB_CONTEXT, connection, args)
         elif args.command == "mark-handoff-delivered":

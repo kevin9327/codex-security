@@ -277,6 +277,7 @@ def parse_args(description: str) -> argparse.Namespace:
     record_checkpoint = subparsers.add_parser("record-scan-checkpoint")
     record_checkpoint.add_argument("--scan-id", required=True)
     record_checkpoint.add_argument("--checkpoint-path", required=True)
+    record_checkpoint.add_argument("--custom-validation-complete", action="store_true")
 
     continue_checkpoint = subparsers.add_parser("continue-scan-checkpoint")
     continue_checkpoint.add_argument("--scan-id", required=True)

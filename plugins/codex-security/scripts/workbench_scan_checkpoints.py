@@ -107,6 +107,18 @@ def ensure_review_files(connection: sqlite3.Connection, scan: sqlite3.Row) -> No
         freeze_review_files(connection, scan["id"], inventory)
 
 
+def record_scan_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> dict[str, Any]:
+    scan = db.require_scan(connection, args.scan_id)
+    with db.scan_completion_lock(scan["id"]):
+        return record_checkpoint(
+            connection,
+            scan,
+            Path(args.checkpoint_path),
+            db.now(),
+            custom_validation_complete=args.custom_validation_complete,
+        )
+
+
 def record_checkpoint(
     connection: sqlite3.Connection,
     scan: sqlite3.Row,
@@ -116,6 +128,7 @@ def record_checkpoint(
     commit: bool = True,
     publish_head: bool = True,
     acceptance_id: str | None = None,
+    custom_validation_complete: bool = False,
 ) -> dict[str, Any]:
     """Accept a bound artifact, or replay the exact acceptance named by its durable head."""
     root = Path(scan["scan_dir"])
@@ -124,6 +137,13 @@ def record_checkpoint(
     except ValueError as exc:
         raise SystemExit("A scan checkpoint must be inside its registered scan directory.") from exc
     source = relative.parent.parent.as_posix()
+    if custom_validation_complete and (
+        source != "."
+        or scan["mode"] not in {"standard", "diff"}
+        or not scan["recipe_json"]
+        or json.loads(scan["recipe_json"]).get("validationMode") != "custom"
+    ):
+        raise SystemExit("Custom validation completion requires its original root scan recipe.")
     if relative.parent.name != "checkpoints":
         raise SystemExit("A scan checkpoint must belong to a checkpoint directory.")
     if source != ".":
@@ -195,6 +215,12 @@ def record_checkpoint(
     if existing:
         if existing["content_sha256"] != digest:
             raise SystemExit("The checkpoint acceptance refers to different saved content.")
+        if custom_validation_complete:
+            with connection if commit else nullcontext():
+                connection.execute(
+                    "UPDATE scans SET custom_validation_checkpoint_acceptance_id = ? WHERE id = ?",
+                    (acceptance_id, scan["id"]),
+                )
         return result
     # Content can recur after a different decision. The head identifies this acceptance,
     # so a crash before its SQLite commit can be replayed without confusing it with an
@@ -222,6 +248,11 @@ def record_checkpoint(
                 acceptance_id,
             ),
         )
+        if custom_validation_complete:
+            connection.execute(
+                "UPDATE scans SET custom_validation_checkpoint_acceptance_id = ? WHERE id = ?",
+                (acceptance_id, scan["id"]),
+            )
     return result
 
 
@@ -244,6 +275,9 @@ def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, 
     ).fetchall()
     if not rows:
         return None
+    validated = connection.execute(
+        "SELECT custom_validation_checkpoint_acceptance_id FROM scans WHERE id = ?", (scan_id,)
+    ).fetchone()["custom_validation_checkpoint_acceptance_id"]
     reviewed = connection.execute(
         "SELECT relative_path, reviewed_at FROM scan_review_files WHERE scan_id = ? "
         "ORDER BY relative_path",
@@ -257,6 +291,8 @@ def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, 
                 "source": row["source_path"],
                 "checkpointPath": row["checkpoint_path"],
                 "acceptanceId": row["acceptance_id"],
+                "customValidationComplete": row["source_path"] == "."
+                and row["acceptance_id"] == validated,
                 "digest": row["content_sha256"],
                 "savedAt": row["recorded_at"],
                 "complete": snapshot.get("complete", True),
@@ -1122,7 +1158,15 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         path = root / "checkpoints" / f"{hashlib.sha256(contents).hexdigest()}.json"
         write_scan_local_bytes(root, path.relative_to(root).as_posix(), contents)
         receipt = record_checkpoint(
-            connection, child, path, db.now(), commit=False, publish_head=False
+            connection,
+            child,
+            path,
+            db.now(),
+            commit=False,
+            publish_head=False,
+            custom_validation_complete=all(
+                source["customValidationComplete"] for source in checkpoint["sources"]
+            ),
         )
         connection.execute(
             "UPDATE scans SET continuation_cost_json = ?, continuation_checkpoint_path = ?, "

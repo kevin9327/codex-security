@@ -875,6 +875,7 @@ MIGRATIONS = (
         ALTER TABLE scans ADD COLUMN continuation_checkpoint_path TEXT;
         ALTER TABLE scans ADD COLUMN continuation_checkpoint_acceptance_id TEXT;
         ALTER TABLE scans ADD COLUMN continuation_sources_json TEXT;
+        ALTER TABLE scans ADD COLUMN custom_validation_checkpoint_acceptance_id TEXT;
         ALTER TABLE scans ADD COLUMN inference_started INTEGER CHECK (inference_started IN (0, 1));
         CREATE TABLE scan_checkpoints (
             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
