@@ -1,9 +1,10 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { buildSync } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root";
@@ -35,40 +36,37 @@ beforeAll(() =>
   }),
 );
 afterAll(() => rmSync(directory, { recursive: true, force: true }));
-function request(input: Request, cwd?: string): unknown[] {
-  const child = spawnSync(node, [fixture], {
-    input: JSON.stringify(input),
+async function request(input: Request, cwd?: string): Promise<unknown[]> {
+  const child = promisify(execFile)(node, [fixture], {
     encoding: "utf8",
     env: process.env,
     cwd,
     maxBuffer: Infinity,
     timeout: 15000,
   });
-  expect(
-    child.status,
-    JSON.stringify({
-      error: child.error?.message,
-      signal: child.signal,
-      stderr: child.stderr,
-    }),
-  ).toBe(0);
-  expect(child.stderr).toBe("");
-  return JSON.parse(child.stdout) as unknown[];
+  child.child.stdin!.end(JSON.stringify(input));
+  const { stdout, stderr } = await child;
+  expect(stderr).toBe("");
+  return JSON.parse(stdout) as unknown[];
 }
-function run(actions: (root: string, parent: string) => Action[]) {
+async function run(actions: (root: string, parent: string) => Action[]) {
   const parent = join(directory, String(next++)),
     root = join(parent, "scan");
   return {
     root,
     parent,
-    results: request({ mode: "files", root, actions: actions(root, parent) }),
+    results: await request({
+      mode: "files",
+      root,
+      actions: actions(root, parent),
+    }),
   };
 }
 const digest = (value: Buffer | string) =>
   createHash("sha256").update(value).digest("hex");
 const error = (value: unknown) => (value as { error: string }).error;
 
-test("preserves repository and portable path rules, including Unicode and Windows device aliases", () => {
+test("preserves repository and portable path rules, including Unicode and Windows device aliases", async () => {
   const values = [
     "",
     " ",
@@ -91,7 +89,7 @@ test("preserves repository and portable path rules, including Unicode and Window
     "a/normal😀",
     "a/\ud800",
   ];
-  const results = request({
+  const results = await request({
     mode: "paths",
     cases: values.map((value) => ({ value, portable: true })),
   });
@@ -103,7 +101,7 @@ test("preserves repository and portable path rules, including Unicode and Window
   ])
     expect(error(results[index])).toContain("expected a safe");
   expect(
-    request({
+    await request({
       mode: "paths",
       cases: [
         { value: ".", allowDot: true },
@@ -114,9 +112,9 @@ test("preserves repository and portable path rules, including Unicode and Window
   ).toEqual([".", "a/CON", "\ufeff"]);
 });
 
-test("writes, reads, hashes and replaces large binary files, retaining identity on identical restore", () => {
+test("writes, reads, hashes and replaces large binary files, retaining identity on identical restore", async () => {
   const size = 1024 * 1024 + 13;
-  const { results } = run((root) => [
+  const { results } = await run((root) => [
     { operation: "identity" },
     { operation: "write", relative: "exports/data", size },
     { operation: "metadata", path: join(root, "exports/data") },
@@ -141,8 +139,8 @@ test("writes, reads, hashes and replaces large binary files, retaining identity 
     expect(results[2]).toMatchObject({ mode: 0o600 });
 });
 
-test("rejects noncanonical roots and unsafe output paths while preserving external names", () => {
-  const { results } = run((root, parent) => [
+test("rejects noncanonical roots and unsafe output paths while preserving external names", async () => {
+  const { results } = await run((root, parent) => [
     {
       operation: "link",
       path: join(parent, "alias"),
@@ -179,9 +177,9 @@ test("rejects noncanonical roots and unsafe output paths while preserving extern
 
 test.skipIf(process.platform === "win32")(
   "held parent descriptors keep reads, writes and cleanup on the originally opened directory",
-  () => {
+  async () => {
     for (const operation of ["read", "write", "remove"] as const) {
-      const { root, parent, results } = run((root, parent) => [
+      const { root, parent, results } = await run((root, parent) => [
         { operation: "mkdir", path: join(root, "nested") },
         {
           operation: "file",
@@ -216,21 +214,25 @@ test.skipIf(process.platform === "win32")(
 
 test.skipIf(process.platform === "win32")(
   "detects root and existing-file replacement at open, and cleans a failed temporary write",
-  () => {
-    const rootRace = run(() => [
-      { operation: "race", value: "root" },
-      { operation: "write", relative: "data", value: "blocked" },
-    ]).results;
+  async () => {
+    const rootRace = (
+      await run(() => [
+        { operation: "race", value: "root" },
+        { operation: "write", relative: "data", value: "blocked" },
+      ])
+    ).results;
     expect(error(rootRace[1])).toContain("changed while it was being opened");
-    const leafRace = run((root) => [
-      { operation: "file", path: join(root, "data"), value: "original" },
-      { operation: "race", value: "leaf" },
-      { operation: "write", relative: "data", value: "blocked" },
-      { operation: "read", relative: "data" },
-    ]).results;
+    const leafRace = (
+      await run((root) => [
+        { operation: "file", path: join(root, "data"), value: "original" },
+        { operation: "race", value: "leaf" },
+        { operation: "write", relative: "data", value: "blocked" },
+        { operation: "read", relative: "data" },
+      ])
+    ).results;
     expect(error(leafRace[2])).toContain("changed while it was being opened");
     expect(leafRace[3]).toEqual({ length: 7, digest: digest("swapped") });
-    const flush = run((root) => [
+    const flush = await run((root) => [
       { operation: "write", relative: "data", value: "old" },
       { operation: "race", value: "flush" },
       { operation: "write", relative: "data", value: "new" },
@@ -245,8 +247,8 @@ test.skipIf(process.platform === "win32")(
 
 test.skipIf(process.platform === "win32")(
   "rejects FIFOs without blocking and symlink reads while cleanup removes a leaf link",
-  () => {
-    const { results } = run((root, parent) => [
+  async () => {
+    const { results } = await run((root, parent) => [
       { operation: "fifo", path: join(root, "pipe") },
       { operation: "read", relative: "pipe" },
       { operation: "remove", relative: "pipe" },
@@ -280,8 +282,8 @@ test.skipIf(process.platform === "win32")(
 
 test.skipIf(process.platform === "win32")(
   "retains a verified open file after its pathname is replaced, and allows POSIX external backslashes",
-  () => {
-    const { results } = run((root) => [
+  async () => {
+    const { results } = await run((root) => [
       { operation: "write", relative: "data", value: "original" },
       { operation: "open", relative: "data" },
       {

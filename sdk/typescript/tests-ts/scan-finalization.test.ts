@@ -25,8 +25,8 @@ const directory = realpathSync(
 const fixture = join(directory, "fixture.cjs"),
   node = Bun.which("node")!;
 const documents = ["scan-manifest.json", "findings.json", "coverage.json"];
-beforeAll(() => {
-  buildReportFixture(node, {
+beforeAll(async () => {
+  await buildReportFixture(node, {
     entryPoints: [
       fileURLToPath(
         new URL("./support/scan-finalization-fixture.ts", import.meta.url),

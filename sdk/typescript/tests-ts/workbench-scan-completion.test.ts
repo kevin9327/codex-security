@@ -42,8 +42,8 @@ const cost = stringifyJson(
   },
   { compact: true },
 );
-beforeAll(() => {
-  buildReportFixture(node, {
+beforeAll(async () => {
+  await buildReportFixture(node, {
     entryPoints: [
       fileURLToPath(
         new URL(
