@@ -277,7 +277,66 @@ def test_deep_continuation_rejects_a_changed_frozen_worker_result(tmp_path: Path
     assert (parent_dir / relative).is_file()
 
 
-@pytest.mark.parametrize("outcome", ["deadline", "reported", "rejected"])
+def test_checkpoint_rebind_preserves_nested_source_owners(workbench_api):
+    document = {
+        "scanId": "parent-scan",
+        "findings": [
+            {
+                "provenance": {
+                    "workerId": "claimed-worker",
+                    "sourceFindingIds": ["original-worker:0"],
+                    "sourceFindings": [
+                        {
+                            "id": "original-worker:0",
+                            "finding": {
+                                "provenance": {
+                                    "workerId": "original-worker",
+                                    "previousFindings": [
+                                        {"provenance": {"workerId": "earlier-worker"}}
+                                    ],
+                                }
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "coverage": {
+            "deferred": [
+                {
+                    "candidateId": "candidate-1",
+                    "provenance": {"workerId": "claimed-worker"},
+                }
+            ]
+        },
+    }
+    result = workbench_api["deep_scan"].rebind_checkpoint_result(
+        document,
+        "child-scan",
+        {
+            "registered-worker": "new-worker",
+            "original-worker": "new-original",
+            "earlier-worker": "new-earlier",
+        },
+        source_worker_id="registered-worker",
+    )
+    provenance = result["findings"][0]["provenance"]
+    assert provenance["workerId"] == "new-worker"
+    assert result["coverage"]["deferred"][0]["provenance"]["workerId"] == "new-worker"
+    original = provenance["sourceFindings"][0]
+    assert original["id"] == "new-original:0"
+    assert provenance["sourceFindingIds"] == [original["id"]]
+    assert original["finding"]["provenance"]["workerId"] == "new-original"
+    assert (
+        original["finding"]["provenance"]["previousFindings"][0]["provenance"]["workerId"]
+        == "new-earlier"
+    )
+    assert document["findings"][0]["provenance"]["workerId"] == "claimed-worker"
+
+
+@pytest.mark.parametrize(
+    "outcome", ["deadline", "reported", "rejected", "other_worker", "grandchild"]
+)
 def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
     tmp_path: Path, outcome: str
 ):
@@ -316,6 +375,28 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
     source = write_checkpoint(output / "checkpoints", partial)
     save(state, parent_id, source)
     original = source.read_bytes()
+    other_worker_id = str(uuid.uuid4())
+    if outcome in {"other_worker", "grandchild"}:
+        other_output = output.parent.parent / "discovery-0002" / "output"
+        other_output.mkdir(parents=True)
+        other_prompt = other_output.parent / "prompt.md"
+        other_prompt.write_text("A separate independent review\n")
+        with sqlite3.connect(state / "workbench.sqlite3") as connection:
+            connection.execute(
+                "INSERT INTO deep_scan_workers (id, scan_id, kind, status, prompt_path, artifact_dir, "
+                "created_at, updated_at) VALUES (?, ?, 'discovery', 'failed', ?, ?, "
+                "'2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')",
+                (other_worker_id, parent_id, str(other_prompt), str(other_output)),
+            )
+        other = semantic(parent_id, ["pending.ts"])
+        other["coverage"]["deferred"] = [
+            {
+                "candidateId": "saved-candidate",
+                "reason": "A different worker still needs to validate a different control",
+                "provenance": {"workerId": worker_id},
+            }
+        ]
+        save(state, parent_id, write_checkpoint(other_output / "checkpoints", other))
     recipe = run_workbench(state, "get-scan-recipe", "--scan-id", parent_id)["recipe"]
     child_dir = tmp_path / "child"
     child_dir.mkdir(mode=0o700)
@@ -335,11 +416,49 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
         state, "continue-scan-checkpoint", "--scan-id", child_id, "--parent-scan-id", parent_id
     )
     assert continued["restoredWorkers"] == 0
+    finding = continued["checkpoint"]["sources"][0]["findings"][0]
+    assert finding["provenance"]["workerId"] == worker_id
+    if outcome in {"other_worker", "grandchild"}:
+        assert {
+            item["provenance"]["workerId"]
+            for item in continued["checkpoint"]["sources"][0]["coverage"]["deferred"]
+        } == {worker_id, other_worker_id}
+    if outcome == "grandchild":
+        grandchild_dir = tmp_path / "grandchild"
+        grandchild_dir.mkdir(mode=0o700)
+        grandchild_id = run_workbench(
+            state,
+            "register-cli-scan",
+            "--repository",
+            str(repository),
+            "--scan-dir",
+            str(grandchild_dir),
+            "--recipe-json",
+            json.dumps(recipe),
+            "--parent-scan-id",
+            child_id,
+        )["scanId"]
+        grandchild = run_workbench(
+            state,
+            "continue-scan-checkpoint",
+            "--scan-id",
+            grandchild_id,
+            "--parent-scan-id",
+            child_id,
+        )
+        assert grandchild["restoredWorkers"] == 0
+        assert {
+            item["provenance"]["workerId"]
+            for item in grandchild["checkpoint"]["sources"][0]["coverage"]["deferred"]
+        } == {worker_id, other_worker_id}
+        child_dir, child_id = grandchild_dir, grandchild_id
     # Publish what the coordinator actually completed. The expired case has no
     # discoveries; the other cases explicitly account for the inherited candidate.
     completed = semantic(child_id, ["clean.ts", "pending.ts"])
     completed["complete"] = True
-    completed["findings"] = [finding] if outcome == "reported" else []
+    completed["findings"] = (
+        [finding] if outcome in {"reported", "other_worker", "grandchild"} else []
+    )
     completed["coverage"].update(
         completeness="partial" if outcome == "deadline" else "complete", deferred=[]
     )
@@ -363,6 +482,7 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
                 "disposition": "rejected",
                 "receiptRefs": [],
                 "reason": "Existing control prevents the candidate",
+                "provenance": {"workerId": worker_id},
             }
         ]
     (child_dir / "coverage.json").write_text(json.dumps(coverage))
@@ -378,9 +498,13 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
     result = json.loads((child_dir / "findings.json").read_text())
     coverage = json.loads((child_dir / "coverage.json").read_text())
     assert len(result["findings"]) == (0 if outcome == "rejected" else 1)
-    if outcome == "deadline":
+    if outcome in {"deadline", "other_worker", "grandchild"}:
         assert coverage["completeness"] == "partial"
         assert any(item.get("candidateId") == "saved-candidate" for item in coverage["deferred"])
+        if outcome != "deadline":
+            assert {item["provenance"]["workerId"] for item in coverage["deferred"]} == {
+                other_worker_id
+            }
     else:
         assert coverage["completeness"] == "complete"
         assert not coverage["deferred"]

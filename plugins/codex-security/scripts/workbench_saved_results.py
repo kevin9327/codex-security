@@ -404,6 +404,15 @@ def _worker_candidate_key(
     return worker_id, candidate_id, finding.get("ruleId"), anchor, instance
 
 
+def _candidate_owner(value: Any, source_worker_id: str | None) -> str | None:
+    # A registered discovery owns its records. Aggregates retain each original owner.
+    if source_worker_id is not None:
+        return source_worker_id
+    provenance = value.get("provenance") if isinstance(value, dict) else None
+    owner = provenance.get("workerId") if isinstance(provenance, dict) else None
+    return owner if isinstance(owner, str) else None
+
+
 def _finding_content(finding: dict[str, Any]) -> dict[str, Any]:
     """Return substantive finding content without generated identity or provenance."""
     return {
@@ -730,7 +739,7 @@ def merge_saved_results(
                 and valid_finding(finding)
                 and (candidate_id := finding_candidate_id(finding))
             ):
-                resolved.setdefault((owner, candidate_id), "reported")
+                resolved.setdefault((_candidate_owner(finding, owner), candidate_id), "reported")
         for field in ("surfaces", "explicitExclusions"):
             items = draft["coverage"].get(field, [])
             for item in items if isinstance(items, list) else []:
@@ -739,7 +748,9 @@ def merge_saved_results(
                     and isinstance(item.get("candidateId"), str)
                     and item.get("disposition") in {"reported", "rejected", "not_applicable"}
                 ):
-                    resolved.setdefault((owner, item["candidateId"]), item["disposition"])
+                    resolved.setdefault(
+                        (_candidate_owner(item, owner), item["candidateId"]), item["disposition"]
+                    )
     # Only the current parent may claim that another worker finding was absorbed.
     # A superseded checkpoint must not suppress a newer independent result.
     for draft in [parent] if parent else []:
@@ -780,7 +791,7 @@ def merge_saved_results(
                             represented_candidate_history.setdefault(candidate_key, set()).add(
                                 _digest(_finding_content(original["finding"]))
                             )
-                            resolved.setdefault(candidate_key, "reported")
+                            resolved.setdefault((candidate_key[0], candidate_id), "reported")
     for relative, draft, worker_id in all_sources:
         superseded = (
             worker_id is None
@@ -845,13 +856,18 @@ def merge_saved_results(
             source_value = copy.deepcopy(value)
             finding = copy.deepcopy(value)
             candidate_id = finding_candidate_id(finding)
-            if relative != "parent" and resolved.get((worker_id, candidate_id)) in {
+            owner = _candidate_owner(finding, worker_id)
+            if relative != "parent" and resolved.get((owner, candidate_id)) in {
                 "rejected",
                 "not_applicable",
             }:
                 surfaces = coverage.get("surfaces")
                 for item in surfaces if isinstance(surfaces, list) else []:
-                    if isinstance(item, dict) and item.get("candidateId") == candidate_id:
+                    if (
+                        isinstance(item, dict)
+                        and item.get("candidateId") == candidate_id
+                        and _candidate_owner(item, None) == owner
+                    ):
                         if not isinstance(item.get("previousFindings"), list):
                             item["previousFindings"] = []
                         history = item["previousFindings"]
@@ -883,7 +899,7 @@ def merge_saved_results(
                 findings.append(finding)
                 continue
             if worker_id:
-                provenance.setdefault("workerId", worker_id)
+                provenance["workerId"] = worker_id
             _ensure_finding_identity(finding)
             if not valid_finding(finding):
                 findings.append(finding)
@@ -894,8 +910,8 @@ def merge_saved_results(
                 if key in represented:
                     mapped_key = represented[key]
                     historical_contents = represented_history.get(key, set())
-                elif worker_id and candidate_id:
-                    candidate_key = _worker_candidate_key(worker_id, candidate_id, finding)
+                elif owner and candidate_id:
+                    candidate_key = _worker_candidate_key(owner, candidate_id, finding)
                     if candidate_key not in represented_candidates:
                         represented_candidates[candidate_key] = key
                     mapped_key = represented_candidates[candidate_key]
@@ -970,12 +986,18 @@ def merge_saved_results(
             for item in items:
                 if field == "openQuestions" and isinstance(item, str):
                     item = {"question": item.strip()}
+                owner = _candidate_owner(item, worker_id)
+                if isinstance(item, dict) and worker_id is not None:
+                    item = copy.deepcopy(item)
+                    provenance = item.setdefault("provenance", {})
+                    if isinstance(provenance, dict):
+                        provenance["workerId"] = worker_id
                 if (
                     field == "surfaces"
                     and isinstance(item, dict)
                     and item.get("disposition") in {"rejected", "not_applicable"}
                     and isinstance(item.get("candidateId"), str)
-                    and (history_findings := rejected_history.get((worker_id, item["candidateId"])))
+                    and (history_findings := rejected_history.get((owner, item["candidateId"])))
                 ):
                     item = copy.deepcopy(item)
                     if not isinstance(item.get("previousFindings"), list):
@@ -991,7 +1013,7 @@ def merge_saved_results(
                             history.append(copy.deepcopy(finding))
                 if (
                     isinstance(item, dict)
-                    and (worker_id, item.get("candidateId")) in resolved
+                    and (owner, item.get("candidateId")) in resolved
                     and (field == "deferred" or item.get("disposition") == "needs_follow_up")
                 ):
                     continue

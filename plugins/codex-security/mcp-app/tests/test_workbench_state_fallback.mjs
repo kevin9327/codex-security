@@ -41,7 +41,8 @@ async function testWorkbenchStateFallback() {
         builder.onLoad({ filter: /deep-scan[/\\]executor\.ts$/ }, () => ({
           contents: `export class CodexSdkWorkerExecutor {
             constructor(settings) {
-              throw new Error("Synthetic worker state: " + settings.artifactContext.stateDirectory);
+              throw new Error("Synthetic worker state: " + settings.artifactContext.stateDirectory
+                + "; Python: " + settings.artifactContext.pythonCommand);
             }
           }`,
           loader: "ts"
@@ -63,7 +64,7 @@ async function testWorkbenchStateFallback() {
       FAKE_PYTHON_FAILURE: undefined,
       FAKE_PYTHON_LOG: invocationLog,
       FAKE_REAL_PYTHON: realPython,
-      PYTHON: fakePythonPath
+      PYTHON: path.relative(pluginRoot, fakePythonPath)
     }));
     try {
       await initialize(fallbackServer, 1);
@@ -93,29 +94,9 @@ async function testWorkbenchStateFallback() {
       const deepTarget = path.join(fixtureRoot, "deep-target");
       await mkdir(deepTarget);
       await writeFile(path.join(deepTarget, "app.py"), "print('deep fixture')\n");
-      const workerStart = await fallbackServer.request(9, "tools/call", {
-        name: "start_codex_security_deep_scan",
-        arguments: { targetPath: deepTarget },
-        _meta: {
-          "openai/threadId": "state-fallback-deep-thread",
-          "codex/sandbox-state-meta": {
-            permissionProfile: {
-              type: "managed",
-              file_system: {
-                type: "restricted",
-                entries: [{
-                  path: { type: "special", value: { kind: "root" } },
-                  access: "read"
-                }]
-              },
-              network: "restricted"
-            },
-            sandboxCwd: pathToFileURL(pluginRoot).href
-          }
-        }
-      });
+      const workerStart = await startDeepScan(fallbackServer, 9, deepTarget, pluginRoot);
       assertToolError(workerStart, new RegExp(
-        `Synthetic worker state: ${escapeRegex(fallbackStateDir)}`
+        `Synthetic worker state: ${escapeRegex(fallbackStateDir)}; Python: ${escapeRegex(fakePythonPath)}`
       ));
     } finally {
       await fallbackServer.stop();
@@ -140,6 +121,30 @@ async function testWorkbenchStateFallback() {
       assert.equal(explicitServer.stderrEvents().some((event) => event.event === "state_fallback_pinned"), false);
     } finally {
       await explicitServer.stop();
+    }
+
+    await writeFile(invocationLog, "");
+    const relativeStateDir = path.join(fixtureRoot, "relative-state");
+    const relativeTarget = path.join(fixtureRoot, "relative-target");
+    await mkdir(relativeTarget);
+    await writeFile(path.join(relativeTarget, "app.py"), "print('relative fixture')\n");
+    const relativeServer = startServer(serverBundlePath, childEnvironment({
+      CODEX_SECURITY_SCAN_ROOT: path.join(fixtureRoot, "relative-scans"),
+      CODEX_SECURITY_STATE_DIR: path.relative(pluginRoot, relativeStateDir),
+      FAKE_PYTHON_ALWAYS_FAIL: undefined,
+      FAKE_PYTHON_FAILURE: undefined,
+      FAKE_PYTHON_LOG: invocationLog,
+      FAKE_REAL_PYTHON: realPython,
+      PYTHON: path.relative(pluginRoot, fakePythonPath)
+    }));
+    try {
+      await initialize(relativeServer, 12);
+      assertToolError(await startDeepScan(relativeServer, 13, relativeTarget, pluginRoot), new RegExp(
+        `Synthetic worker state: ${escapeRegex(relativeStateDir)}; Python: ${escapeRegex(fakePythonPath)}`
+      ));
+      assert.equal(await pathExists(path.join(relativeStateDir, "workbench.sqlite3")), true);
+    } finally {
+      await relativeServer.stop();
     }
 
     await writeFile(invocationLog, "");
@@ -226,6 +231,30 @@ async function testWorkbenchStateFallback() {
     await rm(serverBundlePath, { force: true });
     await rm(fixtureRoot, { recursive: true, force: true });
   }
+}
+
+function startDeepScan(server, id, targetPath, pluginRoot) {
+  return server.request(id, "tools/call", {
+    name: "start_codex_security_deep_scan",
+    arguments: { targetPath },
+    _meta: {
+      "openai/threadId": "state-fallback-deep-thread",
+      "codex/sandbox-state-meta": {
+        permissionProfile: {
+          type: "managed",
+          file_system: {
+            type: "restricted",
+            entries: [{
+              path: { type: "special", value: { kind: "root" } },
+              access: "read"
+            }]
+          },
+          network: "restricted"
+        },
+        sandboxCwd: pathToFileURL(pluginRoot).href
+      }
+    }
+  });
 }
 
 function childEnvironment(overrides) {

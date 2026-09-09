@@ -567,7 +567,11 @@ def effective_deep_scan_config(args: argparse.Namespace) -> dict[str, int | floa
 
 
 def rebind_checkpoint_result(
-    document: dict[str, Any], scan_id: str, worker_ids: dict[str, str]
+    document: dict[str, Any],
+    scan_id: str,
+    worker_ids: dict[str, str],
+    *,
+    source_worker_id: str | None = None,
 ) -> dict[str, Any]:
     """Copy semantic output and rebind only its structured scan/worker references."""
     document = json.loads(json.dumps(document))
@@ -579,6 +583,11 @@ def rebind_checkpoint_result(
 
     def finding_references(finding: dict[str, Any]) -> None:
         provenance = finding.get("provenance", {})
+        if not isinstance(provenance, dict):
+            return
+        owner = provenance.get("workerId")
+        if isinstance(owner, str):
+            provenance["workerId"] = worker_ids.get(owner, owner)
         if isinstance(provenance.get("sourceFindingIds"), list):
             provenance["sourceFindingIds"] = [
                 reference(value) for value in provenance["sourceFindingIds"]
@@ -586,9 +595,24 @@ def rebind_checkpoint_result(
         for source in provenance.get("sourceFindings", []):
             source["id"] = reference(source["id"])
             finding_references(source["finding"])
+        previous_findings = provenance.get("previousFindings", [])
+        for previous in previous_findings if isinstance(previous_findings, list) else []:
+            if isinstance(previous, dict):
+                finding_references(previous)
 
-    for finding in document.get("findings", []):
-        finding_references(finding)
+    records = list(document.get("findings", []))
+    for field in ("surfaces", "explicitExclusions", "deferred"):
+        items = document.get("coverage", {}).get(field, [])
+        if isinstance(items, list):
+            records.extend(items)
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        finding_references(record)
+        if source_worker_id is not None:
+            provenance = record.setdefault("provenance", {})
+            if isinstance(provenance, dict):
+                provenance["workerId"] = worker_ids.get(source_worker_id, source_worker_id)
     return document
 
 
@@ -700,7 +724,15 @@ def restore_checkpoint_workers(
             child_root,
             result_relative,
             (
-                json.dumps(rebind_checkpoint_result(result, child["id"], worker_ids), indent=2)
+                json.dumps(
+                    rebind_checkpoint_result(
+                        result,
+                        child["id"],
+                        worker_ids,
+                        source_worker_id=worker["id"] if worker["kind"] == "discovery" else None,
+                    ),
+                    indent=2,
+                )
                 + "\n"
             ).encode(),
         )

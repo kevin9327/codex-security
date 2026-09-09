@@ -263,9 +263,11 @@ export function renderScanHistory(
       for (const source of checkpoint["sources"] as JsonObject[]) {
         wrap(String(source["checkpointPath"]), 6, "    • ");
       }
-      lines.push(
-        `    Resume: codex-security scans resume ${clean(result["scanId"])}`,
-      );
+      if (result["recipe"] !== undefined) {
+        lines.push(
+          `    Resume: codex-security scans resume ${clean(result["scanId"])}`,
+        );
+      }
     }
     if (status !== "complete") {
       const progress = result["progress"] as JsonObject;

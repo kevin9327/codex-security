@@ -17,7 +17,11 @@ from finalize_scan_contract import (
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
-from workbench_target import git_directory_snapshot_paths, source_directory_snapshot_paths
+from workbench_target import (
+    git_directory_snapshot_paths,
+    require_scan_target_identity,
+    source_directory_snapshot_paths,
+)
 from workbench_validation import path_within_scope
 
 
@@ -99,6 +103,31 @@ def record_checkpoint(
     reviewed = coverage.get("reviewedFiles", [])
     if not isinstance(reviewed, list) or any(not isinstance(path, str) for path in reviewed):
         raise SystemExit("Checkpoint reviewedFiles must contain repository-relative file paths.")
+    if (
+        reviewed
+        and connection.execute(
+            "SELECT 1 FROM scan_review_files WHERE scan_id = ? LIMIT 1", (scan["id"],)
+        ).fetchone()
+        is None
+    ):
+        # An existing scan can outlive the migration that introduced this inventory.
+        # Reconstruct it only while the source still matches the registered snapshot.
+        from workbench_scan_start import scan_target_identity
+
+        repository = require_scan_target_identity(scan)
+        if scan_target_identity(repository, None) != (
+            scan["target_revision"],
+            scan["target_snapshot_digest"],
+            scan["target_device"],
+            scan["target_inode"],
+        ):
+            raise SystemExit("Cannot initialize checkpoints: the original source changed.")
+        scopes = (
+            json.loads(scan["recipe_json"])["target"]["paths"]
+            if scan["recipe_json"]
+            else [scan["scope"]]
+        )
+        freeze_review_files(connection, scan["id"], repository, scopes)
     for path in reviewed:
         row = connection.execute(
             "SELECT content_sha256 FROM scan_review_files WHERE scan_id = ? AND relative_path = ?",
@@ -384,7 +413,16 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 "findings": source["findings"],
                 "coverage": source["coverage"],
             }
-            snapshot = db.deep_scan.rebind_checkpoint_result(snapshot, child["id"], worker_ids)
+            worker = connection.execute(
+                "SELECT id, kind FROM deep_scan_workers WHERE scan_id = ? AND artifact_dir = ?",
+                (parent["id"], str(Path(parent["scan_dir"]) / source["source"])),
+            ).fetchone()
+            snapshot = db.deep_scan.rebind_checkpoint_result(
+                snapshot,
+                child["id"],
+                worker_ids,
+                source_worker_id=worker["id"] if worker and worker["kind"] == "discovery" else None,
+            )
             contents = (json.dumps(snapshot, indent=2) + "\n").encode()
             write_scan_local_bytes(
                 root, f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json", contents

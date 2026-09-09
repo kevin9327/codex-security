@@ -734,6 +734,7 @@ export function createCodexSecurityServer(): McpServer {
       }
       const immediate = deepScanTerminalResult(begun.run);
       if (immediate) return { begun, immediate };
+      const pythonCommand = await resolvePythonCommand();
       const started = await startOrJoinDeepScanCoordinator({
         begin: begun,
         registry: deepScanCoordinators,
@@ -748,7 +749,12 @@ export function createCodexSecurityServer(): McpServer {
               repoRoot: begun.run.targetPath,
               scanId: begun.run.scanId,
               scope: begun.run.scope,
-              stateDirectory: CONFIGURED_WORKBENCH_STATE_DIR ?? await fallbackWorkbenchStateDir
+              pythonCommand: /[/\\]/.test(pythonCommand)
+                ? resolve(PLUGIN_ROOT, pythonCommand)
+                : pythonCommand,
+              stateDirectory: CONFIGURED_WORKBENCH_STATE_DIR
+                ? resolve(PLUGIN_ROOT, CONFIGURED_WORKBENCH_STATE_DIR)
+                : await fallbackWorkbenchStateDir
             }
           }),
           pluginRoot: PLUGIN_ROOT,

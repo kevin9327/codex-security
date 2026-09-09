@@ -99,6 +99,42 @@ def test_checkpoint_survives_new_process_with_clean_coverage_and_pending_evidenc
     )
 
 
+@pytest.mark.parametrize("source_changed", [False, True])
+def test_existing_deep_scan_initializes_migrated_inventory_from_original_source(
+    tmp_path: Path, source_changed: bool
+) -> None:
+    state, codex_home, target, scan_dir, scan_id = deep_scan_fixture(tmp_path, budget=True)
+    _, result_path = accepted_standard_worker(state, codex_home, scan_dir, scan_id)
+    # Migration 42 adds an empty inventory to already-running scans.
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.execute("DELETE FROM scan_review_files WHERE scan_id = ?", (scan_id,))
+    run_workbench(
+        state,
+        "begin-deep-scan",
+        "--scan-id",
+        scan_id,
+        "--thread-id",
+        "standard-worker-thread",
+        environment={"CODEX_HOME": str(codex_home)},
+    )
+    if source_changed:
+        (target / "app.py").write_text("changed after the original scan started\n")
+    path = write_checkpoint(result_path.parent / "checkpoints", semantic(scan_id, ["app.py"]))
+    result = save(state, scan_id, path, check=not source_changed)
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        reviewed = connection.execute(
+            "SELECT relative_path FROM scan_review_files WHERE reviewed_at IS NOT NULL"
+        ).fetchall()
+        if source_changed:
+            assert result["returncode"] != 0
+            assert "changed" in result["stderr"]
+            assert reviewed == []
+            assert connection.execute("SELECT COUNT(*) FROM scan_checkpoints").fetchone() == (0,)
+        else:
+            assert reviewed == [("app.py",)]
+            assert connection.execute("SELECT COUNT(*) FROM scan_checkpoints").fetchone() == (1,)
+
+
 def test_rejected_coverage_batch_does_not_commit_other_paths(tmp_path: Path) -> None:
     state, repository, scan_dir, scan_id = scan_fixture(tmp_path)
     (repository / "pending.ts").write_text("changed source\n")
