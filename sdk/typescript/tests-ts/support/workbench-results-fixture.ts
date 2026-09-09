@@ -13,6 +13,7 @@ import * as results from "../../../../plugins/codex-security/mcp-app/src/workben
 import * as findingResults from "../../../../plugins/codex-security/mcp-app/src/workbench-finding-results";
 import * as mergedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-merge-saved-results";
 import * as savedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-saved-result-sources";
+import * as preservedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-preserve-saved-results";
 import {
   backfillLegacyFindingDetails,
   legacyFindingMatches,
@@ -82,6 +83,10 @@ export interface Action {
     | "finalize"
     | "savedMerge"
     | "savedFindingHelpers"
+    | "preserve"
+    | "compareCoverage"
+    | "snapshotOutputs"
+    | "restoreOutputs"
     | "sql"
     | "query"
     | "commit"
@@ -124,6 +129,11 @@ export interface Action {
   warnings?: string[];
   candidateOnly?: boolean;
   cycle?: boolean;
+  preserveOptions?: preservedResults.PreserveResultsOptions;
+  now?: string;
+  nowSql?: string;
+  failNow?: boolean;
+  snapshots?: Record<string, string | null>;
 }
 export interface Request {
   targetIdentityPath?: string;
@@ -336,6 +346,45 @@ function execute(request: Request): Response {
       try {
         let result: unknown = null;
         switch (action.operation) {
+          case "preserve":
+            result = preservedResults.preserveScanResultsLocked(
+              {
+                now: () => {
+                  events.push(["now", connection.inTransaction]);
+                  if (action.nowSql) connection.prepare(action.nowSql).run();
+                  if (action.failNow) throw new Error("clock failed");
+                  return action.now ?? "2026-01-02T00:00:00Z";
+                },
+              },
+              connection,
+              id,
+              action.preserveOptions,
+            );
+            break;
+          case "compareCoverage":
+            result = preservedResults.coverageForComparison(scan());
+            break;
+          case "snapshotOutputs":
+            result = Object.fromEntries(
+              Object.entries(
+                preservedResults.snapshotPublishedOutputs(action.directory!),
+              ).map(([relative, bytes]) => [
+                relative,
+                bytes?.toString("hex") ?? null,
+              ]),
+            );
+            break;
+          case "restoreOutputs":
+            preservedResults.restorePublishedOutputs(
+              action.directory!,
+              Object.fromEntries(
+                Object.entries(action.snapshots!).map(([relative, bytes]) => [
+                  relative,
+                  bytes === null ? null : Buffer.from(bytes, "hex"),
+                ]),
+              ),
+            );
+            break;
           case "exportRows":
             result = workbenchExports.findingExportRows(connection, id);
             break;
