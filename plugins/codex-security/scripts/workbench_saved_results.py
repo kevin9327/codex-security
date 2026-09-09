@@ -34,6 +34,7 @@ from finalize_scan_contract import (
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
+from workbench_scan_checkpoints import record_checkpoint
 from workbench_validation import path_within_scope
 
 _PUBLISHED_OUTPUTS = (
@@ -464,12 +465,13 @@ def merge_saved_results(
     reason: str,
     frozen_source_digests: dict[str, str] | None = None,
     allow_frozen_legacy_parent: bool = False,
+    include_parent: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
     """Read only bound parent/worker files; return an unsealed loss-preserving union."""
     initial_warnings = set(warnings)
     parent: dict[str, Any] | None = None
     parent_manifest: dict[str, Any] | None = None
-    if frozen_source_digests is None or allow_frozen_legacy_parent:
+    if include_parent and (frozen_source_digests is None or allow_frozen_legacy_parent):
         try:
             parent_manifest, parent = _read_saved_parent_result(scan_dir, scan_id)
         except (ContractError, OSError, ValueError) as exc:
@@ -1395,6 +1397,10 @@ def write_scan_draft(db: Any, connection: Any, args: Any) -> dict[str, Any]:
             copied_manifest, copied_findings, copied_coverage, binding
         )
         _validate_completion_binding(copied_manifest, copied_findings, copied_coverage, binding)
+        if args.checkpoint_path is not None:
+            record_checkpoint(
+                connection, scan, scan_dir / "checkpoints" / f"{checkpoint_digest}.json", db.now()
+            )
         for filename, document in (
             ("findings.json", findings),
             ("coverage.json", coverage),

@@ -134,7 +134,7 @@ export async function recordCodexSecurityScanDraft(
         manifest: { scan: manifestScan },
       };
       if (publishDraft) {
-        await publishDraft(draft, preserved.previousDigest, parsed);
+        await publishDraft(draft, preserved.previousDigest, reconciled);
       } else {
         const destinations = await Promise.all([
           artifactDestination(context, ["findings.json"], "scan draft findings"),
@@ -287,7 +287,8 @@ export async function saveScanDraftCheckpoint(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     await replaceArtifactJson(destination, snapshot);
   }
-  if (context.layout === "worker" && updateHead) {
+  if (updateHead) await context.onCheckpoint?.(destination);
+  if (context.layout === "worker" && updateHead && !context.onCheckpoint) {
     const head = await artifactDestination(
       context,
       ["checkpoint-head.json"],
@@ -863,7 +864,7 @@ export function preserveScanCoverage(
   preserveCompleteness = true,
 ): JsonObject {
   const result = structuredClone(coverage);
-  for (const field of ["surfaces", "explicitExclusions", "deferred", "openQuestions"] as const) {
+  for (const field of ["surfaces", "explicitExclusions", "deferred", "openQuestions", "reviewedFiles"] as const) {
     const current = (result[field] as unknown[] | undefined) ?? [];
     const values = [...current];
     for (const source of sources) {
@@ -871,7 +872,7 @@ export function preserveScanCoverage(
         if (!coverageEntryPresent(values, value)) values.push(structuredClone(value));
       }
     }
-    if (field !== "openQuestions" || values.length > 0 || result[field] !== undefined) result[field] = values;
+    if ((field !== "openQuestions" && field !== "reviewedFiles") || values.length > 0 || result[field] !== undefined) result[field] = values;
   }
   if (
     coverageHasOutstandingWork(result)

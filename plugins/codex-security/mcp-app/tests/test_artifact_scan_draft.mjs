@@ -136,6 +136,37 @@ try {
   };
   const workerResultPath = path.join(workerRoot, "result.json");
 
+  const committedRoot = path.join(root, "committed-worker");
+  await mkdir(committedRoot);
+  const committedSnapshots = [];
+  let failCommit = false;
+  const committedContext = {
+    ...workerContext,
+    root: committedRoot,
+    onCheckpoint: async (checkpointPath) => {
+      if (failCommit) throw new Error("SQLite commit unavailable");
+      committedSnapshots.push(JSON.parse(await readFile(checkpointPath, "utf8")));
+    },
+  };
+  await recordCodexSecurityWorkerScanDraft(committedContext, {
+    ...workerInput, complete: false,
+    coverage: { ...coverage, reviewedFiles: ["clean.ts"] },
+  });
+  await recordCodexSecurityWorkerScanDraft(committedContext, {
+    ...workerInput, complete: false, findings: [],
+    coverage: { ...coverage, reviewedFiles: ["pending.ts"] },
+  });
+  assert.equal(committedSnapshots.length, 2, "only cumulative checkpoints are committed");
+  assert.deepEqual(committedSnapshots[1].findings, [finding]);
+  assert.deepEqual(new Set(committedSnapshots[1].coverage.reviewedFiles), new Set(["clean.ts", "pending.ts"]));
+  const committedResult = await readFile(path.join(committedRoot, "result.json"), "utf8");
+  failCommit = true;
+  await assert.rejects(
+    recordCodexSecurityWorkerScanDraft(committedContext, { ...workerInput, complete: false }),
+    /SQLite commit unavailable/u,
+  );
+  assert.equal(await readFile(path.join(committedRoot, "result.json"), "utf8"), committedResult);
+
   const checkpointRoot = path.join(root, "checkpoint-worker");
   await mkdir(checkpointRoot);
   const checkpointContext = { ...workerContext, root: checkpointRoot };

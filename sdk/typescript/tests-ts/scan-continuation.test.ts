@@ -1,0 +1,520 @@
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { afterEach, expect, test } from "bun:test";
+import { scanPreflightCodexConfig } from "../src/api.js";
+import { main } from "../src/cli.js";
+import { DEFAULT_CODEX_CONFIG } from "../src/config.js";
+import { runWorkbench } from "../src/runtime.js";
+import { capture, dependencies } from "./cli-fixtures.js";
+import { PLUGIN_ROOT } from "./plugin-root.js";
+import { TestClient } from "./support/api-client.js";
+import {
+  completedEvents,
+  createApiTestFixtures,
+  preparedRuntime,
+} from "./support/api-events.js";
+
+const { temporaryDirectory, cleanup } = createApiTestFixtures();
+afterEach(cleanup);
+const previousCost = {
+  model: "gpt-5.6-sol",
+  inputTokens: 1000,
+  cachedInputTokens: 0,
+  cacheWriteInputTokens: 0,
+  outputTokens: 50,
+  estimatedUsd: 12.5,
+};
+
+async function savedScan(
+  options: {
+    mode?: "standard" | "deep";
+    running?: boolean;
+    cost?: boolean;
+    maxCostUsd?: number;
+    custom?: boolean;
+  } = {},
+) {
+  const root = await temporaryDirectory();
+  const repository = join(root, "repository");
+  const scanDir = join(root, "scan");
+  const codexHome = join(root, "state", "codex-home");
+  await mkdir(repository);
+  await mkdir(scanDir, { mode: 0o700 });
+  await mkdir(join(codexHome, "sessions"), { recursive: true });
+  await writeFile(
+    join(repository, "reviewed.ts"),
+    "export const reviewed = true;\n",
+  );
+  await writeFile(
+    join(repository, "pending.ts"),
+    "export const pending = true;\n",
+  );
+  const python = Bun.which("python3") ?? Bun.which("python");
+  if (python === null) throw new Error("Python is required.");
+  const environment = {
+    PATH: process.env["PATH"],
+    SystemRoot: process.env["SystemRoot"],
+    TEMP: process.env["TEMP"],
+    TMP: process.env["TMP"],
+    CODEX_HOME: codexHome,
+    CODEX_SECURITY_STATE_DIR: join(root, "state"),
+  };
+  const command = (args: readonly string[], input?: string) =>
+    runWorkbench({ python, pluginRoot: PLUGIN_ROOT, environment }, args, input);
+  const recipe = {
+    repository,
+    target: { kind: "repository", paths: [] },
+    mode: options.mode ?? "standard",
+    config: {
+      ...scanPreflightCodexConfig({
+        ...DEFAULT_CODEX_CONFIG,
+        approval_policy: "never",
+      }),
+      approval_policy: "never",
+    },
+    pluginVersion: "0.1.0",
+    ...(options.maxCostUsd === undefined
+      ? {}
+      : { maxCostUsd: options.maxCostUsd }),
+    ...(options.custom ? { validationMode: "custom" } : {}),
+  };
+  const registration = await command(
+    [
+      "register-cli-scan",
+      "--repository",
+      repository,
+      "--scan-dir",
+      scanDir,
+      "--registration-json-stdin",
+    ],
+    JSON.stringify({
+      recipe,
+      userContext: "Preserve the original review instructions.",
+    }),
+  );
+  const scanId = registration["scanId"] as string;
+  const threadId = randomUUID();
+  await command([
+    "set-scan-thread",
+    "--scan-id",
+    scanId,
+    "--thread-id",
+    threadId,
+  ]);
+  const sessionPath = join(codexHome, "sessions", `rollout-${threadId}.jsonl`);
+  await writeFile(
+    sessionPath,
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id: threadId, cwd: scanDir },
+    }) + "\n",
+  );
+  const finding = JSON.parse(
+    await readFile(
+      join(PLUGIN_ROOT, "examples", "completed-scan", "findings.json"),
+      "utf8",
+    ),
+  ).findings[0];
+  finding.locations = [{ path: "reviewed.ts", startLine: 1 }];
+  const snapshot = {
+    scanId,
+    complete: false,
+    findings: [finding],
+    coverage: {
+      completeness: "partial",
+      surfaces: [],
+      explicitExclusions: [],
+      deferred: [],
+      reviewedFiles: ["reviewed.ts"],
+    },
+  };
+  async function checkpoint(directory: string, id: string, value: object) {
+    const contents = JSON.stringify(value) + "\n";
+    const path = join(
+      directory,
+      "checkpoints",
+      `${createHash("sha256").update(contents).digest("hex")}.json`,
+    );
+    await mkdir(join(directory, "checkpoints"), { recursive: true });
+    await writeFile(path, contents);
+    await command([
+      "record-scan-checkpoint",
+      "--scan-id",
+      id,
+      "--checkpoint-path",
+      path,
+    ]);
+  }
+  await checkpoint(scanDir, scanId, snapshot);
+  if (!options.running)
+    await command([
+      "fail-scan",
+      "--scan-id",
+      scanId,
+      "--message",
+      "Synthetic interrupted scan",
+      ...(options.cost === false
+        ? []
+        : ["--cost-json", JSON.stringify(previousCost)]),
+    ]);
+  return {
+    root,
+    repository,
+    scanDir,
+    codexHome,
+    python,
+    environment,
+    command,
+    recipe,
+    scanId,
+    threadId,
+    sessionPath,
+    checkpoint,
+  };
+}
+
+type Fixture = Awaited<ReturnType<typeof savedScan>>;
+async function resume(
+  f: Fixture,
+  createCodex: NonNullable<
+    ConstructorParameters<typeof TestClient>[1]["createCodex"]
+  >,
+  failExport = false,
+) {
+  await mkdir(f.codexHome, { recursive: true });
+  const stdout = capture();
+  const stderr = capture();
+  const code = await main(
+    ["scans", "resume", f.scanId, "--json"],
+    stdout.stream,
+    stderr.stream,
+    {
+      ...dependencies({ environment: f.environment, currentDirectory: f.root }),
+      runWorkbench: f.command,
+      createSecurity: (config) =>
+        new TestClient(config, {
+          environment: f.environment,
+          prepareRuntime: async () => {
+            const runtime = preparedRuntime(f.codexHome);
+            runtime.plugin.version = JSON.parse(
+              await readFile(
+                join(PLUGIN_ROOT, ".codex-plugin", "plugin.json"),
+                "utf8",
+              ),
+            ).version;
+            return runtime;
+          },
+          resolvePluginPython: async () => f.python,
+          runWorkbench: (options, args, input) => {
+            if (failExport && args[0] === "prepare-scan-completion")
+              throw new Error("Synthetic local export failure");
+            return runWorkbench(options, args, input);
+          },
+          createCodex,
+        }),
+    },
+  );
+  return { code, stdout: stdout.text(), stderr: stderr.text() };
+}
+
+async function finishChild(f: Fixture, scanDir: string, scanId: string) {
+  const manifest = JSON.parse(
+    await readFile(join(scanDir, "scan-manifest.json"), "utf8"),
+  );
+  const findings = JSON.parse(
+    await readFile(join(scanDir, "findings.json"), "utf8"),
+  );
+  const coverage = JSON.parse(
+    await readFile(join(scanDir, "coverage.json"), "utf8"),
+  );
+  manifest.scan.complete = true;
+  coverage.completeness = "complete";
+  coverage.deferred = [];
+  coverage.reviewedFiles = ["pending.ts", "reviewed.ts"];
+  await f.checkpoint(scanDir, scanId, {
+    scanId,
+    complete: true,
+    findings: findings.findings,
+    coverage,
+  });
+  await writeFile(
+    join(scanDir, "scan-manifest.json"),
+    JSON.stringify(manifest) + "\n",
+  );
+  await writeFile(
+    join(scanDir, "coverage.json"),
+    JSON.stringify(coverage) + "\n",
+  );
+}
+
+test("Standard continuation preserves the sealed parent and resumes only unfinished source with cumulative cost", async () => {
+  const f = await savedScan();
+  const parent = await readFile(join(f.scanDir, "scan-manifest.json"), "utf8");
+  let childId = "";
+  let childDirectory = "";
+  let modelCalls = 0;
+  const outcome = await resume(f, (options) => ({
+    startThread(threadOptions) {
+      childId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+      childDirectory = threadOptions.workingDirectory!;
+      expect(childId).not.toBe(f.scanId);
+      expect(childDirectory).not.toBe(f.scanDir);
+      const threadId = randomUUID();
+      return {
+        id: threadId,
+        async runStreamed(prompt) {
+          modelCalls++;
+          expect(prompt).toContain(
+            "Preserve the original review instructions.",
+          );
+          expect(prompt).toContain("Review only remainingFiles");
+          expect(
+            JSON.parse(
+              await readFile(
+                join(
+                  childDirectory,
+                  "artifacts",
+                  "01_context",
+                  "scan-continuation.json",
+                ),
+                "utf8",
+              ),
+            ),
+          ).toEqual({
+            parentScanId: f.scanId,
+            reviewedFiles: ["reviewed.ts"],
+            remainingFiles: ["pending.ts"],
+          });
+          const inherited = JSON.parse(
+            await readFile(join(childDirectory, "findings.json"), "utf8"),
+          );
+          expect(inherited.findings).toHaveLength(1);
+          await finishChild(f, childDirectory, childId);
+          return { events: completedEvents(threadId) };
+        },
+      };
+    },
+    resumeThread() {
+      throw new Error("A sealed parent cannot be reopened");
+    },
+  }));
+  expect(outcome.code, outcome.stderr).toBe(0);
+  expect(modelCalls).toBe(1);
+  expect(await readFile(join(f.scanDir, "scan-manifest.json"), "utf8")).toBe(
+    parent,
+  );
+  const result = JSON.parse(outcome.stdout);
+  expect(result.findings.findings).toHaveLength(1);
+  expect(result.cost.estimatedUsd).toBeGreaterThan(12.5);
+  expect(result.cost.inputTokens).toBe(1010);
+  expect(
+    (await f.command(["get-scan", "--scan-id", childId]))["scan"],
+  ).toMatchObject({
+    parentScanId: f.scanId,
+    progress: { status: "complete" },
+    cost: result.cost,
+    checkpoint: { remainingFileCount: 0 },
+  });
+  await expect(
+    f.command(["get-cli-scan-resume", "--scan-id", childId]),
+  ).rejects.toThrow("already completed");
+});
+
+test("missing Deep native history falls back to a new attempt from semantic checkpoints", async () => {
+  const f = await savedScan({ mode: "deep", running: true });
+  await rm(f.sessionPath);
+  let childId = "";
+  const outcome = await resume(f, (options) => ({
+    startThread() {
+      childId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+      expect(childId).not.toBe(f.scanId);
+      return {
+        id: randomUUID(),
+        async runStreamed() {
+          throw new Error("Synthetic connection failure");
+        },
+      };
+    },
+    resumeThread() {
+      throw new Error("Unavailable native history must not be resumed");
+    },
+  }));
+  expect(outcome.code).not.toBe(0);
+  expect(outcome.stderr).toContain("Synthetic connection failure");
+  expect(
+    (await f.command(["get-scan", "--scan-id", childId]))["scan"],
+  ).toMatchObject({
+    parentScanId: f.scanId,
+    checkpoint: { reviewedFileCount: 1 },
+  });
+});
+
+test.each([
+  "changed source",
+  "missing cost",
+  "exhausted cost",
+  "custom validation",
+])("continuation refuses %s before invoking a model", async (scenario) => {
+  const f = await savedScan({
+    maxCostUsd:
+      scenario === "missing cost"
+        ? 20
+        : scenario === "exhausted cost"
+          ? 10
+          : undefined,
+    cost: scenario !== "missing cost",
+    custom: scenario === "custom validation",
+  });
+  if (scenario === "changed source")
+    await writeFile(join(f.repository, "pending.ts"), "changed\n");
+  if (scenario === "missing cost") await rm(f.sessionPath);
+  let calls = 0;
+  const outcome = await resume(f, () => {
+    calls++;
+    throw new Error("Unexpected model invocation");
+  });
+  expect(outcome.code).not.toBe(0);
+  expect(calls).toBe(0);
+  expect(outcome.stderr).toContain(
+    scenario === "changed source"
+      ? "contents changed"
+      : scenario === "missing cost"
+        ? "cost is unavailable"
+        : scenario === "exhausted cost"
+          ? "saved total cost limit"
+          : "--validation-prompt-file",
+  );
+});
+
+test("a hard-killed continuation recovers native spend on top of its durable inherited cost", async () => {
+  const f = await savedScan({ maxCostUsd: 20 });
+  const child = join(f.root, "interrupted-child");
+  await mkdir(child, { mode: 0o700 });
+  const registration = await f.command([
+    "register-cli-scan",
+    "--repository",
+    f.repository,
+    "--scan-dir",
+    child,
+    "--parent-scan-id",
+    f.scanId,
+    "--recipe-json",
+    JSON.stringify(f.recipe),
+  ]);
+  const childId = registration["scanId"] as string;
+  await f.command([
+    "continue-scan-checkpoint",
+    "--scan-id",
+    childId,
+    "--parent-scan-id",
+    f.scanId,
+    "--cost-json",
+    JSON.stringify(previousCost),
+  ]);
+  const threadId = randomUUID();
+  await f.command([
+    "set-scan-thread",
+    "--scan-id",
+    childId,
+    "--thread-id",
+    threadId,
+  ]);
+  const sessionPath = join(
+    f.codexHome,
+    "sessions",
+    `rollout-${threadId}.jsonl`,
+  );
+  await writeFile(
+    sessionPath,
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id: threadId, cwd: child },
+    }) + "\n",
+  );
+  await appendFile(
+    sessionPath,
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: { input_tokens: 10000, output_tokens: 2000 },
+        },
+      },
+    }) + "\n",
+  );
+  let latestId = "";
+  const outcome = await resume({ ...f, scanId: childId }, (options) => ({
+    startThread(threadOptions) {
+      latestId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+      const newThread = randomUUID();
+      return {
+        id: newThread,
+        async runStreamed() {
+          await finishChild(f, threadOptions.workingDirectory!, latestId);
+          return { events: completedEvents(newThread) };
+        },
+      };
+    },
+  }));
+  expect(outcome.code, outcome.stderr).toBe(0);
+  const result = JSON.parse(outcome.stdout);
+  expect(result.cost.estimatedUsd).toBeGreaterThan(12.5);
+  expect(result.cost.inputTokens).toBe(11010);
+  expect(result.cost.outputTokens).toBe(2053);
+});
+
+test("a complete Standard checkpoint retries final export without another model call or cost", async () => {
+  const f = await savedScan({ running: true, maxCostUsd: 10 });
+  const current = (
+    await f.command(["get-cli-scan-resume", "--scan-id", f.scanId])
+  )["checkpoint"] as {
+    sources: Array<{ findings: object[]; coverage: object }>;
+  };
+  await f.checkpoint(f.scanDir, f.scanId, {
+    scanId: f.scanId,
+    complete: true,
+    findings: current.sources[0]!.findings,
+    coverage: {
+      ...current.sources[0]!.coverage,
+      completeness: "complete",
+      deferred: [],
+      reviewedFiles: ["pending.ts", "reviewed.ts"],
+    },
+  });
+  await f.command([
+    "fail-scan",
+    "--scan-id",
+    f.scanId,
+    "--message",
+    "Synthetic export failure after completed analysis",
+    "--cost-json",
+    JSON.stringify(previousCost),
+  ]);
+  const parent = await readFile(join(f.scanDir, "scan-manifest.json"), "utf8");
+  let modelCalls = 0;
+  const noModel = () => {
+    modelCalls++;
+    throw new Error("No Codex client is needed to finish saved results");
+  };
+  const failedExport = await resume(f, noModel, true);
+  expect(failedExport.code).not.toBe(0);
+  expect(failedExport.stderr).toContain("Synthetic local export failure");
+  const scans = (await f.command(["list-scans", "--repository", f.repository]))[
+    "scans"
+  ] as Array<{ scanId: string; parentScanId: string }>;
+  const failedChild = scans.find((scan) => scan.parentScanId === f.scanId)!;
+  const outcome = await resume({ ...f, scanId: failedChild.scanId }, noModel);
+  expect(outcome.code, outcome.stderr).toBe(0);
+  expect(modelCalls).toBe(0);
+  expect(outcome.stderr).toContain("without another model call");
+  expect(await readFile(join(f.scanDir, "scan-manifest.json"), "utf8")).toBe(
+    parent,
+  );
+  const result = JSON.parse(outcome.stdout);
+  expect(result.cost).toEqual(previousCost);
+  expect(result.threadId).toBe(f.threadId);
+  expect(result.coverage.completeness).toBe("complete");
+  expect(result.findings.findings).toHaveLength(1);
+});

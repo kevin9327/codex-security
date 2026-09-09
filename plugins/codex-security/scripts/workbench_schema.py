@@ -867,6 +867,30 @@ MIGRATIONS = (
         );
         """,
     ),
+    (
+        42,
+        "persist semantic scan checkpoints and reviewed source files",
+        """
+        ALTER TABLE scans ADD COLUMN continuation_cost_json TEXT;
+        CREATE TABLE scan_checkpoints (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id TEXT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+            source_path TEXT NOT NULL,
+            checkpoint_path TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            UNIQUE (scan_id, source_path, content_sha256)
+        );
+        CREATE TABLE scan_review_files (
+            scan_id TEXT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+            relative_path TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            reviewed_at TEXT,
+            PRIMARY KEY (scan_id, relative_path)
+        );
+        """,
+    ),
 )
 
 

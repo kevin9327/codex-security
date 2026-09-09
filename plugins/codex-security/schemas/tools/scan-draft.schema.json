@@ -811,6 +811,14 @@
               }
             ]
           }
+        },
+        "reviewedFiles": {
+          "description": "Repository-relative paths fully security-reviewed in this batch or earlier checkpoints, including clean files. The host binds them to the source bytes selected at scan start.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repositoryPath"
+          },
+          "uniqueItems": true
         }
       },
       "required": [

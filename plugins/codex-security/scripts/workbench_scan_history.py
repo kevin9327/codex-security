@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from report_projection import SEVERITY_ORDER
 from workbench_constants import FINDINGS_PAGE_MAX
+from workbench_scan_checkpoints import checkpoint_completion_ready, checkpoint_state
 from workbench_scan_start import scan_target_identity
 from workbench_scan_usage import stored_scan_cost_fields
 from workbench_target import git_output, require_scan_target_identity
@@ -41,28 +42,51 @@ def cli_scan_resume(
     scan_contract: Callable[[sqlite3.Row], dict[str, Any]],
     require_scan_directory: Callable[[Path], Path],
 ) -> dict[str, Any]:
-    if scan["mode"] != "deep" or scan["recipe_json"] is None:
-        raise SystemExit("Resume requires a Deep Scan with a saved CLI launch recipe.")
-    if scan["status"] != "running" or scan["canceled_at"] is not None:
-        raise SystemExit(
-            "Resume requires a running scan; completed, failed, and canceled scans cannot resume."
-        )
+    if scan["mode"] not in {"standard", "deep"} or scan["recipe_json"] is None:
+        raise SystemExit("Resume requires a saved CLI launch recipe.")
+    checkpoint = checkpoint_state(connection, scan["id"])
     thread_id = scan["continuation_thread_id"]
+    source_thread_id = thread_id
+    ancestor_id = scan["parent_scan_id"]
+    while source_thread_id is None and ancestor_id is not None:
+        ancestor = connection.execute(
+            "SELECT continuation_thread_id, parent_scan_id FROM scans WHERE id = ?", (ancestor_id,)
+        ).fetchone()
+        if ancestor is None:
+            break
+        source_thread_id = ancestor["continuation_thread_id"]
+        ancestor_id = ancestor["parent_scan_id"]
     owner = scan["deep_scan_owner_thread_id"] or workspace["thread_id"]
-    if (
-        not thread_id
-        or (owner is not None and owner != thread_id)
-        or scan["handoff_status"] != "delivered"
-        or scan["handoff_claim_token"] is not None
-    ):
-        raise SystemExit("Resume requires the original owning CLI session.")
     run = connection.execute(
         "SELECT status, cancel_requested FROM deep_scan_runs WHERE scan_id = ?", (scan["id"],)
     ).fetchone()
-    if run is not None and (
-        run["status"] not in {"running", "succeeded"} or run["cancel_requested"]
+    session_available = (
+        scan["mode"] == "deep"
+        and scan["status"] == "running"
+        and scan["canceled_at"] is None
+        and thread_id
+        and (owner is None or owner == thread_id)
+        and scan["handoff_status"] == "delivered"
+        and scan["handoff_claim_token"] is None
+        and (
+            run is None
+            or (run["status"] in {"running", "succeeded"} and not run["cancel_requested"])
+        )
+    )
+    if not session_available and checkpoint is None:
+        raise SystemExit(
+            "Resume requires a running Deep Scan in its original owning CLI session "
+            "or saved semantic checkpoints. No completed source work can be resumed."
+        )
+    if (
+        scan["status"] == "complete"
+        and checkpoint is not None
+        and all(
+            source["complete"] and source["coverage"].get("completeness") == "complete"
+            for source in checkpoint["sources"]
+        )
     ):
-        raise SystemExit("This Deep Scan has stopped and cannot resume.")
+        raise SystemExit("This scan already completed; use scans rerun to start another scan.")
     try:
         repository = require_scan_target_identity(scan)
     except SystemExit as exc:
@@ -84,6 +108,13 @@ def cli_scan_resume(
     return {
         "contract": scan_contract(scan),
         "recipe": recipe,
+        "resumeMode": "session" if session_available else "checkpoint",
+        "checkpoint": checkpoint,
+        "completionReady": checkpoint_completion_ready(checkpoint, scan["mode"]),
+        "previousCost": json.loads(scan["continuation_cost_json"])
+        if scan["continuation_cost_json"]
+        else None,
+        **stored_scan_cost_fields(scan["cost_json"]),
         "scanDir": str(scan_dir),
         "scanId": scan["id"],
         "scopeFileCount": progress["scope_file_count"],
@@ -91,6 +122,7 @@ def cli_scan_resume(
         "targetId": scan["target_id"],
         "targetRevision": scan["target_revision"],
         "threadId": thread_id,
+        "sourceThreadId": source_thread_id,
         "userContext": scan["user_context"],
     }
 

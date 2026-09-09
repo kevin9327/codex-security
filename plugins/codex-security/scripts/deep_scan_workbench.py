@@ -19,8 +19,13 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from deep_scan_config import resolve_deep_scan_config
 from filesystem_identity import serialize_filesystem_identity
-from finalize_scan_contract import _read_scan_local_json
+from finalize_scan_contract import (
+    _read_scan_local_json,
+    open_scan_local_file_descriptor,
+    write_scan_local_bytes,
+)
 from workbench.handoff import require_current_continuation
+from workbench_scan_checkpoints import freeze_review_files
 from workbench_target import (
     directory_content_digest,
     directory_snapshot_regular_file_count,
@@ -561,6 +566,211 @@ def effective_deep_scan_config(args: argparse.Namespace) -> dict[str, int | floa
     return resolve_deep_scan_config(available_parallelism)
 
 
+def rebind_checkpoint_result(
+    document: dict[str, Any], scan_id: str, worker_ids: dict[str, str]
+) -> dict[str, Any]:
+    """Copy semantic output and rebind only its structured scan/worker references."""
+    document = json.loads(json.dumps(document))
+    document["scanId"] = scan_id
+
+    def reference(value: str) -> str:
+        worker_id, separator, suffix = value.partition(":")
+        return worker_ids.get(worker_id, worker_id) + separator + suffix
+
+    def finding_references(finding: dict[str, Any]) -> None:
+        provenance = finding.get("provenance", {})
+        if isinstance(provenance.get("sourceFindingIds"), list):
+            provenance["sourceFindingIds"] = [
+                reference(value) for value in provenance["sourceFindingIds"]
+            ]
+        for source in provenance.get("sourceFindings", []):
+            source["id"] = reference(source["id"])
+            finding_references(source["finding"])
+
+    for finding in document.get("findings", []):
+        finding_references(finding)
+    return document
+
+
+def restore_checkpoint_workers(
+    connection: sqlite3.Connection, parent: sqlite3.Row, child: sqlite3.Row, timestamp: str
+) -> dict[str, str]:
+    """Carry paid, completed Deep units into a new source-bound continuation.
+
+    Failed/in-flight units are scheduled again. Completed reducers keep their input
+    ledger, so accepted discoveries are neither rerun nor reduced a second time.
+    The caller validates the source/recipe and owns the SQLite transaction.
+    """
+    from workbench_saved_results import _read_saved_result, _source_digests
+
+    run = connection.execute(
+        "SELECT * FROM deep_scan_runs WHERE scan_id = ?", (parent["id"],)
+    ).fetchone()
+    if child["mode"] != "deep" or run is None:
+        return {}
+    workers = connection.execute(
+        "SELECT * FROM deep_scan_workers WHERE scan_id = ? "
+        "AND status = 'succeeded' AND kind IN ('discovery', 'dedup') ORDER BY created_at, id",
+        (parent["id"],),
+    ).fetchall()
+    worker_ids = {row["id"]: str(uuid.uuid5(uuid.UUID(child["id"]), row["id"])) for row in workers}
+    existing = connection.execute(
+        "SELECT 1 FROM deep_scan_runs WHERE scan_id = ?", (child["id"],)
+    ).fetchone()
+    if existing is not None:
+        restored = {
+            row[0]
+            for row in connection.execute(
+                "SELECT id FROM deep_scan_workers WHERE scan_id = ?", (child["id"],)
+            )
+        }
+        if not set(worker_ids.values()).issubset(restored):
+            raise SystemExit("The child Deep Scan already has different worker state.")
+        return worker_ids
+    reducers = {row["id"] for row in workers if row["kind"] == "dedup"}
+    discoveries = {row["id"] for row in workers if row["kind"] == "discovery"}
+    inputs = [
+        row
+        for row in connection.execute(
+            "SELECT * FROM deep_scan_dedup_inputs WHERE scan_id = ? "
+            "ORDER BY dedup_worker_id, input_order",
+            (parent["id"],),
+        )
+        if row["dedup_worker_id"] in reducers
+    ]
+    if any(row["discovery_worker_id"] not in discoveries for row in inputs):
+        raise SystemExit("A completed Deep reducer is missing its accepted discovery input.")
+    merged = {row["discovery_worker_id"] for row in inputs}
+    parent_root = require_canonical_scan_directory(Path(parent["scan_dir"]))
+    child_root = require_canonical_scan_directory(Path(child["scan_dir"]))
+    frozen_sources = {}
+    if parent["retained_source_digests_json"] is not None:
+        frozen_sources = _source_digests(
+            json.loads(parent["retained_source_digests_json"]), "Saved stopped-scan"
+        )
+    elif parent["seal_manifest_digest"] is not None:
+        manifest = _read_scan_local_json(parent_root, "scan-manifest.json", "Saved scan manifest")
+        frozen_sources = _source_digests(
+            manifest["scan"].get("preservedSources", {}), "Published scan"
+        )
+
+    def copy_file(path: Path) -> Path:
+        relative = path.relative_to(parent_root).as_posix()
+        descriptor = open_scan_local_file_descriptor(parent_root, relative, "Saved Deep artifact")
+        with os.fdopen(descriptor, "rb") as source:
+            contents = source.read()
+        write_scan_local_bytes(child_root, relative, contents)
+        return child_root / relative
+
+    restored_workers = []
+    for worker in workers:
+        artifact_dir = Path(
+            deep_scan_path(parent, worker["artifact_dir"], "Saved Deep artifacts", kind="directory")
+        )
+        prompt_path = Path(
+            deep_scan_path(parent, worker["prompt_path"], "Saved Deep prompt", kind="file")
+        )
+        if worker["result_manifest_path"] is None:
+            raise SystemExit("A completed Deep worker is missing its result path.")
+        result_path = Path(
+            deep_scan_path(parent, worker["result_manifest_path"], "Saved Deep result", kind="file")
+        )
+        result_relative = result_path.relative_to(parent_root).as_posix()
+        result, digest = _read_saved_result(
+            parent_root, result_relative, parent["id"], kind=worker["kind"]
+        )
+        if result_relative in frozen_sources and digest != frozen_sources[result_relative]:
+            raise SystemExit("A completed Deep worker checkpoint changed after the scan stopped.")
+        if result.get("complete") is False:
+            raise SystemExit("A completed Deep worker has an incomplete or unbound result.")
+        for directory, directories, filenames in os.walk(artifact_dir, followlinks=False):
+            # Parent checkpoint digests and head markers refer to the old scan ID.
+            directories[:] = [name for name in directories if name != "checkpoints"]
+            for name in directories:
+                deep_scan_path(
+                    parent, str(Path(directory) / name), "Saved Deep artifacts", kind="directory"
+                )
+            for name in filenames:
+                path = Path(directory) / name
+                if path != result_path and name != "checkpoint-head.json":
+                    copy_file(path)
+        copied_prompt = copy_file(prompt_path)
+        result_relative = result_path.relative_to(parent_root).as_posix()
+        write_scan_local_bytes(
+            child_root,
+            result_relative,
+            (
+                json.dumps(rebind_checkpoint_result(result, child["id"], worker_ids), indent=2)
+                + "\n"
+            ).encode(),
+        )
+        restored_worker = dict(worker)
+        restored_worker.update(
+            id=worker_ids[worker["id"]],
+            scan_id=child["id"],
+            prompt_path=str(copied_prompt),
+            artifact_dir=str(child_root / artifact_dir.relative_to(parent_root)),
+            result_manifest_path=str(child_root / result_relative),
+            updated_at=timestamp,
+        )
+        if worker["kind"] == "discovery":
+            restored_worker["merge_state"] = "merged" if worker["id"] in merged else "buffered"
+        restored_workers.append(restored_worker)
+    # Keep the original time budget origin while retrying unfinished units within
+    # the original discovery cap. The new campaign has no live coordinator lease.
+    restored_run = dict(run)
+    restored_run.update(
+        scan_id=child["id"],
+        coordinator_generation=1,
+        status="running",
+        phase="discovery",
+        discovery_runs_dispatched=len(discoveries),
+        completion_sequence=max((row["completion_sequence"] or 0 for row in workers), default=0),
+        cancel_requested=0,
+        consecutive_errors=0,
+        updated_at=timestamp,
+        completed_at=None,
+        manifest_path=None,
+        terminal_reason=None,
+        error_message=None,
+        publication_error_message=None,
+    )
+    for field in (
+        "canonical_inventory_path",
+        "canonical_finding_report_path",
+        "canonical_candidates_path",
+        "dedupe_report_path",
+        "seed_research_path",
+        "work_ledger_path",
+        "raw_candidates_path",
+        "coverage_ledger_path",
+        "findings_dir",
+    ):
+        restored_run[field] = None
+
+    def insert(table: str, values: dict[str, Any]) -> None:
+        columns = ", ".join(values)
+        placeholders = ", ".join("?" for _ in values)
+        connection.execute(
+            f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", tuple(values.values())
+        )
+
+    insert("deep_scan_runs", restored_run)
+    for worker in restored_workers:
+        insert("deep_scan_workers", worker)
+    for row in inputs:
+        insert(
+            "deep_scan_dedup_inputs",
+            {
+                "scan_id": child["id"],
+                "dedup_worker_id": worker_ids[row["dedup_worker_id"]],
+                "discovery_worker_id": worker_ids[row["discovery_worker_id"]],
+                "input_order": row["input_order"],
+            },
+        )
+    return worker_ids
+
+
 def ensure_deep_scan_run(
     connection: sqlite3.Connection,
     scan: sqlite3.Row,
@@ -577,6 +787,18 @@ def ensure_deep_scan_run(
         raise SystemExit("Deep Scan orchestration requires a scan in deep mode.")
     if scan["status"] != "running":
         raise SystemExit("Only a running Deep Scan can start orchestration.")
+    if (
+        connection.execute(
+            "SELECT 1 FROM scan_review_files WHERE scan_id = ? LIMIT 1", (scan["id"],)
+        ).fetchone()
+        is None
+    ):
+        paths = (
+            json.loads(scan["recipe_json"])["target"]["paths"]
+            if scan["recipe_json"]
+            else [scan["scope"]]
+        )
+        freeze_review_files(connection, scan["id"], Path(scan["target_path"]), paths)
     connection.execute(
         """
         INSERT INTO deep_scan_runs (

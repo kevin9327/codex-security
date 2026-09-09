@@ -38,6 +38,7 @@ import workbench_progress as progress
 import workbench_publication as publication
 import workbench_remediation as remediation
 import workbench_saved_results as saved_results
+import workbench_scan_checkpoints as scan_checkpoints
 import workbench_scan_history as scan_history
 import workbench_scan_usage as scan_usage
 import workbench_severity as severity
@@ -101,6 +102,9 @@ from workbench_scan_start import (
     scan_target_identity,
     stored_diff_target,
 )
+from workbench_scan_start import (
+    parse_scan_recipe as parse_scan_launch_recipe,
+)
 from workbench_schema import (
     MIGRATIONS,
 )
@@ -149,7 +153,6 @@ from workbench_validation import (
 FINDING_ARTIFACT_DIRECTORIES_LIMIT = 80
 FINDING_ARTIFACTS_LIMIT = 40
 FINDING_WRITEUP_REPORT_PATH = re.compile(r"^findings/([a-z0-9][a-z0-9._-]*)/\1\.md$")
-SCAN_RECIPE_MAX_BYTES = 256 * 1024
 
 
 def now() -> str:
@@ -1769,6 +1772,8 @@ def register_cli_scan(connection: sqlite3.Connection, args: argparse.Namespace) 
         )
         if workflow_id is not None:
             register_workflow_scan(connection, workflow_id, scan_id, str(scan_dir), timestamp)
+        if mode in {"standard", "deep"}:
+            scan_checkpoints.freeze_review_files(connection, scan_id, repository, paths)
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -1820,54 +1825,7 @@ def set_scan_cost_limit(connection: sqlite3.Connection, args: argparse.Namespace
 
 
 def parse_scan_recipe(value: str, repository: Path) -> dict[str, Any]:
-    if len(value.encode("utf-8")) > SCAN_RECIPE_MAX_BYTES:
-        raise SystemExit("Scan launch recipe must be no larger than 256 KiB.")
-    try:
-        recipe = json.loads(value, parse_constant=reject_non_finite_json)
-    except (TypeError, UnicodeError, ValueError) as exc:
-        raise SystemExit("Scan launch recipe must be a valid JSON object.") from exc
-    if not isinstance(recipe, dict):
-        raise SystemExit("Scan launch recipe must be a JSON object.")
-    requested_repository = recipe.get("repository")
-    if (
-        not isinstance(requested_repository, str)
-        or require_target(requested_repository) != repository
-    ):
-        raise SystemExit("Scan launch recipe repository must match the scanned repository.")
-    if recipe.get("mode") not in {"standard", "deep"}:
-        raise SystemExit("Scan launch recipe mode must be standard or deep.")
-    if not isinstance(recipe.get("config"), dict):
-        raise SystemExit("Scan launch recipe config must be a JSON object.")
-    target = recipe.get("target")
-    if not isinstance(target, dict) or target.get("kind") not in {
-        "repository",
-        "paths",
-        "refs",
-        "working_tree",
-    }:
-        raise SystemExit("Scan launch recipe target must identify a supported scan target.")
-    paths = target.get("paths")
-    if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
-        raise SystemExit("Scan launch recipe target paths must be an array of strings.")
-    if target["kind"] == "paths" and not paths:
-        raise SystemExit("A scoped scan launch recipe must include at least one target path.")
-    if target["kind"] != "paths" and paths:
-        raise SystemExit("Only scoped scan launch recipes can include target paths.")
-    for path in paths:
-        candidate = PurePosixPath(path)
-        if (
-            not path
-            or candidate.is_absolute()
-            or ".." in candidate.parts
-            or "\\" in path
-            or not (repository / candidate).exists()
-            or not (repository / candidate).resolve().is_relative_to(repository)
-        ):
-            raise SystemExit("Scan launch recipe target paths must exist inside the repository.")
-    if target["kind"] in {"refs", "working_tree"}:
-        if not isinstance(target.get("base"), str) or not isinstance(target.get("head"), str):
-            raise SystemExit("Diff scan launch recipes require resolved base and head revisions.")
-    return recipe
+    return parse_scan_launch_recipe(value, repository, require_target=require_target)
 
 
 _WORKBENCH_DB_CONTEXT: saved_results.WorkbenchDbContext
@@ -2844,11 +2802,18 @@ def scan_result(
         connection, scan["id"], (row["id"] for row in occurrence_rows)
     )
     return {
+        **(
+            {"checkpoint": checkpoint}
+            if (checkpoint := scan_checkpoints.checkpoint_summary(connection, scan["id"]))
+            is not None
+            else {}
+        ),
         "artifacts": artifacts,
         "canceledAt": scan["canceled_at"],
         **scan_usage.stored_scan_cost_fields(scan["cost_json"]),
         "contract": scan_contract(scan),
         "continuationThreadId": scan["continuation_thread_id"],
+        "parentScanId": scan["parent_scan_id"],
         "failureMessage": scan["failure_message"],
         "findings": [
             finding_result(connection, scan, row, related=relations.get(row["id"], []))
@@ -3508,6 +3473,8 @@ def main() -> None:
         elif args.command == "get-cli-scan-resume":
             scan = require_scan(connection, args.scan_id)
             try:
+                with scan_completion_lock(scan["id"]):
+                    scan_checkpoints.reconcile_checkpoints(connection, scan, now())
                 result = scan_history.cli_scan_resume(
                     connection,
                     scan,
@@ -3564,6 +3531,14 @@ def main() -> None:
             result = recover_scan_results(connection, args)
         elif args.command == "write-scan-draft":
             result = write_scan_draft(connection, args)
+        elif args.command == "record-scan-checkpoint":
+            scan = require_scan(connection, args.scan_id)
+            with scan_completion_lock(scan["id"]):
+                result = scan_checkpoints.record_checkpoint(
+                    connection, scan, Path(args.checkpoint_path), now()
+                )
+        elif args.command == "continue-scan-checkpoint":
+            result = scan_checkpoints.continue_checkpoint(_WORKBENCH_DB_CONTEXT, connection, args)
         elif args.command == "mark-handoff-delivered":
             result = handoff.mark_handoff_delivered(
                 connection,

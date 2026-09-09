@@ -1035,7 +1035,7 @@ unique prefix of at least eight characters.
 | `scans list [REPOSITORY]`                             | List scans. Filter by artifact root with `--scan-root DIR`.                                                 |
 | `scans show [SCAN_ID]`                                | Show a scan; defaults to the latest completed one. `--show-linked-findings` includes earlier finding links. |
 | `scans logs [SCAN_ID]`                                | Show session events; defaults to the latest scan, including active scans.                                   |
-| `scans resume SCAN_ID`                                | Resume an interrupted Deep Scan in its original session and output directory.                               |
+| `scans resume SCAN_ID`                                | Continue a saved Standard or Deep Scan from its checkpoints.                                                |
 | `scans rerun [SCAN_ID]`                               | Repeat a scan on the current checkout; defaults to the latest completed scan.                               |
 | `scans match BEFORE AFTER`                            | Link findings with the same root cause.                                                                     |
 | `scans match --all`                                   | Match completed scans across the repository's worktrees and clones.                                         |
@@ -1043,26 +1043,41 @@ unique prefix of at least eight characters.
 | `findings list [REPOSITORY]`                          | List open findings. `findings` is an alias.                                                                 |
 | `findings false-positive OCCURRENCE_ID --reason TEXT` | Mark a false positive. Later scans dismiss matches only while the reason applies.                           |
 
-#### Resuming an interrupted Deep Scan
+#### Resuming a saved scan
 
-After the CLI process or host stops unexpectedly, find the scan and rejoin it:
+Standard and Deep Scans save semantic checkpoints as they progress, without an
+incremental flag. Checkpoints retain validated findings, pending candidates,
+rejected candidates with counterevidence, and reviewed source files, including
+clean files. SQLite records each accepted checkpoint with its completed coverage;
+final finding indexes and sealed reports are produced at completion.
+
+After a failure or process interruption, inspect the saved work and continue it:
 
 ```bash
-npx @openai/codex-security scans list --scan-root /path/to/security-scans
+npx @openai/codex-security scans show SCAN_ID
+npx @openai/codex-security scans logs SCAN_ID
 npx @openai/codex-security scans resume SCAN_ID
 ```
 
-The scan must still be `running`, with its original checkout, output directory,
-and owning Codex session available in the same Codex Security state directory.
-The checkout's identity, revision, and contents must match the saved target.
-Completed, failed, and canceled scans cannot resume; `scans rerun` starts a new scan.
+`scans show` distinguishes provisional findings from final results and shows saved
+coverage, the failure reason, session, artifact directory, and recovery commands.
+Keep both the Codex Security state directory and scan output directory. Resume
+requires the original checkout identity, revision, contents, scope, and saved
+configuration. Missing checkpoints cannot reconstruct unrecorded model work.
 
-Resume uses the saved configuration and instructions with the installed plugin.
-It keeps the scan ID, completed workers, artifacts, and accumulated session cost.
-The existing coordinator recovers interrupted workers after its lease expires.
-If discovery finished before the interruption, resume completes and seals the
-same scan. No archiving or new attempt directory is needed. A failed connection
-leaves the existing scan available for another resume attempt.
+A running Deep Scan with its original native session resumes in place, retaining
+its ID and completed workers. Standard Scans and stopped scans continue in a
+linked child scan. The child inherits saved findings and evidence; Standard
+review continues with unfinished source files and pending candidates. Deep
+continuation restores completed independent review and reduction work before
+scheduling missing units. An incomplete model turn may need to run again.
+The original scan's sealed results remain unchanged.
+
+A Standard checkpoint that already contains complete reviewed coverage can finish
+without another model call. Resume uses the installed plugin with the saved
+configuration and instructions. Costs include prior attempts, and an existing
+`--max-cost` limit applies to the total. If the remaining budget cannot be
+established from saved usage, resume reports that before starting more work.
 
 For bulk campaigns, use [`bulk-scan --recover`](#recovering-failed-or-interrupted-bulk-scans)
 to recover eligible attempts and update `results.jsonl`. Individual `scans resume`

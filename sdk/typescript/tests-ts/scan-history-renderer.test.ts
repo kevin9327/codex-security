@@ -267,6 +267,46 @@ describe("scan history renderer", () => {
     expect(failed).toContain("ERROR  Repository checkout became unavailable.");
   });
 
+  test("shows provisional saved work and a concrete recovery command", () => {
+    const output = renderScanHistory(
+      {
+        scanId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        targetPath: "/demo/repository",
+        scanDir: "/demo/output",
+        continuationThreadId: "native-session",
+        mode: "standard",
+        progress: { status: "failed", phase: "validation" },
+        findings: [],
+        artifacts: {},
+        failureMessage: "Native process disconnected.",
+        checkpoint: {
+          savedAt: "2026-09-09T10:00:00Z",
+          findingCount: 1,
+          pendingCount: 1,
+          reviewedFileCount: 1,
+          remainingFileCount: 1,
+          coverageComplete: false,
+          sources: [{ source: ".", checkpointPath: "checkpoints/saved.json" }],
+        },
+      },
+      "show",
+      { color: false },
+    );
+    expect(output).toContain(
+      "1 saved finding observations; 1 pending items; coverage remains incomplete.",
+    );
+    expect(output).toContain("1 source files reviewed; 1 remaining.");
+    expect(output).toContain("checkpoints/saved.json");
+    expect(output).toContain(
+      "Resume: codex-security scans resume aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    expect(output).toContain("SESSION  native-session");
+    expect(output).toContain("SAVED FILES  /demo/output");
+    expect(output).toContain(
+      "Logs: codex-security scans logs aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+  });
+
   test("shows saved completion warnings without marking a scan failed", () => {
     const output = stripVTControlCharacters(
       renderScanHistory(

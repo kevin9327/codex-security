@@ -237,6 +237,8 @@ export interface DeepScanOptions {
 export interface ScanOptions extends DeepScanOptions {
   /** @internal Resume a CLI Deep Scan with its saved launch recipe. */
   resumeScanId?: string;
+  /** @internal Continue saved semantic checkpoints in a linked scan attempt. */
+  continuationScanId?: string;
   /** Save synthetic Standard scan results without calling Codex or a model. */
   mock?: boolean;
   /** Opt into a durable scan -> custom publication -> dedupe workflow. */
@@ -792,6 +794,22 @@ export class CodexSecurity {
     let scanFailure = false;
     let customValidationComplete = false;
     let completionCost: ScanCost | null = null;
+    let previousCost: ScanCost | null = null;
+    let completeFromCheckpoint = false;
+    let completionSourceThreadId: string | undefined;
+    const cumulativeCost = (cost: ScanCost | null): ScanCost | null => {
+      if (cost === null || previousCost === null) return cost;
+      return {
+        model: cost.model,
+        inputTokens: previousCost.inputTokens + cost.inputTokens,
+        cachedInputTokens:
+          previousCost.cachedInputTokens + cost.cachedInputTokens,
+        cacheWriteInputTokens:
+          previousCost.cacheWriteInputTokens + cost.cacheWriteInputTokens,
+        outputTokens: previousCost.outputTokens + cost.outputTokens,
+        estimatedUsd: previousCost.estimatedUsd + cost.estimatedUsd,
+      };
+    };
     let budgetRecovery: {
       expectation: ScanExpectation;
       pluginRoot: string;
@@ -816,7 +834,7 @@ export class CodexSecurity {
       };
 
       // Validate all local inputs before runtime initialization or plugin-Python discovery.
-      const {
+      let {
         repository: repo,
         target: normalized,
         mode,
@@ -864,6 +882,148 @@ export class CodexSecurity {
         python,
       } = session;
       releaseCredentialHome = session.releaseCredentialHome;
+      const workbenchOptions: WorkbenchCommandOptions = {
+        python,
+        pluginRoot: runtime.plugin.pluginRoot,
+        environment: {
+          ...selectedScanEnvironment(
+            runtime.environment,
+            options.auth,
+            modelProvider,
+          ),
+          CODEX_SECURITY_STATE_DIR: stateDirectory,
+        },
+        signal,
+        failureMessage: "Could not save the Codex Security scan",
+      };
+      const requestedResumeId =
+        options.resumeScanId ?? options.continuationScanId;
+      const resumeContext =
+        requestedResumeId === undefined
+          ? undefined
+          : await workbench(workbenchOptions, [
+              "get-cli-scan-resume",
+              "--scan-id",
+              requestedResumeId,
+            ]);
+      if (resumeContext !== undefined) {
+        const savedRecipe = resumeContext["recipe"];
+        if (
+          resumeContext["scanId"] !== requestedResumeId ||
+          !isRecord(savedRecipe) ||
+          savedRecipe["repository"] !== repo ||
+          typeof resumeContext["scanDir"] !== "string"
+        ) {
+          throw new CodexSecurityError(
+            "The workbench returned mismatched scan resume context.",
+          );
+        }
+        const savedThreadId = resumeContext["threadId"];
+        const savedSession =
+          typeof savedThreadId === "string"
+            ? await findScanSession(runtime.codexHome, savedThreadId)
+            : null;
+        if (
+          options.resumeScanId !== undefined &&
+          (resumeContext["resumeMode"] === "checkpoint" ||
+            savedSession?.workingDirectory !== resumeContext["scanDir"])
+        ) {
+          if (!isRecord(resumeContext["checkpoint"])) {
+            throw new CodexSecurityError(
+              `The original Codex session for scan ${requestedResumeId} is unavailable and there are no semantic checkpoints. Restore its session logs in the original Codex Security state directory before resuming.`,
+            );
+          }
+          options = {
+            ...options,
+            resumeScanId: undefined,
+            continuationScanId: requestedResumeId,
+            parentScanId: requestedResumeId,
+            outputDir: undefined,
+          };
+          requestedOutput = null;
+        }
+        if (options.resumeScanId !== undefined) {
+          // This thread's tracker accounts for its own attempt; inherited spend is separate.
+          previousCost = savedScanCost(resumeContext["previousCost"]);
+          if (
+            options.maxCostUsd !== undefined &&
+            previousCost !== null &&
+            previousCost.estimatedUsd >= options.maxCostUsd
+          ) {
+            throw new CodexSecurityError(
+              "The previous scan already reached its saved total cost limit; start a new scan with a higher --max-cost.",
+            );
+          }
+        }
+        if (options.continuationScanId !== undefined) {
+          if (!isRecord(resumeContext["checkpoint"]))
+            throw new CodexSecurityError(
+              "The saved scan has no semantic checkpoints to continue.",
+            );
+          if (
+            savedRecipe["validationMode"] === "custom" &&
+            options.validationPrompt === undefined
+          )
+            throw new CodexSecurityError(
+              "This scan requires its original custom validation instructions; use scans rerun with --validation-prompt-file.",
+            );
+          const sourceThreadId =
+            savedThreadId ?? resumeContext["sourceThreadId"];
+          completionSourceThreadId =
+            typeof sourceThreadId === "string" ? sourceThreadId : undefined;
+          completeFromCheckpoint =
+            mode === "standard" &&
+            resumeContext["completionReady"] === true &&
+            completionSourceThreadId !== undefined;
+          previousCost = savedScanCost(resumeContext["cost"]);
+          if (previousCost === null) {
+            const inheritedCost = savedScanCost(resumeContext["previousCost"]);
+            if (
+              savedSession?.workingDirectory === resumeContext["scanDir"] &&
+              typeof savedThreadId === "string"
+            ) {
+              const previousTracker = new ScanCostTracker({
+                codexHome: runtime.codexHome,
+                model: scanModelConfiguration(effectiveConfig).model,
+                repository: repo,
+                scanDirectory: resumeContext["scanDir"],
+              });
+              previousTracker.start(savedThreadId);
+              const recoveredCost = (await previousTracker.stop()).cost;
+              previousCost = inheritedCost;
+              previousCost = cumulativeCost(recoveredCost);
+            } else if (savedThreadId === null) {
+              // Registration and checkpoint seeding can finish before the first model call.
+              previousCost = inheritedCost;
+            }
+          }
+          if (
+            !completeFromCheckpoint &&
+            options.maxCostUsd !== undefined &&
+            (previousCost === null ||
+              previousCost.estimatedUsd >= options.maxCostUsd)
+          ) {
+            throw new CodexSecurityError(
+              previousCost === null
+                ? "The previous scan's cost is unavailable; its saved total cost limit cannot be enforced for a continuation."
+                : "The previous scan already reached its saved total cost limit; start a new scan with a higher --max-cost.",
+            );
+          }
+          options = {
+            ...options,
+            scanPrompt:
+              typeof resumeContext["userContext"] === "string"
+                ? resumeContext["userContext"]
+                : options.scanPrompt,
+          };
+          notifyObserver(
+            "onWarning",
+            options.onWarning,
+            options.onObserverError,
+            `Continuing scan ${requestedResumeId} in a linked attempt from saved checkpoints.${previousCost === null ? " Previous cost is unavailable; cost output will cover the new attempt only." : " Cost output and the saved limit include the previous attempt."}`,
+          );
+        }
+      }
       const deepScanConfigPath =
         mode === "deep"
           ? runtime.deepScanConfigPath ??
@@ -1044,7 +1204,8 @@ export class CodexSecurity {
         onCost:
           options.onCost === undefined && options.maxCostUsd === undefined
             ? undefined
-            : (cost) => {
+            : (currentCost) => {
+                const cost = cumulativeCost(currentCost)!;
                 latestCost = cost;
                 notifyObserver(
                   "onCost",
@@ -1143,27 +1304,9 @@ export class CodexSecurity {
       );
       if (options.validationPrompt !== undefined)
         recipe["validationMode"] = "custom";
-      const workbenchOptions: WorkbenchCommandOptions = {
-        python,
-        pluginRoot: runtime.plugin.pluginRoot,
-        environment: {
-          ...selectedScanEnvironment(
-            runtime.environment,
-            options.auth,
-            modelProvider,
-          ),
-          CODEX_SECURITY_STATE_DIR: stateDirectory,
-        },
-        signal,
-        failureMessage: "Could not save the Codex Security scan",
-      };
       const registration =
         options.resumeScanId !== undefined
-          ? await workbench(workbenchOptions, [
-              "get-cli-scan-resume",
-              "--scan-id",
-              options.resumeScanId,
-            ])
+          ? resumeContext!
           : await workbench(
               workbenchOptions,
               [
@@ -1290,6 +1433,93 @@ export class CodexSecurity {
         );
       }
       activeScan = { id: scanId, options: workbenchOptions };
+      let continuationCheckpoint: JsonObject | undefined;
+      if (options.continuationScanId !== undefined) {
+        const seeded = await workbench(workbenchOptions, [
+          "continue-scan-checkpoint",
+          "--scan-id",
+          scanId,
+          "--parent-scan-id",
+          options.continuationScanId,
+          ...(previousCost === null
+            ? []
+            : ["--cost-json", JSON.stringify(previousCost)]),
+        ]);
+        if (!isRecord(seeded["checkpoint"])) {
+          throw new CodexSecurityError(
+            "The saved checkpoint could not initialize the continuation.",
+          );
+        }
+        continuationCheckpoint = seeded["checkpoint"] as JsonObject;
+        if (completeFromCheckpoint) {
+          if (seeded["completionReady"] !== true) {
+            throw new CodexSecurityError(
+              "The saved checkpoint changed before finalization; retry the continuation.",
+            );
+          }
+          notifyObserver(
+            "onWarning",
+            options.onWarning,
+            options.onObserverError,
+            "All source work is saved; finishing local validation and export without another model call.",
+          );
+          await workbench(workbenchOptions, [
+            "prepare-scan-completion",
+            "--scan-id",
+            scanId,
+          ]);
+          await workbench(workbenchOptions, [
+            "complete-scan",
+            "--scan-id",
+            scanId,
+            ...(previousCost === null
+              ? []
+              : ["--cost-json", JSON.stringify(previousCost)]),
+          ]);
+          activeScan = null;
+          const completed = await collectResult(
+            { status: "completed", model, usage: null },
+            completionSourceThreadId!,
+            scanDir,
+            runtime.plugin.installedRoot,
+            expectation,
+            signal,
+            true,
+          );
+          completed.repositoryFindings = (await listRepositoryFindings(
+            (args) => workbench(workbenchOptions, args),
+            targetId,
+          ).catch((error: unknown) => {
+            notifyObserver(
+              "onWarning",
+              options.onWarning,
+              options.onObserverError,
+              `Could not load repository findings: ${errorMessage(error)}`,
+            );
+            return undefined;
+          })) as RepositoryFinding[] | undefined;
+          return new ScanResult({ ...completed, cost: previousCost });
+        }
+        if (
+          mode === "standard" &&
+          Array.isArray(continuationCheckpoint["reviewedFiles"]) &&
+          Array.isArray(continuationCheckpoint["remainingFiles"])
+        ) {
+          const reused = continuationCheckpoint["reviewedFiles"].length;
+          notifyObserver(
+            "onWarning",
+            options.onWarning,
+            options.onObserverError,
+            `Reused ${reused} reviewed files; ${continuationCheckpoint["remainingFiles"].length} remain for discovery.`,
+          );
+          if (scopeFileCount !== null)
+            reportProgress({
+              phase: "discovery",
+              filesCompleted: reused,
+              filesTotal: scopeFileCount,
+            });
+        }
+      }
       if (mode === "deep" && options.onDeepProgress !== undefined) {
         let progressWarningReported = false;
         deepProgressTracker = new DeepScanProgressTracker({
@@ -1377,6 +1607,32 @@ export class CodexSecurity {
       if (options.resumeScanId !== undefined) {
         prompt +=
           "\nResume the existing Deep Scan through its coordinator. Preserve completed workers and saved artifacts; do not recreate the scan directory or restart completed analysis. If the coordinator already finished, continue with completion of this same scan.";
+      }
+      if (continuationCheckpoint !== undefined) {
+        const continuationPath = join(
+          scanDir,
+          "artifacts",
+          "01_context",
+          "scan-continuation.json",
+        );
+        await mkdir(dirname(continuationPath), {
+          recursive: true,
+          mode: 0o700,
+        });
+        await writeFile(
+          continuationPath,
+          `${JSON.stringify({
+            parentScanId: options.continuationScanId,
+            reviewedFiles: continuationCheckpoint["reviewedFiles"],
+            remainingFiles: continuationCheckpoint["remainingFiles"],
+          })}\n`,
+          { flag: "wx", mode: 0o600, signal },
+        );
+        prompt += `\nThis is a continuation from saved semantic checkpoints. The host already carried forward findings, deferred candidates, and coverage into this attempt's canonical drafts and checkpoint. Read ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/artifacts/01_context/scan-continuation.json")} as saved progress data. Preserve inherited findings and reviewedFiles in every cumulative checkpoint. Continue deferred validation with its saved evidence. Keep the original full scan scope and report any remaining work as partial coverage.`;
+        prompt +=
+          mode === "standard"
+            ? " Review only remainingFiles for new discovery; do not repeat completed source review in reviewedFiles. If remainingFiles is empty, finish pending validation and finalization without restarting discovery."
+            : " Resume the Deep coordinator's restored worker units. Preserve completed independent discovery passes and run only its pending work. The global reviewedFiles list does not establish that every requested independent pass completed.";
       }
       if (
         falsePositiveExamples.length > 0 &&
@@ -1604,7 +1860,7 @@ export class CodexSecurity {
               "Scan completed, but its cost limit could not be verified because model pricing or token usage is unavailable.",
             );
           }
-          completionCost = snapshot.cost;
+          completionCost = cumulativeCost(snapshot.cost);
           let preparation: JsonObject;
           try {
             preparation = await workbench(workbenchOptions, [
@@ -1815,12 +2071,22 @@ export class CodexSecurity {
           `Could not update repository findings: ${errorMessage(error)}`,
         );
       }
-      return result;
+      return previousCost === null
+        ? result
+        : new ScanResult({ ...result, cost: completionCost });
     } catch (error) {
       // Recorded first: everything below can throw a different error for this same failed
       // scan, and cleanup must treat all of those as a failure it is not allowed to mask.
       scanFailure = true;
-      const snapshot = await costTracker?.stop().catch(() => null);
+      const latestSnapshot = await costTracker?.stop().catch(() => null);
+      const snapshot = latestSnapshot
+        ? {
+            ...latestSnapshot,
+            cost: completeFromCheckpoint
+              ? previousCost
+              : cumulativeCost(latestSnapshot.cost),
+          }
+        : latestSnapshot;
       let failure =
         signal.reason instanceof ScanCostLimitExceededError
           ? signal.reason
@@ -1908,7 +2174,12 @@ export class CodexSecurity {
             );
           }
           scanFailure = false;
-          return result;
+          return previousCost === null
+            ? result
+            : new ScanResult({
+                ...result,
+                cost: snapshot?.cost ?? failure.cost,
+              });
         } catch {}
       }
       // A failed attachment must not turn a resumable coordinator into a terminal failure.
@@ -2809,6 +3080,17 @@ export class CodexSecurity {
     signal?: AbortSignal,
   ): Promise<LocalScanInputs> {
     if (
+      options.continuationScanId !== undefined &&
+      (options.resumeScanId !== undefined ||
+        options.parentScanId !== options.continuationScanId ||
+        options.archiveExisting ||
+        options.mock)
+    ) {
+      throw new CodexSecurityError(
+        "Checkpoint continuation requires its original parent scan and a new output directory.",
+      );
+    }
+    if (
       options.resumeScanId !== undefined &&
       (options.mode !== "deep" ||
         !options.outputDir ||
@@ -3572,7 +3854,7 @@ function scanPrompt(
     'Use exactly "codex-security-plugin" as scan.producer.name.',
     ...(skillName === "security-scan"
       ? [
-          'At discovery start, after meaningful completed-review batches, and when entering each later phase, emit one standalone CODEX_SECURITY_SCAN_PROGRESS {"phase":"discovery","filesCompleted":3,"filesTotal":8} line using the best established file total and actual fully reviewed file count. Do not create inventories or receipts solely for progress.',
+          'At discovery start, after meaningful completed-review batches, and when entering each later phase, emit one standalone CODEX_SECURITY_SCAN_PROGRESS {"phase":"discovery","filesCompleted":3,"filesTotal":8} line using the best established file total and actual fully reviewed file count. Save completed source batches with the semantic checkpoint tool, including clean files in coverage.reviewedFiles.',
           "Collect truthful completed-review counts from delegated workers; the parent owns global progress updates.",
         ]
       : [
@@ -3597,17 +3879,21 @@ function scanPrompt(
       : []),
     "Runtime paths are environment-backed; keep them quoted in POSIX shells and use the corresponding $env: names in PowerShell. Do not copy or reparse their values.",
     targetInstruction(target, python),
-    ...(skillName === "security-scan" || enforceCostLimit || customValidation
+    ...(customValidation || (enforceCostLimit && skillName !== "security-scan")
       ? [
           "Write the complete canonical scan-manifest.json, findings.json, and coverage.json, but do not finalize or seal them; the SDK workbench owns authoritative metadata, finalization, report generation, and sealing.",
         ]
-      : skillName === "deep-security-scan"
+      : skillName === "security-scan"
         ? [
-            "The Deep Scan coordinator already wrote the canonical scan artifacts. Call complete_codex_security_scan exactly once without submitting another semantic draft; the workbench owns authoritative metadata, finalization, report generation, and sealing.",
+            "Use record_codex_security_scan_draft to save complete:false checkpoints after each investigator result, completed source-review batch, and validation decision. Include fully reviewed repository-relative paths in coverage.reviewedFiles even when a batch has no findings. Stop dependent work if the checkpoint cannot be saved. Finish with one complete:true semantic draft; do not finalize or seal them. Never call a scan-start or completion tool, because the SDK owns finalization and sealing.",
           ]
-        : [
-            "Use record_codex_security_scan_draft and complete_codex_security_scan as directed by the selected skill; the workbench owns authoritative metadata, finalization, report generation, and sealing.",
-          ]),
+        : skillName === "deep-security-scan"
+          ? [
+              "The Deep Scan coordinator already wrote the canonical scan artifacts. Call complete_codex_security_scan exactly once without submitting another semantic draft; the workbench owns authoritative metadata, finalization, report generation, and sealing.",
+            ]
+          : [
+              "Use record_codex_security_scan_draft and complete_codex_security_scan as directed by the selected skill; the workbench owns authoritative metadata, finalization, report generation, and sealing.",
+            ]),
     ...(additionalPrompt?.trim()
       ? ["Additional scan instructions:", additionalPrompt]
       : []),
@@ -3637,6 +3923,25 @@ function targetInstruction(target: NormalizedTarget, python: string): string {
     return `Scan target: Git diff from ${target.base} to ${target.head}.`;
   }
   return `Scan target: staged and unstaged working-tree changes against ${target.base}.`;
+}
+
+function savedScanCost(value: unknown): ScanCost | null {
+  if (!isRecord(value) || typeof value["model"] !== "string") return null;
+  for (const key of [
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "estimatedUsd",
+  ]) {
+    if (
+      typeof value[key] !== "number" ||
+      !Number.isFinite(value[key]) ||
+      value[key] < 0
+    )
+      return null;
+  }
+  return value as unknown as ScanCost;
 }
 
 function scanRecipe(

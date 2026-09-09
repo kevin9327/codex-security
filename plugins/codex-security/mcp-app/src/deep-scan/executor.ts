@@ -209,6 +209,10 @@ export class CodexSdkWorkerExecutor implements CodexWorkerExecutor {
           CODEX_SECURITY_REPO_ROOT: scan.repoRoot,
           CODEX_SECURITY_ARTIFACT_LAYOUT: assigned.layout,
           CODEX_SECURITY_SCAN_ID: scan.scanId,
+          ...(process.env.CODEX_SECURITY_STATE_DIR
+            ? { CODEX_SECURITY_STATE_DIR: process.env.CODEX_SECURITY_STATE_DIR }
+            : {}),
+          ...(assigned.workerId ? { CODEX_SECURITY_WORKER_ID: assigned.workerId } : {}),
           CODEX_SECURITY_PLUGIN_ROOT: scan.pluginRoot,
           ...(scan.scope !== undefined
             ? { CODEX_SECURITY_SCOPE: scan.scope }

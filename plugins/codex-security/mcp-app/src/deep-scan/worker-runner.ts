@@ -182,7 +182,7 @@ export class DeepScanWorkerRunner {
       promptPath,
       promptRoot,
       artifactDir,
-      artifactContext: { root: artifactDir, layout: "worker" },
+      artifactContext: { root: artifactDir, layout: "worker", workerId },
       subagents: run.config.subagents,
       validate: async () => {
         await validateDiscoveryArtifacts(artifacts, files.resultPath, run.scanId);
@@ -327,6 +327,7 @@ export class DeepScanWorkerRunner {
     });
 
     const artifactContext = {
+      workerId: reducerId,
       root: artifactDir,
       repoRoot: run.targetPath,
       scanId: run.scanId,

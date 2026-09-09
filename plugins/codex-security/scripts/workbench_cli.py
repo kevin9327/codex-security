@@ -271,6 +271,15 @@ def parse_args(description: str) -> argparse.Namespace:
     write_scan_draft.add_argument("--expected-draft-digest")
     write_scan_draft.add_argument("--claim-token")
 
+    record_checkpoint = subparsers.add_parser("record-scan-checkpoint")
+    record_checkpoint.add_argument("--scan-id", required=True)
+    record_checkpoint.add_argument("--checkpoint-path", required=True)
+
+    continue_checkpoint = subparsers.add_parser("continue-scan-checkpoint")
+    continue_checkpoint.add_argument("--scan-id", required=True)
+    continue_checkpoint.add_argument("--parent-scan-id", required=True)
+    continue_checkpoint.add_argument("--cost-json")
+
     mark_handoff_delivered = subparsers.add_parser("mark-handoff-delivered")
     mark_handoff_delivered.add_argument("--scan-id", required=True)
     mark_handoff_delivered.add_argument("--claim-token", required=True)

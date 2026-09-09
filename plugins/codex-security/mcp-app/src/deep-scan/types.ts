@@ -184,6 +184,7 @@ export interface DeepScanStore {
 
 /** Host-bound worker artifact state; never populate this from model input. */
 export interface CodexWorkerArtifactContext {
+  workerId?: string;
   root: string;
   layout: "worker" | "reducer";
   deepReducer?: DeepReducerContext;
