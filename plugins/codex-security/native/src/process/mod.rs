@@ -1,9 +1,9 @@
-use napi::bindgen_prelude::{Buffer, Either, Null};
+use napi::bindgen_prelude::{BigInt, Buffer, Either, Null};
 use napi_derive::napi;
 use std::{
     ffi::OsString,
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, Write},
     thread,
 };
 
@@ -28,7 +28,6 @@ pub struct ProcessRequest {
     pub args: Vec<Buffer>,
     pub cwd: Option<Either<Buffer, Null>>,
     pub input: Option<Either<Buffer, Null>>,
-    pub stdout_path: Option<Either<Buffer, Null>>,
     pub environment: Option<Vec<EnvironmentEdit>>,
 }
 
@@ -38,6 +37,77 @@ pub struct ProcessResult {
     pub return_code: Option<i64>,
     pub stdout: Buffer,
     pub stderr: Buffer,
+}
+
+#[napi]
+pub struct ProcessOutputFile {
+    file: Option<File>,
+}
+
+impl ProcessOutputFile {
+    fn file(&self) -> napi::Result<&File> {
+        self.file
+            .as_ref()
+            .ok_or_else(|| invalid("Process output file is closed"))
+    }
+
+    fn writer(&self) -> napi::Result<File> {
+        let mut file = self.file()?.try_clone()?;
+        file.set_len(0)?;
+        file.rewind()?;
+        Ok(file)
+    }
+}
+
+#[napi]
+impl ProcessOutputFile {
+    #[napi]
+    pub fn size(&self) -> napi::Result<BigInt> {
+        Ok(self.file()?.metadata()?.len().into())
+    }
+
+    #[napi]
+    pub fn rewind(&self) -> napi::Result<()> {
+        Ok(self.file()?.rewind()?)
+    }
+
+    #[napi]
+    pub fn read(&self, mut buffer: Buffer) -> napi::Result<f64> {
+        Ok(self.file()?.read(&mut buffer)? as f64)
+    }
+
+    #[napi]
+    pub fn close(&mut self) {
+        self.file.take();
+    }
+}
+
+/// The OS removes the spool even when the helper is terminated before cleanup.
+#[napi]
+pub fn open_process_output(path: Buffer) -> napi::Result<ProcessOutputFile> {
+    let path = platform::decode(&path)?;
+    let mut options = File::options();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::{
+            Foundation::{GENERIC_READ, GENERIC_WRITE},
+            Storage::FileSystem::{DELETE, FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE},
+        };
+        options
+            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+            .custom_flags(FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE);
+    }
+    let file = options.open(&path)?;
+    #[cfg(unix)]
+    std::fs::remove_file(path)?;
+    Ok(ProcessOutputFile { file: Some(file) })
 }
 
 struct Request {
@@ -139,16 +209,11 @@ fn communicate(
 
 /// OS strings are raw POSIX bytes or UTF-16LE code units. No shell is requested.
 #[napi]
-pub fn raw_process(request: ProcessRequest) -> napi::Result<ProcessResult> {
-    let stdout_file = request
-        .stdout_path
-        .and_then(nullable)
-        .as_deref()
-        .map(platform::decode)
-        .transpose()?
-        .map(|path| File::options().write(true).truncate(true).open(path))
-        .transpose()
-        .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+pub fn raw_process(
+    request: ProcessRequest,
+    stdout_file: Option<&ProcessOutputFile>,
+) -> napi::Result<ProcessResult> {
+    let stdout_file = stdout_file.map(ProcessOutputFile::writer).transpose()?;
     let request = Request {
         program: platform::decode(&request.program)?,
         args: request

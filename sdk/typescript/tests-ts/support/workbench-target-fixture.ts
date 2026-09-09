@@ -1,9 +1,9 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { processBinding } from "../../../../plugins/codex-security/mcp-app/src/native";
 import {
-  processBinding,
-  windowsBinding,
-} from "../../../../plugins/codex-security/mcp-app/src/native";
-import { decodeFilename } from "../../../../plugins/codex-security/mcp-app/src/workbench-git";
+  decodeFilename,
+  encodeFilename,
+} from "../../../../plugins/codex-security/mcp-app/src/workbench-git";
 import {
   cleanWorktreeContentDigest,
   TargetInspectionError,
@@ -72,7 +72,7 @@ function run(request: Request): Response {
   const calls: string[][] = [];
   let response = 0;
   if (request.git || request.requireStreamedDiff)
-    native.rawProcess = (options) => {
+    native.rawProcess = (options, stdoutFile) => {
       calls.push(
         options.args.map((arg) =>
           process.platform === "win32"
@@ -81,10 +81,10 @@ function run(request: Request): Response {
         ),
       );
       const diff = calls.at(-1)![6] === "diff";
-      if (request.requireStreamedDiff && diff && !options.stdoutPath)
+      if (request.requireStreamedDiff && diff && !stdoutFile)
         throw new Error("Git diff must stream to a file");
       if (!request.git) {
-        const result = original(options);
+        const result = original(options, stdoutFile);
         if (request.requireStreamedDiff && diff && result.stdout.length)
           throw new Error("Git diff must not retain stdout in memory");
         return result;
@@ -92,18 +92,29 @@ function run(request: Request): Response {
       const value = request.git![response++];
       if (!value) throw new Error("Unexpected Git probe");
       const stdout = Buffer.from(value.stdout ?? "", "base64");
-      if (options.stdoutPath) {
-        if (process.platform === "win32")
-          windowsFileSystem(windowsBinding()).writeFile(
-            options.stdoutPath,
-            stdout,
-          );
-        else writeFileSync(options.stdoutPath, stdout);
+      if (stdoutFile) {
+        const argument = (value: string) =>
+          process.platform === "win32"
+            ? widePath(value)
+            : encodeFilename(value);
+        const written = original(
+          {
+            program: argument(process.execPath),
+            args: [
+              argument("-e"),
+              argument("process.stdin.pipe(process.stdout)"),
+            ],
+            input: stdout,
+          },
+          stdoutFile,
+        );
+        if (written.error || written.returnCode)
+          throw new Error("Could not write the scripted Git output");
       }
       return {
         error: 0,
         returnCode: value.status ?? 0,
-        stdout: options.stdoutPath ? Buffer.alloc(0) : stdout,
+        stdout: stdoutFile ? Buffer.alloc(0) : stdout,
         stderr: Buffer.from(value.stderr ?? "", "base64"),
       };
     };

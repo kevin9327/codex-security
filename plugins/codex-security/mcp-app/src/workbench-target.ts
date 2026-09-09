@@ -6,7 +6,6 @@ import {
   openSync,
   readlinkSync,
   statSync,
-  unlinkSync,
 } from "node:fs";
 import { isAbsolute, sep } from "node:path";
 import { getSystemErrorName } from "node:util";
@@ -17,7 +16,7 @@ import {
   windowsFileSystem,
   windowsParts,
 } from "../../native/windows-files.mjs";
-import { unixBinding, windowsBinding } from "./native";
+import { processBinding, unixBinding, windowsBinding } from "./native";
 import {
   decodeFilename,
   encodeFilename,
@@ -123,30 +122,26 @@ function updateDigestFieldFromGit(
 ): boolean {
   const directory = temporaryDirectoryParent();
   const path = appendPath(directory, `codex-security-git-${randomUUID()}`);
-  if (windows) windowsFiles().writeFile(widePath(path), Buffer.alloc(0), true);
-  else closeSync(openSync(encodePosixPath(path), "wx", 0o600));
+  const reader = processBinding().openProcessOutput(
+    windows ? widePath(path) : encodePosixPath(path),
+  );
   try {
     if (
-      gitCommand(repository, args, { ...context, stdoutPath: path })
+      gitCommand(repository, args, { ...context, stdoutFile: reader })
         .returnCode !== 0
     )
       return false;
-    const reader = fileReader(path);
-    try {
-      updateDigestFieldHeader(digest, label, reader.size());
-      const buffer = Buffer.alloc(1024 * 1024);
-      for (;;) {
-        const count = reader.read(buffer);
-        if (!count) break;
-        digest.update(buffer.subarray(0, count));
-      }
-    } finally {
-      reader.close();
+    updateDigestFieldHeader(digest, label, reader.size());
+    reader.rewind();
+    const buffer = Buffer.alloc(1024 * 1024);
+    for (;;) {
+      const count = reader.read(buffer);
+      if (!count) break;
+      digest.update(buffer.subarray(0, count));
     }
     return true;
   } finally {
-    if (windows) windowsFiles().unlink(widePath(path));
-    else unlinkSync(encodePosixPath(path));
+    reader.close();
   }
 }
 

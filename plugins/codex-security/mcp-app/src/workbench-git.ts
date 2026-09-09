@@ -1,5 +1,6 @@
 import { constants } from "node:os";
 import { getSystemErrorName } from "node:util";
+import type { ProcessOutputFile } from "../../native/process-binding.mjs";
 import { processBinding } from "./native";
 import { decodePosixBytes, encodePosixPath } from "./helpers/posix-path";
 
@@ -34,7 +35,7 @@ export interface GitResult {
 export function gitCommand(
   target: string,
   args: readonly string[],
-  options: GitContext & { input?: Buffer; stdoutPath?: string } = {},
+  options: GitContext & { input?: Buffer; stdoutFile?: ProcessOutputFile } = {},
 ): GitResult {
   if ((options.gitDir === undefined) !== (options.workTree === undefined))
     throw new Error("git_dir and work_tree must be provided together");
@@ -50,25 +51,24 @@ export function gitCommand(
   if (options.gitDir !== undefined && options.workTree !== undefined)
     command.push("--git-dir", options.gitDir, "--work-tree", options.workTree);
   command.push(...args);
-  const result = processBinding().rawProcess({
-    program: encodeArgument(command[0]!),
-    args: command.slice(1).map(encodeArgument),
-    input: options.input,
-    stdoutPath:
-      options.stdoutPath === undefined
-        ? undefined
-        : encodeArgument(options.stdoutPath),
-    environment: [
-      ...repositoryEnvironment.map((name) => ({
-        name: encodeArgument(name),
-        value: null,
-      })),
-      {
-        name: encodeArgument("GIT_LITERAL_PATHSPECS"),
-        value: encodeArgument("1"),
-      },
-    ],
-  });
+  const result = processBinding().rawProcess(
+    {
+      program: encodeArgument(command[0]!),
+      args: command.slice(1).map(encodeArgument),
+      input: options.input,
+      environment: [
+        ...repositoryEnvironment.map((name) => ({
+          name: encodeArgument(name),
+          value: null,
+        })),
+        {
+          name: encodeArgument("GIT_LITERAL_PATHSPECS"),
+          value: encodeArgument("1"),
+        },
+      ],
+    },
+    options.stdoutFile,
+  );
   if (result.error !== 0) {
     // Git is optional for directory scans, matching the Python probe's ENOENT result.
     if (

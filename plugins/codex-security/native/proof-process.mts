@@ -5,9 +5,10 @@ import {
   closeSync,
   copyFileSync,
   mkdirSync,
-  readFileSync,
+  statSync,
   realpathSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { constants } from "node:os";
 import { basename, delimiter, join, sep } from "node:path";
@@ -17,6 +18,7 @@ import {
   loadProcessBinding,
   type ProcessRequest,
   type ProcessResult,
+  type ProcessOutputFile,
 } from "./process-binding.mjs";
 import { loadWindowsBinding } from "./windows-binding.mjs";
 import { windowsFileSystem } from "./windows-files.mjs";
@@ -102,8 +104,12 @@ function worker(root: string, descriptor: string): unknown {
   const run = (
     args: Buffer[],
     options: Partial<ProcessRequest> = {},
+    stdoutFile?: ProcessOutputFile,
   ): ProcessResult =>
-    native.rawProcess({ program, args, input: Buffer.alloc(0), ...options });
+    native.rawProcess(
+      { program, args, input: Buffer.alloc(0), ...options },
+      stdoutFile,
+    );
   const edits = [
     {
       name: encode(windows ? "process_set" : "PROCESS_SET"),
@@ -169,26 +175,47 @@ function worker(root: string, descriptor: string): unknown {
   assert.deepEqual(flood.stderr, Buffer.alloc(262_144, 66));
   const stdoutPath = raw(`${root}${sep}process-output-`);
   const windowsFiles = windows ? windowsFileSystem(loadWindowsBinding()) : null;
-  if (windowsFiles)
-    windowsFiles.writeFile(stdoutPath, Buffer.from("old contents"), true);
-  else writeFileSync(stdoutPath, "old contents", { flag: "wx", mode: 0o600 });
-  const streamed = run([encode("flood")], { input, stdoutPath });
+  const stdoutFile = native.openProcessOutput(stdoutPath);
+  const streamed = run([encode("flood")], { input }, stdoutFile);
   assert.equal(success(streamed).length, 0);
   assert.deepEqual(streamed.stderr, flood.stderr);
-  assert.deepEqual(
-    windowsFiles ? windowsFiles.readFile(stdoutPath) : readFileSync(stdoutPath),
-    flood.stdout,
-  );
+  assert.equal(stdoutFile.size(), BigInt(flood.stdout.length));
+  stdoutFile.rewind();
+  const pieces: Buffer[] = [];
+  for (;;) {
+    const buffer = Buffer.alloc(8192);
+    const count = stdoutFile.read(buffer);
+    if (!count) break;
+    pieces.push(buffer.subarray(0, count));
+  }
+  assert.deepEqual(Buffer.concat(pieces), flood.stdout);
   assert.equal(
-    success(run([encode("exit")], { input, stdoutPath }), 7).length,
+    success(run([encode("exit")], { input }, stdoutFile), 7).length,
     0,
   );
-  assert.equal(
-    (windowsFiles
-      ? windowsFiles.readFile(stdoutPath)
-      : readFileSync(stdoutPath)
-    ).length,
-    0,
+  assert.equal(stdoutFile.size(), 0n);
+  stdoutFile.close();
+  stdoutFile.close();
+  assert.throws(() => stdoutFile.size(), /closed/);
+  assert.throws(
+    () => (windowsFiles ? windowsFiles.stat(stdoutPath) : statSync(stdoutPath)),
+    { code: "ENOENT" },
+  );
+  const interruptedPath = raw(`${root}${sep}process-output-interrupted-`);
+  const interrupted = spawnSync(process.execPath, [
+    fileURLToPath(import.meta.url),
+    "output-file-interrupted",
+    interruptedPath.toString("hex"),
+  ]);
+  assert.ifError(interrupted.error);
+  assert.equal(interrupted.stdout.toString(), "output ready\n");
+  assert.notEqual(interrupted.status, 0);
+  assert.throws(
+    () =>
+      windowsFiles
+        ? windowsFiles.stat(interruptedPath)
+        : statSync(interruptedPath),
+    { code: "ENOENT" },
   );
   assert.equal(success(run([encode("exit")], { input }), 7).length, 0);
   assert.equal(
@@ -285,6 +312,7 @@ function worker(root: string, descriptor: string): unknown {
     inheritedAndEmptyInput: true,
     concurrentBytePipes: true,
     streamedByteOutput: true,
+    interruptedOutputRemoved: true,
     earlyInputClose: true,
     inheritedDescriptorsClosed: true,
     restoredSignals: !windows,
@@ -295,3 +323,19 @@ function worker(root: string, descriptor: string): unknown {
 
 if (process.argv[2] === "process-worker")
   console.log(JSON.stringify(worker(process.argv[3]!, process.argv[4]!)));
+if (process.argv[2] === "output-file-interrupted") {
+  const native = loadProcessBinding();
+  const file = native.openProcessOutput(Buffer.from(process.argv[3]!, "hex"));
+  const result = native.rawProcess(
+    {
+      program: encode(fixture),
+      args: [encode("flood")],
+      input: Buffer.alloc(4096, 0xfe),
+    },
+    file,
+  );
+  success(result);
+  assert.equal(file.size(), 262144n + 4096n);
+  writeSync(1, "output ready\n");
+  process.kill(process.pid, "SIGTERM");
+}

@@ -8,8 +8,6 @@ export interface ProcessRequest {
   cwd?: Buffer | null;
   /** Absent/null inherits stdin; an empty buffer sends EOF. */
   input?: Buffer | null;
-  /** Stream stdout into an existing file instead of retaining it in memory. */
-  stdoutPath?: Buffer | null;
   environment?: { name: Buffer; value: Buffer | null }[];
 }
 
@@ -22,9 +20,21 @@ export interface ProcessResult {
   stderr: Buffer;
 }
 
+/** A private spool removed by the OS on close, including process termination. */
+export interface ProcessOutputFile {
+  size(): bigint;
+  rewind(): void;
+  read(buffer: Buffer): number;
+  close(): void;
+}
+
 export interface ProcessBinding {
   wallClockMicroseconds(): bigint;
-  rawProcess(request: ProcessRequest): ProcessResult;
+  openProcessOutput(path: Buffer): ProcessOutputFile;
+  rawProcess(
+    request: ProcessRequest,
+    stdoutFile?: ProcessOutputFile,
+  ): ProcessResult;
 }
 
 export function loadProcessBinding(): ProcessBinding {
