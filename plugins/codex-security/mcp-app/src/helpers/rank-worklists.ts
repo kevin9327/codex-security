@@ -145,8 +145,16 @@ export function argumentsFor(
   args: string[],
   required: readonly string[],
   integerOptions: readonly string[] = [],
+  optional: Readonly<Record<string, readonly string[] | undefined>> = {},
 ): Record<string, string | bigint | true> {
-  const names = [...new Set([...required, "help", ...integerOptions])];
+  const names = [
+    ...new Set([
+      ...required,
+      "help",
+      ...integerOptions,
+      ...Object.keys(optional),
+    ]),
+  ];
   const values: Record<string, string | bigint | true> = {};
   const extra: string[] = [];
   const looksOptional = (arg: string) =>
@@ -196,6 +204,11 @@ export function argumentsFor(
         throw new ArgumentError(`argument --${name}: expected one argument`);
       value = args[++index]!;
     }
+    const choices = optional[name];
+    if (choices && !choices.includes(value))
+      throw new ArgumentError(
+        `argument --${name}: invalid choice: ${pythonRepr(value)} (choose from ${choices.map(pythonRepr).join(", ")})`,
+      );
     values[name] = integerOptions.includes(name) ? integer(value, name) : value;
   }
   const missing = required.filter((name) => values[name] === undefined);

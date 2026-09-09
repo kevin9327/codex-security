@@ -12,7 +12,7 @@ class WindowsScopePath(PureWindowsPath):
         return self
 
 
-@pytest.mark.parametrize("script", ["generate_in_scope_files.py", "generate_rank_input.py"])
+@pytest.mark.parametrize("script", ["generate_rank_input.py"])
 def test_scope_rejects_ntfs_streams_before_resolving_paths(monkeypatch, script: str) -> None:
     path = Path(__file__).resolve().parents[1] / "scripts" / script
     namespace = runpy.run_path(str(path), run_name="scope_stream_test")

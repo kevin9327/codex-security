@@ -38,6 +38,21 @@ export function windowsJoin(left: string, right: string): string {
   return drive + root + path;
 }
 
+// Lexical Path.relative_to for resolved Windows paths.
+export function windowsLexicalRelativePath(
+  path: string,
+  root: string,
+): string | undefined {
+  const parts = (value: string) => value.replace(/\\+$/u, "").split("\\");
+  const parent = parts(root);
+  const target = parts(path);
+  return parent.every(
+    (part, index) => part.toLowerCase() === target[index]?.toLowerCase(),
+  )
+    ? target.slice(parent.length).join("\\")
+    : undefined;
+}
+
 export function windowsFileSystem(native: WindowsBinding) {
   function check(error: number, path: Buffer): void {
     if (error === 0) return;

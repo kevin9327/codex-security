@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { binaryPath, output, root } from "./binding.mjs";
 import { nativeTarget } from "./platform.mjs";
 import { snapshotWindowsProof } from "./proof-snapshot-windows.mjs";
+import {
+  inventoryWindowsProof,
+  prepareInventoryWindows,
+} from "./proof-inventory-windows.mjs";
 
 const testDirectory = join(output, "policy-proof");
 const helper = join(testDirectory, "helpers.cjs");
@@ -26,7 +30,9 @@ if (process.argv[2] === "build") {
   const nativeDirectory = join(testDirectory, "native", nativeTarget);
   mkdirSync(nativeDirectory, { recursive: true });
   copyFileSync(binaryPath, join(nativeDirectory, "windows.node"));
+  prepareInventoryWindows();
 } else {
+  inventoryWindowsProof(helper);
   snapshotWindowsProof(helper);
   const fixture = mkdtempSync(join(tmpdir(), "codex-security-policy-proof-"));
   try {

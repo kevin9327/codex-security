@@ -1183,7 +1183,7 @@ async function bundleEntrypoint(entrypoint, outfile) {
     bundle: true,
     define: {
       __dirname: JSON.stringify(path.join(bundledPluginRoot, "mcp")),
-      "import.meta.url": "__filename"
+      "import.meta.url": JSON.stringify(pathToFileURL(path.join(bundledPluginRoot, "mcp", "server.mjs")).href)
     },
     entryPoints: [path.join(applicationRoot, entrypoint)],
     external: ["fsevents"],

@@ -82,10 +82,13 @@ try {
   await build({
     bundle: true,
     entryPoints: [path.join(pluginRoot, "mcp-app", "helpers-main.ts")],
-    outfile: path.join(runtimePluginRoot, "mcp", "helpers.mjs"),
-    format: "esm",
+    outfile: path.join(runtimePluginRoot, "mcp", "helpers.cjs"),
+    format: "cjs",
+    target: "node20",
+    define: { "import.meta.url": "__filename" },
     platform: "node"
   });
+  await writeFile(path.join(runtimePluginRoot, "mcp", "helpers.mjs"), 'import "./helpers.cjs";\n');
   if (process.platform === "win32") {
     const target = `win32-${process.arch}`;
     const destination = path.join(runtimePluginRoot, "mcp", "native", target);

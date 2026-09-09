@@ -28,6 +28,18 @@ export async function buildMcpApp({ output }) {
     await copyFile(join(root, "../native/prebuilt", path), destination);
   }
   await writeRuntime("helpers", "helpers-main.ts");
+  const frontendLicenses = [
+    ["py-ast (MIT)", "node_modules/py-ast/LICENSE"],
+    // The Unicode package declares MIT but does not include its generator's notice.
+    // https://github.com/node-unicode/node-unicode-data/blob/main/LICENSE-MIT.txt
+    ["@unicode/unicode-15.0.0 (MIT)", "scripts/licenses/UNICODE-DATA-MIT.txt"],
+    ["Unicode data", "node_modules/py-ast/dist/LICENSE-UNICODE"],
+    ["Python derived parser data", "node_modules/py-ast/dist/LICENSE-PYTHON"]
+  ];
+  const notices = await Promise.all(frontendLicenses.map(async ([name, path]) =>
+    `${name}\n${"=".repeat(name.length)}\n\n${(await readFile(join(root, path), "utf8")).trim()}\n`
+  ));
+  await writeFile(join(mcpDir, "FRONTEND_NOTICES.txt"), notices.join("\n"), "utf8");
 
   async function writeRuntime(name, entryPoint) {
     const bundle = join(mcpDir, name + ".bundle.cjs");

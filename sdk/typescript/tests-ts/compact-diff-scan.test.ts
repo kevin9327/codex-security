@@ -71,6 +71,18 @@ function python(script: string, ...args: string[]) {
   );
 }
 
+function inventory(...args: string[]) {
+  return spawnSync(
+    Bun.which("node")!,
+    [
+      join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+      "generate-in-scope-files",
+      ...args,
+    ],
+    { encoding: "utf8" },
+  );
+}
+
 function candidate(path: string): JsonObject {
   return {
     cwe_ids: [],
@@ -223,8 +235,7 @@ describe("compact diff scan", () => {
     writeSource(repository, "src/handler.py", Buffer.from([0, 255, 1]));
     const output = join(root, "in-scope.txt");
 
-    const result = python(
-      "generate_in_scope_files.py",
+    const result = inventory(
       "--repo",
       repository,
       "--scope",
@@ -276,27 +287,17 @@ describe("compact diff scan", () => {
     const head = git(repository, "rev-parse", "HEAD");
     const output = join(root, "in-scope.txt");
 
-    const executable = Bun.which("python3") ?? Bun.which("python");
-    expect(executable).not.toBeNull();
-    const result = spawnSync(
-      executable!,
-      [
-        "-B",
-        "-c",
-        "import locale, runpy, sys; locale.setlocale(locale.LC_CTYPE, 'C'); runpy.run_path(sys.argv.pop(1), run_name='__main__')",
-        join(PLUGIN_ROOT, "scripts", "generate_in_scope_files.py"),
-        "--repo",
-        repository,
-        "--scope",
-        ".",
-        "--diff-base",
-        base,
-        "--diff-head",
-        head,
-        "--out",
-        output,
-      ],
-      { encoding: "utf8", env: { ...process.env, PYTHONUTF8: "0" } },
+    const result = inventory(
+      "--repo",
+      repository,
+      "--scope",
+      ".",
+      "--diff-base",
+      base,
+      "--diff-head",
+      head,
+      "--out",
+      output,
     );
 
     expect(result.status, result.stderr).toBe(0);
@@ -318,8 +319,7 @@ describe("compact diff scan", () => {
     writeSource(repository, "src/binary.py", Buffer.from([0, 255, 1]));
     const output = join(root, "in-scope.txt");
 
-    const result = python(
-      "generate_in_scope_files.py",
+    const result = inventory(
       "--repo",
       repository,
       "--scope",

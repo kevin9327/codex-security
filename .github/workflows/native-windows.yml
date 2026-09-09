@@ -44,6 +44,8 @@ jobs:
         run: |
           pnpm --dir sdk/typescript install --frozen-lockfile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --dir plugins/codex-security/mcp-app install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm --dir sdk/typescript run build:ci
       - name: Set up temporary Python filename oracle
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

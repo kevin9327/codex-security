@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as nodeExecFile } from "node:child_process";
 import {
+  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -13,26 +14,35 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { setTimeout as sleep } from "node:timers/promises";
 import { build } from "esbuild";
 
 const execFile = promisify(nodeExecFile);
 const temporaryRoots = [];
-const bundle = await build({
+const bundleRoot = await mkdtemp(path.join(tmpdir(), "artifact-inventory-bundle-"));
+temporaryRoots.push(bundleRoot);
+const bundlePath = path.join(bundleRoot, "inventory.cjs");
+await build({
   bundle: true,
-  entryPoints: [new URL("../src/artifact-inventory.ts", import.meta.url).pathname],
-  format: "esm",
+  entryPoints: [fileURLToPath(new URL("../src/artifact-inventory.ts", import.meta.url))],
+  format: "cjs",
   platform: "node",
-  write: false
+  target: "node20",
+  define: { "import.meta.url": "__filename" },
+  outfile: bundlePath
 });
-const inventory = await import(
-  `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`
-);
+const inventory = await import(pathToFileURL(bundlePath));
+const runtimePluginRoot = process.env.CODEX_SECURITY_TEST_PLUGIN_ROOT
+  ? path.resolve(process.env.CODEX_SECURITY_TEST_PLUGIN_ROOT)
+  : fileURLToPath(new URL("../../../../sdk/typescript/_bundled_plugin/", import.meta.url));
 
 try {
   await testSchemasAreBoundAndExact();
   await testPrepareUsesTheExistingStandardGenerator();
   await testPrepareUsesOnlyAuthoritativeDiffChanges();
   await testPrepareIncludesStagedAndUnstagedChanges();
+  await testInventoryHelperLeavesTheEventLoopAvailable();
   await testWorkerReadsItsOwnBoundInventory();
   await testCursorAndLimitAreValidated();
   await testEmptyInventoryIsValid();
@@ -193,6 +203,41 @@ async function testWorkerReadsItsOwnBoundInventory() {
   );
 }
 
+async function testInventoryHelperLeavesTheEventLoopAvailable() {
+  const fixture = await createFixture("asynchronous helper");
+  const plugin = path.join(fixture.root, "plugin");
+  const marker = path.join(fixture.root, "started");
+  const release = path.join(fixture.root, "release");
+  await mkdir(path.join(plugin, "mcp"), { recursive: true });
+  await writeFile(path.join(plugin, "mcp", "helpers.mjs"), `
+import { existsSync, writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(marker)}, "ready");
+const timer = setInterval(() => {
+  if (!existsSync(${JSON.stringify(release)})) return;
+  clearInterval(timer);
+  writeFileSync(process.argv[process.argv.indexOf("--out") + 1], "./src/ready.ts\\n");
+}, 10);
+`);
+  let finished = false;
+  const pending = inventory.prepareCodexSecurityReviewItems({ ...fixture.scan, pluginRoot: plugin })
+    .finally(() => { finished = true; });
+  try {
+    let started = false;
+    for (let attempt = 0; attempt < 500 && !started && !finished; attempt++) {
+      started = await access(marker).then(() => true, () => false);
+      if (!started) await sleep(10);
+    }
+    assert.equal(started, true, "the inventory runs in its bound helper process");
+    assert.equal(finished, false, "the parent event loop stays available while the helper waits");
+  } finally {
+    await writeFile(release, "continue");
+    await pending;
+  }
+  assert.deepEqual(await inventory.listCodexSecurityReviewItems(fixture.scan), {
+    items: [{ path: "./src/ready.ts" }]
+  });
+}
+
 async function testCursorAndLimitAreValidated() {
   const fixture = await createFixture("inventory paging");
   await writeInventory(fixture.scanInventory, "./src/a.ts\n./src/b.ts\n");
@@ -304,7 +349,6 @@ async function createFixture(label) {
   const repoRoot = path.join(fixtureRoot, "repository");
   const scanRoot = path.join(fixtureRoot, "scan");
   const workerRoot = path.join(fixtureRoot, "worker");
-  const pluginRoot = new URL("../../", import.meta.url).pathname;
   await Promise.all([
     mkdir(repoRoot, { recursive: true }),
     mkdir(scanRoot, { recursive: true }),
@@ -321,8 +365,8 @@ async function createFixture(label) {
       layout: "scan",
       scanId: "f84c8312-a602-4660-8e01-518a176cd75a",
       scope: ".",
-      pluginRoot,
-      pythonCommand: process.env.PYTHON ?? "python3"
+      pluginRoot: runtimePluginRoot,
+      pythonCommand: path.join(root, "missing-python")
     },
     worker: {
       root: workerRoot,

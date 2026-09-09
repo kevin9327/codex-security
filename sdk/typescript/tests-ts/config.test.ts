@@ -461,9 +461,6 @@ describe("Codex configuration", () => {
       await mkdir(repository);
       await writeFile(join(repository, "fixture.txt"), "synthetic source\n");
       const inventory = join(workspace, "in-scope-files.txt");
-      const python =
-        Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-      expect(python).not.toBeNull();
       const helper = runPinnedCodex(
         codexHome,
         [
@@ -474,8 +471,9 @@ describe("Codex configuration", () => {
           "codex_security_scan",
           "--cd",
           workspace,
-          python!,
-          join(PLUGIN_ROOT, "scripts", "generate_in_scope_files.py"),
+          node!,
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "generate-in-scope-files",
           "--repo",
           repository,
           "--scope",

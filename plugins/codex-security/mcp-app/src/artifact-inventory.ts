@@ -15,10 +15,6 @@ import {
   loadArtifactZodSchema,
   type SchemaDocument
 } from "./artifact-schema-loader.js";
-import {
-  missingPythonHelperMessage,
-  resolvePythonCommand
-} from "./python_command.js";
 
 const execFile = promisify(nodeExecFile);
 const documents = [commonSchema, reviewItemsSchema] as SchemaDocument[];
@@ -86,10 +82,10 @@ export async function prepareCodexSecurityReviewItems(
   }
 
   const destination = await artifactDestination(context, inventoryComponents, label);
-  const pythonCommand = context.pythonCommand ?? await resolvePythonCommand();
-  const helper = join(context.pluginRoot, "scripts", "generate_in_scope_files.py");
+  const helper = join(context.pluginRoot, "mcp", "helpers.mjs");
   const arguments_ = [
     helper,
+    "generate-in-scope-files",
     "--repo",
     context.repoRoot,
     "--scope",
@@ -121,7 +117,7 @@ export async function prepareCodexSecurityReviewItems(
 
   try {
     await execFile(
-      pythonCommand,
+      process.execPath,
       arguments_,
       {
         cwd: context.pluginRoot,
@@ -130,10 +126,6 @@ export async function prepareCodexSecurityReviewItems(
       }
     );
   } catch (error) {
-    const missingPython = missingPythonHelperMessage(error, pythonCommand);
-    if (missingPython) {
-      throw new Error(`${label}: ${missingPython}`, { cause: error });
-    }
     const details = helperError(error);
     throw new Error(
       `${label}: the scan inventory helper failed${details ? `: ${details}` : "."}`,

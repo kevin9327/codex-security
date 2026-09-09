@@ -445,15 +445,14 @@ describe("plugin runtime preparation", () => {
       expect(initialized.status, initialized.stderr).toBe(0);
     }
 
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
+    const node = Bun.which("node");
+    expect(node).not.toBeNull();
     const output = join(root, "inventory.txt");
     const repeatedOutput = join(root, "inventory-repeated.txt");
     const generatorArguments = (destination: string) =>
       [
-        "-I",
-        "-B",
-        join(PLUGIN_ROOT, "scripts", "generate_in_scope_files.py"),
+        join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+        "generate-in-scope-files",
         "--repo",
         repository,
         "--scope",
@@ -462,7 +461,7 @@ describe("plugin runtime preparation", () => {
         destination,
       ] as const;
     for (const destination of [output, repeatedOutput]) {
-      const inventory = spawnSync(python!, generatorArguments(destination), {
+      const inventory = spawnSync(node!, generatorArguments(destination), {
         encoding: "utf8",
       });
       expect(inventory.status, inventory.stderr).toBe(0);
@@ -490,7 +489,7 @@ describe("plugin runtime preparation", () => {
       );
       await writeFile(join(repository, "literal:colon.txt"), "colon\n");
       const posixOutput = join(root, "inventory-posix-filenames.txt");
-      const inventory = spawnSync(python!, generatorArguments(posixOutput), {
+      const inventory = spawnSync(node!, generatorArguments(posixOutput), {
         encoding: "utf8",
       });
       expect(inventory.status, inventory.stderr).toBe(0);
@@ -521,11 +520,10 @@ describe("plugin runtime preparation", () => {
       expect(python).not.toBeNull();
 
       const inventory = spawnSync(
-        python!,
+        Bun.which("node")!,
         [
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "generate_in_scope_files.py"),
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "generate-in-scope-files",
           "--repo",
           repository,
           "--scope",

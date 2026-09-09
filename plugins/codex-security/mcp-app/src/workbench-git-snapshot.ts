@@ -6,6 +6,7 @@ import {
   widePath,
   windowsFileSystem,
   windowsJoin,
+  windowsLexicalRelativePath,
 } from "../../native/windows-files.mjs";
 import { decodePosixBytes, encodePosixPath } from "./helpers/posix-path";
 import { compare } from "./helpers/rank-worklists";
@@ -29,21 +30,6 @@ const pathParts = (path: string) =>
 const equalPath = (left: string, right: string) =>
   windows ? left.toLowerCase() === right.toLowerCase() : left === right;
 
-// Path.relative_to is lexical; inventory scope aliases are checked with sameFile below.
-function windowsWorktreeRelativePath(
-  path: string,
-  root: string,
-): string | undefined {
-  const parts = (value: string) => value.replace(/\\+$/u, "").split("\\");
-  const parent = parts(root);
-  const target = parts(path);
-  return parent.every(
-    (part, index) => part.toLowerCase() === target[index]?.toLowerCase(),
-  )
-    ? target.slice(parent.length).join("\\")
-    : undefined;
-}
-
 export function gitWorktreeContext(target: string): [string, string] {
   const root = gitOutput(target, ["rev-parse", "--show-toplevel"]);
   if (root === null)
@@ -51,7 +37,7 @@ export function gitWorktreeContext(target: string): [string, string] {
   const repository = resolvedPath(root, false);
   const selected = resolvedPath(target, false);
   const relative = windows
-    ? windowsWorktreeRelativePath(selected, repository)
+    ? windowsLexicalRelativePath(selected, repository)
     : selected === repository
       ? ""
       : selected.startsWith(repository.replace(/\/$/u, "") + "/")
