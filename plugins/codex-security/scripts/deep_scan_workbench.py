@@ -26,7 +26,7 @@ from finalize_scan_contract import (
     write_scan_local_bytes,
 )
 from workbench.handoff import require_current_continuation
-from workbench_scan_checkpoints import ensure_review_files
+from workbench_scan_checkpoints import ensure_review_files, reconcile_checkpoints
 from workbench_target import (
     directory_content_digest,
     directory_snapshot_regular_file_count,
@@ -1369,7 +1369,11 @@ def claim_deep_scan_coordinator_locked(
 
 
 def isolate_checkpoint_worker(
-    connection: sqlite3.Connection, scan: sqlite3.Row, worker: sqlite3.Row, generation: int
+    connection: sqlite3.Connection,
+    scan: sqlite3.Row,
+    worker: sqlite3.Row,
+    generation: int,
+    timestamp: str,
 ) -> None:
     """Fence an expired writer by moving the registered attempt to a fresh output.
 
@@ -1385,6 +1389,9 @@ def isolate_checkpoint_worker(
     replacement_output = replacement / "output"
     source = output.relative_to(root).as_posix()
     destination = replacement_output.relative_to(root).as_posix()
+    # A published acceptance head may precede its SQLite commit. Replay it in
+    # this claim transaction before the old output becomes an isolated attempt.
+    reconcile_checkpoints(connection, scan, timestamp, commit=False, sources=[output])
     receipts = connection.execute(
         "SELECT * FROM scan_checkpoints WHERE scan_id = ? AND source_path = ? ORDER BY sequence",
         (scan["id"], source),
@@ -1488,9 +1495,12 @@ def recover_expired_coordinator(
             (scan_id, legacy_generation),
         )
         if row["artifact_dir"] in checkpoint_directories
+        or (Path(row["artifact_dir"]) / "checkpoint-head.json").exists()
     ]
     for worker in checkpoint_workers:
-        isolate_checkpoint_worker(connection, scan, worker, run["coordinator_generation"] + 1)
+        isolate_checkpoint_worker(
+            connection, scan, worker, run["coordinator_generation"] + 1, timestamp
+        )
     interrupted_discoveries = int(
         connection.execute(
             """

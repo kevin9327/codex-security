@@ -527,6 +527,114 @@ def test_unfinished_worker_checkpoint_survives_first_and_repeated_coordinator_cl
     assert "Validated by the replacement worker." in (grandchild / "coverage.json").read_text()
 
 
+@pytest.mark.parametrize(("indexed", "archived"), [(True, False), (True, True), (False, False)])
+def test_coordinator_adoption_replays_a_head_written_before_its_receipt_committed(
+    tmp_path: Path, workbench_api, monkeypatch, indexed: bool, archived: bool
+):
+    state, root, scan_id, _, _, workers = completed_deep_fixture(tmp_path)
+    worker_id = workers[3]
+    output = root / "artifacts/deep_discovery/workers/discovery-0004/output"
+    for head in root.glob("artifacts/deep_discovery/*/*/output/checkpoint-head.json"):
+        head.unlink()
+        (head.parent / "checkpoints" / "old.json").unlink()
+    if indexed:
+        save(state, scan_id, write_checkpoint(output / "checkpoints", semantic(scan_id, [])))
+    newest = semantic(scan_id, [])
+    newest["coverage"]["deferred"][0]["candidateId"] = "newest-saved-candidate"
+    checkpoint = write_checkpoint(output / "checkpoints", newest)
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.row_factory = sqlite3.Row
+        scan = connection.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()
+        accepted = workbench_api["scan_checkpoints"].record_checkpoint(
+            connection, scan, checkpoint, "2026-01-01T02:00:00Z", commit=False
+        )
+        connection.rollback()
+        connection.execute(
+            "UPDATE scans SET deep_scan_owner_thread_id = 'fixture-owner', handoff_status = 'delivered' WHERE id = ?",
+            (scan_id,),
+        )
+        connection.execute(
+            "UPDATE deep_scan_runs SET status = 'running', phase = 'discovery', coordinator_generation = 2, updated_at = '2026-01-01T02:00:00Z' WHERE scan_id = ?",
+            (scan_id,),
+        )
+        connection.execute(
+            "UPDATE deep_scan_workers SET status = 'running', attempt = 2, completion_sequence = NULL, completed_at = NULL, error_message = NULL WHERE id = ?",
+            (worker_id,),
+        )
+    original_head = json.loads((output / "checkpoint-head.json").read_text())
+    assert original_head["acceptanceId"] == accepted["acceptanceId"]
+    if archived:
+        archive = output.parent / "attempts" / "attempt-02" / "checkpoints"
+        archive.mkdir(parents=True)
+        checkpoint.rename(archive / checkpoint.name)
+
+    deep = workbench_api["deep_scan"]
+    original_isolate = deep.isolate_checkpoint_worker
+
+    def interrupted_rotation(*args):
+        original_isolate(*args)
+        raise OSError("interrupted after receipt replay")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(deep, "isolate_checkpoint_worker", interrupted_rotation)
+        with sqlite3.connect(state / "workbench.sqlite3") as connection:
+            connection.row_factory = sqlite3.Row
+            with pytest.raises(OSError, match="interrupted after receipt replay"):
+                deep.claim_deep_scan_coordinator(
+                    connection,
+                    argparse.Namespace(
+                        scan_id=scan_id,
+                        thread_id="fixture-owner",
+                        claim_token=None,
+                        coordinator_generation=None,
+                    ),
+                )
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM scan_checkpoints WHERE acceptance_id = ?",
+                    (accepted["acceptanceId"],),
+                ).fetchone()[0]
+                == 0
+            )
+            assert connection.execute(
+                "SELECT artifact_dir FROM deep_scan_workers WHERE id = ?", (worker_id,)
+            ).fetchone()[0] == str(output)
+
+    for generation in (3, 4):
+        result = run_workbench(
+            state,
+            "claim-deep-scan-coordinator",
+            "--scan-id",
+            scan_id,
+            "--thread-id",
+            "fixture-owner",
+        )
+        assert result["coordinatorDisposition"] == "adopted"
+        assert result["deepScan"]["coordinatorGeneration"] == generation
+        worker = next(row for row in result["deepScan"]["workers"] if row["id"] == worker_id)
+        replacement = Path(worker["artifactDir"])
+        assert replacement != output
+        assert json.loads((replacement / "checkpoint-head.json").read_text()) == original_head
+        assert json.loads((replacement / "checkpoints" / checkpoint.name).read_text()) == newest
+        run_workbench(state, "get-cli-scan-resume", "--scan-id", scan_id)
+        with sqlite3.connect(state / "workbench.sqlite3") as connection:
+            receipt = connection.execute(
+                "SELECT sequence, content_sha256, snapshot_json, recorded_at, acceptance_id "
+                "FROM scan_checkpoints WHERE acceptance_id = ?",
+                (accepted["acceptanceId"],),
+            ).fetchall()
+            assert len(receipt) == 1
+            if generation == 3:
+                original_receipt = receipt
+            else:
+                assert receipt == original_receipt
+            connection.execute(
+                "UPDATE deep_scan_runs SET updated_at = '2026-01-01T02:00:00Z' WHERE scan_id = ?",
+                (scan_id,),
+            )
+        output = replacement
+
+
 def test_checkpoint_rebind_preserves_nested_source_owners(workbench_api):
     document = {
         "scanId": "parent-scan",

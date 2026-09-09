@@ -285,19 +285,25 @@ def checkpoint_summary(connection: sqlite3.Connection, scan_id: str) -> dict[str
 
 
 def reconcile_checkpoints(
-    connection: sqlite3.Connection, scan: sqlite3.Row, timestamp: str
+    connection: sqlite3.Connection,
+    scan: sqlite3.Row,
+    timestamp: str,
+    *,
+    commit: bool = True,
+    sources: list[Path] | None = None,
 ) -> None:
     """Complete artifact-to-database writes before a resumed scan incurs more work."""
     root = Path(scan["scan_dir"])
-    sources = [
-        root,
-        *(
-            Path(row["artifact_dir"])
-            for row in connection.execute(
-                "SELECT artifact_dir FROM deep_scan_workers WHERE scan_id = ?", (scan["id"],)
-            )
-        ),
-    ]
+    if sources is None:
+        sources = [
+            root,
+            *(
+                Path(row["artifact_dir"])
+                for row in connection.execute(
+                    "SELECT artifact_dir FROM deep_scan_workers WHERE scan_id = ?", (scan["id"],)
+                )
+            ),
+        ]
     for source in sources:
         if not source.is_relative_to(root):
             raise SystemExit("The saved checkpoint directory is outside its bound scan.")
@@ -325,11 +331,27 @@ def reconcile_checkpoints(
                 acceptance_id = existing["acceptance_id"]
         elif not isinstance(acceptance_id, str) or not acceptance_id:
             raise SystemExit("The saved checkpoint head has an invalid acceptance identity.")
+        checkpoint = source / "checkpoints" / name
+        if source != root and not checkpoint.exists():
+            # A worker validation retry can archive its accepted output before
+            # the next attempt begins. Restore the exact named bytes for replay
+            # under the worker's registered source path.
+            archived = next(
+                (source.parent / "attempts").glob(f"attempt-*/checkpoints/{name}"), None
+            )
+            if archived is not None:
+                descriptor = open_scan_local_file_descriptor(
+                    root, archived.relative_to(root).as_posix(), "archived scan checkpoint"
+                )
+                with os.fdopen(descriptor, "rb") as handle:
+                    contents = handle.read()
+                write_scan_local_bytes(root, checkpoint.relative_to(root).as_posix(), contents)
         record_checkpoint(
             connection,
             scan,
-            source / "checkpoints" / name,
+            checkpoint,
             timestamp,
+            commit=commit,
             acceptance_id=acceptance_id,
         )
 
