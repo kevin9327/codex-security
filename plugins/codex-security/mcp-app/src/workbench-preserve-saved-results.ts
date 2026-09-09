@@ -46,7 +46,11 @@ import {
 } from "./workbench-merge-saved-results";
 import { requireScan } from "./workbench-records";
 import { expectedCoverageMode } from "./workbench-results";
-import { sourceDigests } from "./workbench-saved-result-sources";
+import {
+  sourceDigests,
+  storedWarningValues,
+} from "./workbench-saved-result-sources";
+export { storedWarningValues } from "./workbench-saved-result-sources";
 import { WorkbenchValidationError } from "./workbench-validation";
 
 type Table = Record<string, unknown>;
@@ -80,16 +84,6 @@ const storedJson = (value: unknown): unknown =>
   parseJson(value as string | Buffer, false, preflightInteger);
 const json = (value: unknown, sortKeys = false): string =>
   stringifyJson(value, { compact: true, sortKeys });
-export function storedWarningValues(value: unknown, unpack = false): unknown[] {
-  if (Array.isArray(value)) return value;
-  if (typeof value === "string") return Array.from(value);
-  if (object(value)) return objectEntries(value).map(([key]) => key);
-  throw new TypeError(
-    unpack
-      ? `Value after * must be an iterable, not ${jsonTypeName(value)}`
-      : `'${jsonTypeName(value)}' object is not iterable`,
-  );
-}
 export function uniqueWarnings(values: unknown[]): unknown[] {
   const seen = new Set<unknown>(),
     result: unknown[] = [];

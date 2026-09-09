@@ -37,6 +37,7 @@ import {
   readSavedResult,
   savedResultChildren,
   savedResultDigest as digest,
+  storedWarningValues,
 } from "./workbench-saved-result-sources";
 import { pathWithinScope } from "./workbench-validation";
 
@@ -280,7 +281,7 @@ export function mergeSavedResults(
   const { stopped, reason, allowFrozenLegacyParent = false } = options;
   let frozen = options.frozenSourceDigests ?? null;
   const initialWarnings = new Set(
-    warnings.map((warning) => tupleKey([warning])),
+    storedWarningValues(warnings).map((warning) => tupleKey([warning])),
   );
   let parent: Table | null = null,
     parentManifest: Table | null = null;
@@ -486,7 +487,9 @@ export function mergeSavedResults(
     truth(get(parentScan, "sealedAt")) &&
     parentScan["status"] === binding.status &&
     equal(get(parentScan, "preservedSources"), sourceMap) &&
-    warnings.every((warning) => initialWarnings.has(tupleKey([warning])))
+    storedWarningValues(warnings).every((warning) =>
+      initialWarnings.has(tupleKey([warning])),
+    )
   )
     return null;
   let targetKind = binding.allowedTargetKinds[0]!;
@@ -966,7 +969,9 @@ export function mergeSavedResults(
   }
   if (
     stopped ||
-    warnings.some((warning) => !initialWarnings.has(tupleKey([warning])))
+    storedWarningValues(warnings).some(
+      (warning) => !initialWarnings.has(tupleKey([warning])),
+    )
   )
     coverage["completeness"] = "partial";
   if (stopped) {

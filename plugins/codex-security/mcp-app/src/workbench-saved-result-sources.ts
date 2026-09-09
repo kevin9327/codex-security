@@ -453,6 +453,17 @@ export function recoverySourceDigests(
   return [sources, includeParent];
 }
 
+export function storedWarningValues(value: unknown, unpack = false): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return Array.from(value);
+  if (object(value)) return objectEntries(value).map(([key]) => key);
+  throw new TypeError(
+    unpack
+      ? `Value after * must be an iterable, not ${jsonTypeName(value)}`
+      : `'${jsonTypeName(value)}' object is not iterable`,
+  );
+}
+
 export function scanResultsRecoveryNeeded(
   connection: Connection,
   scan: Row,
