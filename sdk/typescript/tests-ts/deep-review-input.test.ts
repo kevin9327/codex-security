@@ -125,7 +125,7 @@ describe("deep-review worklists", () => {
     ]);
   });
   test.each([false, true])(
-    "closes an empty worklist with an empty output (selection=%s)",
+    "closes an empty worklist with an empty output (selection=%j)",
     (selection) => {
       const f = fixture();
       write(f.input, []);
@@ -264,7 +264,7 @@ describe("deep-review worklists", () => {
     },
   );
   test.each([false, true])(
-    "rejects repeated paths before output (selection=%s)",
+    "rejects repeated paths before output (selection=%j)",
     (selection) => {
       const f = fixture();
       write(
