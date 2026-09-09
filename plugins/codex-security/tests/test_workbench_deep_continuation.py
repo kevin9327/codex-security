@@ -989,3 +989,54 @@ def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
             "SELECT COUNT(*) FROM deep_scan_workers WHERE scan_id = ? AND status = 'succeeded'",
             (child_id,),
         ).fetchone() == (int(outcome == "completed_partial"),)
+
+
+@pytest.mark.parametrize("registered", [False, True])
+def test_native_inventory_hashing_allows_another_database_writer(
+    tmp_path: Path, monkeypatch, workbench_api, registered: bool
+) -> None:
+    import sys
+
+    import workbench_scan_checkpoints as checkpoints
+
+    if registered:
+        state, repository, _, scan_id = scan_fixture(tmp_path, "deep")
+        target_args = ["--scan-id", scan_id]
+        with sqlite3.connect(state / "workbench.sqlite3") as connection:
+            connection.execute("DELETE FROM scan_review_files WHERE scan_id = ?", (scan_id,))
+    else:
+        state, repository = tmp_path / "state", tmp_path / "repository"
+        repository.mkdir()
+        (repository / "source.ts").write_text("export const value = 1;\n")
+        target_args = ["--target-path", str(repository), "--scan-root", str(tmp_path / "scans")]
+    monkeypatch.setenv("CODEX_SECURITY_STATE_DIR", str(state))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["workbench_db.py", "begin-deep-scan", "--thread-id", "inventory-owner", *target_args],
+    )
+    args = workbench_api["parse_args"]("Test inventory recovery")
+    connection = workbench_api["connect"]()
+    try:
+        connection.execute("CREATE TABLE inventory_writer_probe (writes INTEGER)")
+        connection.commit()
+        digest = checkpoints.file_digest
+
+        def hash_with_concurrent_write(path: Path) -> str:
+            with sqlite3.connect(state / "workbench.sqlite3", timeout=0.05) as writer:
+                writer.execute("INSERT INTO inventory_writer_probe VALUES (1)")
+            return digest(path)
+
+        monkeypatch.setattr(checkpoints, "file_digest", hash_with_concurrent_write)
+        begun = workbench_api["deep_scan"].begin_deep_scan(connection, args)
+        scan_id = begun["deepScan"]["scanId"]
+        assert connection.execute("SELECT COUNT(*) FROM inventory_writer_probe").fetchone()[0] > 0
+        inventory = connection.execute(
+            "SELECT relative_path, content_sha256 FROM scan_review_files WHERE scan_id = ?",
+            (scan_id,),
+        ).fetchall()
+        assert inventory
+        assert all(content == digest(repository / name) for name, content in inventory)
+    finally:
+        connection.close()

@@ -28,9 +28,12 @@ from finalize_scan_contract import (
 from workbench.handoff import require_current_continuation
 from workbench_scan_checkpoints import (
     checkpoint_artifact_sources,
-    ensure_review_files,
+    freeze_review_files,
+    prepare_review_files,
     reconcile_checkpoints,
+    review_file_inventory,
 )
+from workbench_scan_start import scan_target_identity
 from workbench_target import (
     directory_content_digest,
     directory_snapshot_regular_file_count,
@@ -918,6 +921,7 @@ def ensure_deep_scan_run(
     config: dict[str, int | float],
     workflow_version: str,
     timestamp: str,
+    review_files: list[tuple[str, str]] | None,
 ) -> sqlite3.Row:
     existing = connection.execute(
         "SELECT * FROM deep_scan_runs WHERE scan_id = ?", (scan["id"],)
@@ -928,7 +932,13 @@ def ensure_deep_scan_run(
         raise SystemExit("Deep Scan orchestration requires a scan in deep mode.")
     if scan["status"] != "running":
         raise SystemExit("Only a running Deep Scan can start orchestration.")
-    ensure_review_files(connection, scan)
+    if (
+        review_files is not None
+        and not connection.execute(
+            "SELECT 1 FROM scan_review_files WHERE scan_id = ? LIMIT 1", (scan["id"],)
+        ).fetchone()
+    ):
+        freeze_review_files(connection, scan["id"], review_files)
     connection.execute(
         """
         INSERT INTO deep_scan_runs (
@@ -1097,6 +1107,7 @@ def begin_deep_scan_for_scan(
     workflow_version = optional_text(args.workflow_version, maximum=256)
     if workflow_version is None:
         raise SystemExit("workflow-version is required.")
+    review_files = prepare_review_files(connection, scan)
     connection.execute("BEGIN IMMEDIATE")
     try:
         scan, _ = require_owned_scan(connection, scan_id, thread_id)
@@ -1105,7 +1116,7 @@ def begin_deep_scan_for_scan(
             args.claim_token,
             error_message="Deep Scan orchestration is owned by another continuation.",
         )
-        ensure_deep_scan_run(connection, scan, config, workflow_version, now())
+        ensure_deep_scan_run(connection, scan, config, workflow_version, now(), review_files)
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -1135,25 +1146,20 @@ def begin_deep_scan_for_target(
     scope_file_count = directory_snapshot_regular_file_count(
         target if scope == "." else target / scope
     )
+    review_files = review_file_inventory(target, [scope])
+    if scan_target_identity(target, None) != (
+        revision,
+        target_snapshot_digest,
+        target_device,
+        target_inode,
+    ):
+        raise SystemExit("Cannot initialize checkpoints: the original source changed.")
     connection.execute("BEGIN IMMEDIATE")
     try:
         existing = existing_deep_scan_for_target(connection, thread_id, target_path, scope)
         if existing is not None:
-            existing_run = connection.execute(
-                "SELECT 1 FROM deep_scan_runs WHERE scan_id = ?", (existing["id"],)
-            ).fetchone()
-            if existing_run is None:
-                config = effective_deep_scan_config(args)
-                workflow_version = optional_text(args.workflow_version, maximum=256)
-                if workflow_version is None:
-                    raise SystemExit("workflow-version is required.")
-                ensure_deep_scan_run(connection, existing, config, workflow_version, now())
             connection.commit()
-            return deep_scan_result(
-                connection,
-                existing["id"],
-                start_disposition="joined" if existing_run is not None else "created",
-            )
+            return begin_deep_scan_for_scan(connection, existing["id"], thread_id, args)
         current_target = require_remediation_target(target_path)
         current_metadata = current_target.stat()
         if (current_metadata.st_dev, current_metadata.st_ino) != (
@@ -1267,7 +1273,7 @@ def begin_deep_scan_for_target(
             (scan_id, timestamp, workspace_id),
         )
         scan = require_scan(connection, scan_id)
-        ensure_deep_scan_run(connection, scan, config, workflow_version, timestamp)
+        ensure_deep_scan_run(connection, scan, config, workflow_version, timestamp, review_files)
         connection.commit()
     except BaseException:
         connection.rollback()

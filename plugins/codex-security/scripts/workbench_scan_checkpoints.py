@@ -75,12 +75,14 @@ def file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ensure_review_files(connection: sqlite3.Connection, scan: sqlite3.Row) -> None:
-    """Backfill an upgraded scan's inventory only from its original source snapshot."""
+def prepare_review_files(
+    connection: sqlite3.Connection, scan: sqlite3.Row
+) -> list[tuple[str, str]] | None:
+    """Prepare a missing inventory from the original source before acquiring a write lock."""
     if connection.execute(
         "SELECT 1 FROM scan_review_files WHERE scan_id = ? LIMIT 1", (scan["id"],)
     ).fetchone():
-        return
+        return None
     from workbench_scan_start import scan_target_identity
 
     repository = require_scan_target_identity(scan)
@@ -96,7 +98,13 @@ def ensure_review_files(connection: sqlite3.Connection, scan: sqlite3.Row) -> No
         if scan["recipe_json"]
         else [scan["scope"]]
     )
-    freeze_review_files(connection, scan["id"], review_file_inventory(repository, scopes))
+    return review_file_inventory(repository, scopes)
+
+
+def ensure_review_files(connection: sqlite3.Connection, scan: sqlite3.Row) -> None:
+    inventory = prepare_review_files(connection, scan)
+    if inventory is not None:
+        freeze_review_files(connection, scan["id"], inventory)
 
 
 def record_checkpoint(
