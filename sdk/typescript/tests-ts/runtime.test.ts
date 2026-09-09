@@ -104,9 +104,9 @@ import { loadBundledRuntime, PLUGIN_ROOT } from "./plugin-root.js";
 import { runTestInSubprocess } from "./support/test-subprocess.js";
 import {
   lowerUuid7Turn,
-  ownedPythonUsage,
+  ownedWorkbenchUsage,
   ownershipRollout,
-  readPythonRolloutUsage,
+  readWorkbenchRolloutUsage,
 } from "./support/usage-rollout.js";
 
 const migrationRoot = mkdtempSync(join(tmpdir(), "runtime-migration-fixture-"));
@@ -205,7 +205,7 @@ async function plugin(root: string, version = "1.2.3"): Promise<string> {
     JSON.stringify({ name: "codex-security", version }),
   );
   await mkdir(join(path, "scripts"));
-  await writeFile(join(path, "scripts", "helper.py"), "print('ok')\n");
+  await writeFile(join(path, "scripts", "helper.mjs"), "console.log('ok')\n");
   return path;
 }
 
@@ -972,18 +972,18 @@ describe("plugin runtime preparation", () => {
     await mkdir(ambientHome, { recursive: true });
     await mkdir(workspace);
     const source = await plugin(ambientHome);
-    await chmod(join(source, "scripts", "helper.py"), 0o750);
+    await chmod(join(source, "scripts", "helper.mjs"), 0o750);
 
     const selected = await resolvePluginPath(source, workspace);
 
     expect(selected).toBe(await realpath(source));
     expect(existsSync(join(workspace, "selected-plugin"))).toBe(false);
-    expect(await readFile(join(selected, "scripts", "helper.py"), "utf8")).toBe(
-      "print('ok')\n",
-    );
+    expect(
+      await readFile(join(selected, "scripts", "helper.mjs"), "utf8"),
+    ).toBe("console.log('ok')\n");
     if (process.platform !== "win32") {
       expect(
-        (await stat(join(selected, "scripts", "helper.py"))).mode & 0o777,
+        (await stat(join(selected, "scripts", "helper.mjs"))).mode & 0o777,
       ).toBe(0o750);
     }
   });
@@ -1116,7 +1116,7 @@ describe("plugin runtime preparation", () => {
     async () => {
       const root = await temporaryDirectory();
       const selected = await plugin(root);
-      const helper = join(selected, "scripts", "helper.py");
+      const helper = join(selected, "scripts", "helper.mjs");
       const outside = join(root, "outside-secret");
       const destination = join(
         root,
@@ -1148,7 +1148,7 @@ describe("plugin runtime preparation", () => {
         "external-promotion",
         "external-projection-contract.json",
       );
-      const helper = join(selected, "scripts", "helper.py");
+      const helper = join(selected, "scripts", "helper.mjs");
       const outside = join(root, "outside-secret");
       const destination = join(
         root,
@@ -1185,7 +1185,7 @@ describe("plugin runtime preparation", () => {
       const root = await temporaryDirectory();
       const selected = await plugin(root);
       const scripts = join(selected, "scripts");
-      const helper = join(scripts, "helper.py");
+      const helper = join(scripts, "helper.mjs");
       const outsideScripts = join(root, "outside-scripts");
       const destination = join(
         root,
@@ -1195,7 +1195,7 @@ describe("plugin runtime preparation", () => {
         "codex-security",
       );
       await mkdir(outsideScripts);
-      await writeFile(join(outsideScripts, "helper.py"), "OUTSIDE_SECRET");
+      await writeFile(join(outsideScripts, "helper.mjs"), "OUTSIDE_SECRET");
       const originalLstat = fsPromises.lstat;
       let swapped = false;
       mock.module("node:fs/promises", () => ({
@@ -1216,7 +1216,7 @@ describe("plugin runtime preparation", () => {
         ).rejects.toThrow(PluginBootstrapError);
         expect(swapped).toBe(true);
         expect(existsSync(destination)).toBe(false);
-        expect(await readFile(join(outsideScripts, "helper.py"), "utf8")).toBe(
+        expect(await readFile(join(outsideScripts, "helper.mjs"), "utf8")).toBe(
           "OUTSIDE_SECRET",
         );
       } finally {
@@ -1366,7 +1366,7 @@ describe("plugin runtime preparation", () => {
     const unsafeArchives: Array<[string, Uint8Array]> = [
       ["traversal", zipSync({ "../escape": strToU8("bad") })],
       ["drive", zipSync({ "D:/escape": strToU8("bad") })],
-      ["backslash", zipSync({ "release\\helper.py": strToU8("bad") })],
+      ["backslash", zipSync({ "release\\helper.mjs": strToU8("bad") })],
       [
         "duplicate",
         zipSync({
@@ -1387,8 +1387,8 @@ describe("plugin runtime preparation", () => {
           "release/.codex-plugin/plugin.json": strToU8(
             JSON.stringify({ name: "codex-security", version: "1.2.3" }),
           ),
-          "release/helper.py": strToU8("same"),
-          "release/helper.py.": strToU8("same"),
+          "release/helper.mjs": strToU8("same"),
+          "release/helper.mjs.": strToU8("same"),
         }),
       ],
       [
@@ -1397,8 +1397,8 @@ describe("plugin runtime preparation", () => {
           "release/.codex-plugin/plugin.json": strToU8(
             JSON.stringify({ name: "codex-security", version: "1.2.3" }),
           ),
-          "release/helper.py": strToU8("same"),
-          "release/helper.py ": strToU8("same"),
+          "release/helper.mjs": strToU8("same"),
+          "release/helper.mjs ": strToU8("same"),
         }),
       ],
       [
@@ -1457,7 +1457,7 @@ describe("plugin runtime preparation", () => {
           "release/.codex-plugin/plugin.json": strToU8(
             JSON.stringify({ name: "codex-security", version: "1.2.3" }),
           ),
-          "release/helper.py": strToU8("ORIGINAL"),
+          "release/helper.mjs": strToU8("ORIGINAL"),
         },
         { level: 0 },
       ),
@@ -1688,8 +1688,8 @@ describe("plugin runtime preparation", () => {
     expect(install.version).toBe("1.2.3");
 
     await writeFile(
-      join(selected, "scripts", "helper.py"),
-      "print('updated')\n",
+      join(selected, "scripts", "helper.mjs"),
+      "console.log('updated')\n",
     );
     const reused = await bootstrapPlugin(home, selected, {
       codexCommand: { command: "/codex" },
@@ -1814,16 +1814,9 @@ describe("plugin runtime preparation", () => {
     );
     expect(
       await readFile(
-        join(
-          marketplace,
-          "plugins",
-          "codex-security",
-          "scripts",
-          "workbench_cli.py",
-        ),
-        "utf8",
+        join(marketplace, "plugins", "codex-security", "mcp", "helpers.mjs"),
       ),
-    ).toContain('"inspect-linear-publication"');
+    ).toEqual(await readFile(join(PLUGIN_ROOT, "mcp", "helpers.mjs")));
   });
 
   test("rejects plugin installs without the selected path and version", async () => {
@@ -2020,21 +2013,14 @@ describe("plugin runtime preparation", () => {
     async (previousVersion) => {
       const root = await temporaryDirectory();
       const previous = await plugin(join(root, "previous"), previousVersion);
+      await mkdir(join(previous, "mcp"));
       await writeFile(
-        join(previous, "scripts", "workbench_scan_history.py"),
-        "print('previous bundled scan history')\n",
+        join(previous, "mcp", "helpers.mjs"),
+        "throw new Error('stale helper must be replaced');\n",
       );
       await writeFile(
         join(previous, ".mcp.json"),
         JSON.stringify({ mcpServers: { "codex-security": { env_vars: [] } } }),
-      );
-      await copyFile(
-        join(PLUGIN_ROOT, "scripts", "workbench_target.py"),
-        join(previous, "scripts", "workbench_target.py"),
-      );
-      await writeFile(
-        join(previous, "scripts", "workbench_scan_usage.py"),
-        "raise RuntimeError('stale collector must be replaced')\n",
       );
       const home = join(root, "home");
       const unrelatedProject = join(root, "unrelated-project");
@@ -2076,14 +2062,24 @@ describe("plugin runtime preparation", () => {
         join(home, "sdk-marketplace", "plugins", "codex-security"),
         upgraded.installedRoot,
       ]) {
-        for (const script of [
-          "workbench_target.py",
-          "finalize_scan_contract.py",
-          "workbench_scan_history.py",
-          "workbench_scan_usage.py",
-        ]) {
-          expect(await readFile(join(pluginRoot, "scripts", script))).toEqual(
-            await readFile(join(PLUGIN_ROOT, "scripts", script)),
+        const shipped = JSON.parse(
+          await readFile(
+            new URL(
+              "../../../plugins/codex-security/plugin-files.json",
+              import.meta.url,
+            ),
+            "utf8",
+          ),
+        ) as { shippedExact: string[] };
+        const helperFiles = shipped.shippedExact.filter(
+          (path) =>
+            path.startsWith("mcp/helpers.mjs") ||
+            path.startsWith("mcp/native/"),
+        );
+        expect(helperFiles).toContain("mcp/helpers.mjs");
+        for (const path of helperFiles) {
+          expect(await readFile(join(pluginRoot, path))).toEqual(
+            await readFile(join(PLUGIN_ROOT, path)),
           );
         }
       }
@@ -2141,9 +2137,9 @@ describe("plugin runtime preparation", () => {
           .join("\n") + "\n",
       );
       expect(
-        readPythonRolloutUsage(upgraded.installedRoot, rolloutPath),
+        readWorkbenchRolloutUsage(upgraded.installedRoot, rolloutPath),
       ).toEqual({
-        usage: ownedPythonUsage,
+        usage: ownedWorkbenchUsage,
         warnings: [],
       });
     },

@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import {
   appendFile,
   mkdir,
@@ -24,10 +23,10 @@ import {
   childUuid7Thread,
   higherUuid7Turn,
   lowerUuid7Turn,
-  ownedPythonUsage,
+  ownedWorkbenchUsage,
   ownedSdkUsage,
   ownershipRollout,
-  readPythonRolloutUsage,
+  readWorkbenchRolloutUsage,
   scanThreadId,
 } from "./support/usage-rollout.js";
 
@@ -188,9 +187,6 @@ describe("scan cost", () => {
   ] as const)(
     "keeps workbench cache-write normalization aligned with SDK usage for %j as %p tokens",
     async (cacheWrites, expectedCacheWrites) => {
-      const { PLUGIN_ROOT } = await import("./plugin-root.js");
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
       const usage = {
         input_tokens: 100,
         cached_input_tokens: 40,
@@ -199,33 +195,38 @@ describe("scan cost", () => {
         reasoning_output_tokens: 5,
         total_tokens: 120,
       };
-      const probe = [
-        "import json, sys",
-        "sys.path.insert(0, sys.argv[1])",
-        "import workbench_scan_usage",
-        "payload = {'info': {'total_token_usage': json.loads(sys.argv[2])}}",
-        "print(json.dumps(workbench_scan_usage._token_snapshot(payload)))",
-      ].join("\n");
-      const result = spawnSync(
-        python!,
+      const home = await codexHome(),
+        rolloutPath = join(home, "cache-writes.jsonl");
+      const timestamp = "2026-07-26T12:02:00.250Z";
+      await writeFile(
+        rolloutPath,
         [
-          "-I",
-          "-B",
-          "-c",
-          probe,
-          join(PLUGIN_ROOT, "scripts"),
-          JSON.stringify(usage),
-        ],
-        { encoding: "utf8" },
+          {
+            type: "session_meta",
+            payload: { id: childUuid7Thread, timestamp, source: "exec" },
+          },
+          {
+            type: "event_msg",
+            timestamp,
+            payload: {
+              type: "token_count",
+              info: { total_token_usage: usage },
+            },
+          },
+        ]
+          .map((event) => JSON.stringify(event))
+          .join("\n") + "\n",
       );
-
-      expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({
-        inputTokens: 100,
-        cachedInputTokens: 40,
-        cacheWriteInputTokens: expectedCacheWrites,
-        outputTokens: 20,
-        totalTokens: 120,
+      expect(
+        readWorkbenchRolloutUsage(BUNDLED_PLUGIN_ROOT, rolloutPath),
+      ).toMatchObject({
+        usage: {
+          inputTokens: 100,
+          cachedInputTokens: 40,
+          cacheWriteInputTokens: expectedCacheWrites,
+          outputTokens: 20,
+          totalTokens: 120,
+        },
       });
     },
   );
@@ -1150,17 +1151,20 @@ describe("live scan cost tracking", () => {
     });
     tracker.start(scanThreadId);
     const tracked = await tracker.stop();
-    const python = readPythonRolloutUsage(BUNDLED_PLUGIN_ROOT, rolloutPath);
+    const workbench = readWorkbenchRolloutUsage(
+      BUNDLED_PLUGIN_ROOT,
+      rolloutPath,
+    );
 
     expect({
       trackedUsage: tracked.usage,
       estimatedUsd: tracked.cost?.estimatedUsd,
-      python,
+      workbench,
     }).toEqual({
       trackedUsage: ownedSdkUsage,
       estimatedUsd: 0.0008,
-      python: {
-        usage: ownedPythonUsage,
+      workbench: {
+        usage: ownedWorkbenchUsage,
         warnings: [],
       },
     });

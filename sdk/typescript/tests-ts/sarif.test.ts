@@ -1,9 +1,38 @@
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Finding, FindingsDocument } from "../src/models.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
+import type { Request, Response } from "./support/sarif-projection-fixture";
+
+const root = realpathSync(mkdtempSync(join(tmpdir(), "sarif-presentation-")));
+const fixture = join(root, "fixture.cjs"),
+  node = Bun.which("node")!;
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/sarif-projection-fixture.ts", import.meta.url),
+      ),
+    ],
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+  }),
+);
+afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 const example = join(PLUGIN_ROOT, "examples", "completed-scan");
 const manifest = JSON.parse(
@@ -18,30 +47,21 @@ function finding(overrides: Partial<Finding> = {}): Finding {
 }
 
 function buildSarif(findings: Finding[]) {
-  const python = Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
-  const result = spawnSync(
-    python!,
-    [
-      "-I",
-      "-B",
-      "-c",
-      [
-        "import json, sys",
-        "sys.path.insert(0, sys.argv[1])",
-        "from finalize_scan_contract import build_sarif",
-        "payload = json.load(sys.stdin)",
-        "print(json.dumps(build_sarif(payload['manifest'], payload['findings'])['runs'][0]))",
-      ].join("\n"),
-      join(PLUGIN_ROOT, "scripts"),
-    ],
-    {
-      encoding: "utf8",
-      input: JSON.stringify({ manifest, findings: { ...document, findings } }),
-    },
-  );
+  const request: Request = {
+    operation: "sarif",
+    source: JSON.stringify([manifest, { ...document, findings }]),
+  };
+  const result = spawnSync(node, [fixture], {
+    encoding: "utf8",
+    input: JSON.stringify([request]),
+    env: { ...process.env, PATH: "", PYTHON: "/unavailable/python" },
+  });
   expect(result.status, result.stderr).toBe(0);
-  return JSON.parse(result.stdout);
+  expect(result.stderr).toBe("");
+  const response = (JSON.parse(result.stdout) as Response[])[0]!;
+  expect(response.error).toBeUndefined();
+  expect(response.unchanged).toBe(true);
+  return JSON.parse(response.source!).runs[0];
 }
 
 describe("SARIF presentation", () => {

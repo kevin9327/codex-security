@@ -1,5 +1,15 @@
 import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withWorkbenchDatabase, workbenchRows } from "./workbench-database.js";
 import { expect } from "bun:test";
 
 export const scanThreadId = "scan-thread";
@@ -15,7 +25,7 @@ export const ownedSdkUsage = {
   reasoning_output_tokens: 0,
   total_tokens: 110,
 };
-export const ownedPythonUsage = {
+export const ownedWorkbenchUsage = {
   inputTokens: 100,
   cachedInputTokens: 0,
   cacheWriteInputTokens: 0,
@@ -86,42 +96,132 @@ export function ownershipRollout(
   ];
 }
 
-export function readPythonRolloutUsage(
+export function readWorkbenchRolloutUsage(
   pluginRoot: string,
   rolloutPath: string,
 ): unknown {
-  const python = Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
-  const probe = [
-    "import json, sys",
-    "from datetime import datetime, timezone",
-    "from pathlib import Path",
-    "sys.path.insert(0, sys.argv[1])",
-    "import workbench_scan_usage",
-    "session = workbench_scan_usage.RolloutSession(sys.argv[3], sys.argv[4], Path(sys.argv[2]))",
-    "usage, warnings = workbench_scan_usage._read_rollout_usage(",
-    "    session,",
-    "    started_at=datetime(2026, 7, 26, 12, tzinfo=timezone.utc),",
-    "    completed_at=None,",
-    ")",
-    "print(json.dumps({'usage': usage, 'warnings': sorted(warnings)}, sort_keys=True))",
-  ].join("\n");
-  const result = spawnSync(
-    python!,
-    [
-      "-I",
-      "-B",
-      "-c",
-      probe,
-      join(pluginRoot, "scripts"),
-      rolloutPath,
-      childUuid7Thread,
-      scanThreadId,
-    ],
-    { encoding: "utf8" },
-  );
-
-  expect(result.error).toBeUndefined();
-  expect(result.status, result.stderr).toBe(0);
-  return JSON.parse(result.stdout) as unknown;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "workbench-rollout-")));
+  const node = Bun.which("node");
+  expect(node).not.toBeNull();
+  const state = join(root, "state"),
+    database = join(state, "workbench.sqlite3"),
+    codexDatabase = join(root, "state_5.sqlite"),
+    target = join(root, "target"),
+    scanDirectory = join(root, "scan");
+  const environment = {
+    ...process.env,
+    PATH: "",
+    PYTHON: "/unavailable/python",
+    CODEX_SECURITY_STATE_DIR: state,
+    CODEX_HOME: join(root, "codex"),
+    CODEX_SQLITE_HOME: root,
+    CODEX_STATE_DB: codexDatabase,
+  };
+  function helper(args: string[]): Record<string, unknown> {
+    const result = spawnSync(
+      node!,
+      [join(pluginRoot, "mcp/helpers.mjs"), ...args],
+      {
+        env: environment,
+        encoding: "utf8",
+        windowsHide: true,
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
+    return JSON.parse(result.stdout) as Record<string, unknown>;
+  }
+  try {
+    mkdirSync(target);
+    mkdirSync(scanDirectory, { mode: 0o700 });
+    writeFileSync(join(target, "source.ts"), "synthetic source\n");
+    const registered = helper([
+      "register-cli-scan",
+      "--repository",
+      target,
+      "--scan-dir",
+      scanDirectory,
+      "--recipe-json",
+      JSON.stringify({
+        repository: target,
+        mode: "standard",
+        maxCostUsd: 0.5,
+        config: {},
+        target: { kind: "repository", paths: [] },
+      }),
+    ]);
+    const scanId = registered["scanId"] as string;
+    const scan = workbenchRows(database, "SELECT * FROM scans WHERE id = ?", [
+      scanId,
+    ])[0]!;
+    withWorkbenchDatabase(database, (connection) => {
+      connection
+        .prepare("UPDATE workspaces SET thread_id = ? WHERE id = ?")
+        .run([childUuid7Thread, scan["workspace_id"] as string]);
+      connection
+        .prepare("UPDATE scans SET started_at = ? WHERE id = ?")
+        .run(["2026-07-26T12:00:00Z", scanId]);
+      connection.commit();
+    });
+    withWorkbenchDatabase(codexDatabase, (connection) => {
+      connection.raw.exec(
+        "CREATE TABLE threads(id, rollout_path); CREATE TABLE thread_spawn_edges(parent_thread_id, child_thread_id);",
+      );
+      connection
+        .prepare("INSERT INTO threads VALUES (?, ?)")
+        .run([childUuid7Thread, rolloutPath]);
+      connection.commit();
+    });
+    const readExample = (name: string) =>
+      JSON.parse(
+        readFileSync(join(pluginRoot, "examples/completed-scan", name), "utf8"),
+      ) as Record<string, unknown>;
+    const manifest = readExample("scan-manifest.json"),
+      manifestScan = manifest["scan"] as Record<string, unknown>;
+    delete manifestScan["sealedAt"];
+    delete manifestScan["artifacts"];
+    manifestScan["startedAt"] = "2026-07-26T12:00:00Z";
+    manifestScan["completedAt"] = "2026-07-26T12:03:00Z";
+    manifestScan["target"] = {
+      kind: "directory_snapshot",
+      snapshotDigest: scan["target_snapshot_digest"],
+    };
+    const findings = readExample("findings.json");
+    for (const finding of findings["findings"] as Record<string, unknown>[])
+      for (const key of ["findingId", "occurrenceId", "fingerprints"])
+        delete finding[key];
+    const drafts = join(scan["scan_dir"] as string, "drafts");
+    const draft = join(drafts, "a-b.json");
+    mkdirSync(drafts, { recursive: true });
+    writeFileSync(
+      draft,
+      JSON.stringify({
+        manifest,
+        findings,
+        coverage: readExample("coverage.json"),
+      }),
+    );
+    helper(["write-scan-draft", "--scan-id", scanId, "--draft-path", draft]);
+    const completed = helper(["complete-scan", "--scan-id", scanId]);
+    const completedScan = completed["scan"] as Record<string, unknown>;
+    expect(completedScan).toMatchObject({
+      scanId,
+      progress: { status: "complete" },
+    });
+    const usage = completedScan["usage"] as Record<string, unknown>;
+    expect(usage).toMatchObject({
+      coverage: "complete",
+      source: "codex_rollout",
+      threadCount: 1,
+    });
+    return {
+      usage: Object.fromEntries(
+        Object.keys(ownedWorkbenchUsage).map((key) => [key, usage[key]]),
+      ),
+      warnings: usage["warnings"] ?? [],
+    };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }

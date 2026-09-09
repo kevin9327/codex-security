@@ -20,13 +20,8 @@ const { scan } = JSON.parse(
 // Keep database initialization and migrations in the existing workbench.
 const { databasePath } = JSON.parse(
   execFileSync(
-    "python3",
-    [
-      "-I",
-      "-B",
-      join(packageRoot, "_bundled_plugin/scripts/workbench_db.py"),
-      "database-info",
-    ],
+    process.execPath,
+    [join(packageRoot, "_bundled_plugin/mcp/helpers.mjs"), "database-info"],
     { encoding: "utf8" },
   ),
 ) as { databasePath: string };
