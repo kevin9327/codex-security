@@ -83,6 +83,14 @@ function inventory(...args: string[]) {
   );
 }
 
+function rankInput(...args: string[]) {
+  return spawnSync(
+    Bun.which("node")!,
+    [join(PLUGIN_ROOT, "mcp", "helpers.mjs"), "make-diff-rank-input", ...args],
+    { encoding: "utf8" },
+  );
+}
+
 function candidate(path: string): JsonObject {
   return {
     cwe_ids: [],
@@ -190,9 +198,7 @@ describe("compact diff scan", () => {
     git(repository, "checkout", "--detach", base);
 
     const output = join(root, "rank-input.jsonl");
-    const result = python(
-      "generate_rank_input.py",
-      "make-diff-rank-input",
+    const result = rankInput(
       "--repo",
       repository,
       "--base",
@@ -340,9 +346,7 @@ describe("compact diff scan", () => {
     ]);
 
     const reviewOutput = join(root, "rank-input.jsonl");
-    const review = python(
-      "generate_rank_input.py",
-      "make-diff-rank-input",
+    const review = rankInput(
       "--repo",
       repository,
       "--base",

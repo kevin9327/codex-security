@@ -13,6 +13,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 import { afterEach, expect, test } from "bun:test";
 import type { ScanOptions } from "../src/api.js";
 import { main } from "../src/cli.js";
@@ -194,6 +196,37 @@ async function scopedInventory(paths: Fixture, scope: string) {
   const scopesFile = join(paths.root, "scopes.json");
   const output = join(paths.root, "scoped-source-input.jsonl");
   await writeFile(scopesFile, JSON.stringify([scope]));
+  const fixture = join(paths.root, "scoped-input-fixture.mjs");
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/scoped-input-fixture.ts", import.meta.url),
+      ),
+    ],
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp", "helpers.mjs")).href,
+      ),
+    },
+  });
+  const generated = JSON.parse(
+    execFileSync(
+      Bun.which("node")!,
+      [fixture, paths.repository, scopesFile, output],
+      { encoding: "utf8", stdio: "pipe" },
+    )
+      .trim()
+      .split("\n")
+      .at(-1)!,
+  ) as {
+    paths: string[];
+    queries: Array<{ pathspec: string; count: number }>;
+  };
   const stdout = execFileSync(
     python!,
     [
@@ -202,11 +235,9 @@ async function scopedInventory(paths: Fixture, scope: string) {
       "-c",
       [
         "import json, sys",
-        "from argparse import Namespace",
         "from pathlib import Path",
         "sys.path.insert(0, sys.argv[1])",
         "import workbench_target as target",
-        "from generate_rank_input import make_repo_scope_input",
         "queries = []",
         "git_bytes = target.git_bytes",
         "def record_query(repository, *args, **kwargs):",
@@ -215,24 +246,24 @@ async function scopedInventory(paths: Fixture, scope: string) {
         "        queries.append({'pathspec': args[-1], 'count': len([path for path in (data or b'').split(b'\\0') if path])})",
         "    return data",
         "target.git_bytes = record_query",
-        "repo, scope, scopes, output = sys.argv[2:]",
-        "make_repo_scope_input(Namespace(repo=repo, scopes_file=scopes, out=output))",
-        "rows = [json.loads(line)['path'] for line in Path(output).read_text().splitlines()]",
+        "repo, scope = sys.argv[2:]",
         "count = target.directory_snapshot_regular_file_count((Path(repo) / scope).resolve())",
-        "print(json.dumps({'paths': rows, 'count': count, 'queries': queries}))",
+        "print(json.dumps({'count': count, 'queries': queries}))",
       ].join("\n"),
       join(PLUGIN_ROOT, "scripts"),
       paths.repository,
       scope,
-      scopesFile,
-      output,
     ],
     { encoding: "utf8", stdio: "pipe" },
   );
-  return JSON.parse(stdout.trim().split("\n").at(-1)!) as {
-    paths: string[];
+  const snapshot = JSON.parse(stdout.trim().split("\n").at(-1)!) as {
     count: number;
     queries: Array<{ pathspec: string; count: number }>;
+  };
+  return {
+    paths: generated.paths,
+    count: snapshot.count,
+    queries: [...generated.queries, ...snapshot.queries],
   };
 }
 

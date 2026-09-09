@@ -1,8 +1,5 @@
 {
-  "externalOwnedExact": [
-    ".codex-plugin/plugin.json",
-    "OWNERS"
-  ],
+  "externalOwnedExact": [".codex-plugin/plugin.json", "OWNERS"],
   "shippedExact": [
     ".app.json",
     ".mcp.json",
@@ -65,10 +62,8 @@
     "scripts/filesystem_identity.py",
     "scripts/finalize_scan_contract.py",
     "scripts/finding_preview.py",
-    "scripts/generate_rank_input.py",
     "scripts/launch_codex_security_mcp",
     "scripts/launch_codex_security_mcp.cmd",
-    "scripts/rank_preview.py",
     "scripts/report_projection.py",
     "scripts/validate_scan_contract.py",
     "scripts/validate_tracking_source.py",

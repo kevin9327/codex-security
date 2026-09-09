@@ -1,10 +1,8 @@
 import { randomBytes } from "node:crypto";
 import {
   closeSync,
-  lstatSync,
   openSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -13,11 +11,10 @@ import {
   widePath,
   windowsFileSystem,
   windowsParts,
-  windowsLexicalRelativePath,
 } from "../../../native/windows-files.mjs";
 import { windowsBinding } from "../native";
 import { decodeFilename, gitBlobBytes } from "../workbench-git";
-import { exists, mkdir } from "./helper-files";
+import { exists, fileInfo as metadata, mkdir } from "./helper-files";
 import { encodePosixPath, SymlinkLoopError } from "./posix-path";
 import {
   DEFAULT_PREVIEW_BYTES,
@@ -33,7 +30,9 @@ import {
   nulFields,
   pathIsExcluded,
   pathKey,
+  relativePath,
   selectedGit,
+  windowsStreamComponent,
   type ChangedPath,
   type DiffMode,
 } from "./rank-selection";
@@ -50,38 +49,6 @@ const windows = process.platform === "win32";
 const windowsFiles = () => windowsFileSystem(windowsBinding());
 export class InventoryError extends Error {}
 
-function metadata(path: string, follow = true) {
-  try {
-    return windows
-      ? windowsFiles().stat(widePath(path), follow)
-      : follow
-        ? statSync(encodePosixPath(path))
-        : lstatSync(encodePosixPath(path));
-  } catch (error) {
-    const { code, winerror } = error as NodeJS.ErrnoException & {
-      winerror?: number;
-    };
-    if (
-      ["ENOENT", "ENOTDIR", "ELOOP", "EBADF"].includes(code ?? "") ||
-      (windows && [21, 123].includes(winerror ?? 0))
-    )
-      return undefined;
-    throw error;
-  }
-}
-function relativePath(path: string, repository: string): string | undefined {
-  if (windows)
-    return windowsLexicalRelativePath(path, repository)?.replaceAll("\\", "/");
-  if (path === repository) return "";
-  const prefix = repository.endsWith("/") ? repository : `${repository}/`;
-  return path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
-}
-export function windowsStreamComponent(path: string): string | undefined {
-  if (!windows) return undefined;
-  return windowsParts(path)[2]
-    .split(/[/\\]/u)
-    .find((part) => part.includes(":"));
-}
 export function resolveRepository(
   value: string,
   posixHome = process.env["HOME"],

@@ -89,14 +89,11 @@ test("diff previews stay inside the selected repository", () => {
   rmSync(nested, { recursive: true });
   symlinkSync(externalFixture, nested, "junction");
 
-  const python = pythonExecutable();
-  expect(python).not.toBeNull();
   const output = join(root, "rank-input.jsonl");
   const result = spawnSync(
-    python!,
+    Bun.which("node")!,
     [
-      "-B",
-      join(PLUGIN_ROOT, "scripts", "generate_rank_input.py"),
+      join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
       "make-diff-rank-input",
       "--repo",
       repository,
@@ -166,11 +163,9 @@ test("preserves Unicode Git paths and legacy-encoded commit metadata", () => {
   expect(python).not.toBeNull();
   const output = join(root, "rank-input.jsonl");
   const rank = spawnSync(
-    python!,
+    Bun.which("node")!,
     [
-      "-I",
-      "-B",
-      join(PLUGIN_ROOT, "scripts", "generate_rank_input.py"),
+      join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
       "make-diff-rank-input",
       "--repo",
       repository,

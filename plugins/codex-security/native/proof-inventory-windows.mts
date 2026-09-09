@@ -7,7 +7,7 @@ import { output } from "./binding.mjs";
 import { loadWindowsBinding } from "./windows-binding.mjs";
 import { pathText, widePath, windowsFileSystem } from "./windows-files.mjs";
 
-const gitRecord = join(output, "inventory-git.json");
+export const gitRecord = join(output, "inventory-git.json");
 export function prepareInventoryWindows(): void {
   const git = execFileSync("where.exe", ["git"], { encoding: "utf8" })
     .trim()

@@ -2,14 +2,36 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { windowsBinding } from "../native";
 import { widePath, windowsFileSystem } from "../../../native/windows-files.mjs";
 import { encodePosixPath } from "./posix-path";
+
+export function fileInfo(path: string, follow = true) {
+  try {
+    return process.platform === "win32"
+      ? windowsFileSystem(windowsBinding()).stat(widePath(path), follow)
+      : follow
+        ? statSync(encodePosixPath(path))
+        : lstatSync(encodePosixPath(path));
+  } catch (error) {
+    const { code, winerror } = error as NodeJS.ErrnoException & {
+      winerror?: number;
+    };
+    if (
+      ["ENOENT", "ENOTDIR", "ELOOP", "EBADF"].includes(code ?? "") ||
+      (process.platform === "win32" && [21, 123].includes(winerror ?? 0))
+    )
+      return undefined;
+    throw error;
+  }
+}
 
 export function readFile(path: string | number): Buffer {
   if (typeof path === "number") return readFileSync(path);

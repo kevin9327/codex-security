@@ -1,5 +1,6 @@
 import { decodeUtf8 } from "./utf8";
 import { dirname } from "node:path";
+import decimalDigit from "@unicode/unicode-15.0.0/General_Category/Decimal_Number/regex.js";
 import { exists, mkdir, readFile, writeFile } from "./helper-files";
 import { encodePosixPath } from "./posix-path";
 import { JsonSyntaxError, object, parseJson, pythonRepr } from "./python-json";
@@ -105,7 +106,10 @@ export function requireUniquePaths(rows: RankRow[], label: string): void {
     );
 }
 
-export function writeRankRows(output: string, rows: RankRow[]): void {
+export function writeRankRows(
+  output: string,
+  rows: readonly (RankRow | Pick<RankRow, "path">)[],
+): void {
   mkdir(dirname(output));
   function* contents(): Iterable<Buffer> {
     for (const row of rows) {
@@ -122,23 +126,49 @@ export function writeRankRows(output: string, rows: RankRow[]): void {
   writeFile(output, contents());
 }
 
+export function loadScopesFile(path: string): string[] {
+  let scopes: unknown;
+  try {
+    scopes = parseJson(decodeUtf8(readFile(path)));
+  } catch {
+    throw new Error(`Unable to read scopes file: ${path}`);
+  }
+  if (
+    !Array.isArray(scopes) ||
+    !scopes.length ||
+    scopes.some((scope: unknown) => typeof scope !== "string" || !scope)
+  )
+    throw new Error(
+      `Scopes file must contain a non-empty JSON string array: ${path}`,
+    );
+  return scopes as string[];
+}
+
 export class ArgumentError extends Error {}
+const integerPattern = new RegExp(
+  `^[+-]?(?:${decimalDigit.source})+(?:_(?:${decimalDigit.source})+)*$`,
+);
+const negativeNumber = new RegExp(
+  `^-(?:(?:${decimalDigit.source})+|(?:${decimalDigit.source})*\\.(?:${decimalDigit.source})+)\\n?$`,
+);
 function integer(value: string, option: string): bigint {
   const text = value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
-  if (!/^[+-]?\p{Decimal_Number}+(?:_\p{Decimal_Number}+)*$/u.test(text))
+  const invalid = (): never => {
     throw new ArgumentError(
       `argument --${option}: invalid int value: ${pythonRepr(value)}`,
     );
-  return BigInt(
-    Array.from(text.replaceAll("_", ""), (character) => {
-      if (!/\p{Decimal_Number}/u.test(character)) return character;
-      const point = character.codePointAt(0)!;
-      let start = point;
-      while (/\p{Decimal_Number}/u.test(String.fromCodePoint(start - 1)))
-        start--;
-      return String((point - start) % 10);
-    }).join(""),
-  );
+  };
+  if (!integerPattern.test(text)) invalid();
+  const normalized = Array.from(text.replaceAll("_", ""), (character) => {
+    if (!decimalDigit.test(character)) return character;
+    const point = character.codePointAt(0)!;
+    let start = point;
+    while (decimalDigit.test(String.fromCodePoint(start - 1))) start--;
+    return String((point - start) % 10);
+  }).join("");
+  const maximum = Number(process.env["PYTHONINTMAXSTRDIGITS"] || 4300);
+  if (maximum && normalized.replace(/^[+-]/u, "").length > maximum) invalid();
+  return BigInt(normalized);
 }
 
 export function argumentsFor(
@@ -161,9 +191,7 @@ export function argumentsFor(
     arg.startsWith("-") &&
     arg !== "-" &&
     !arg.includes(" ") &&
-    !/^-(?:\p{Decimal_Number}+|\p{Decimal_Number}*\.\p{Decimal_Number}+)\n?$/u.test(
-      arg,
-    );
+    !negativeNumber.test(arg);
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]!;
     if (arg === "--") {
@@ -207,7 +235,7 @@ export function argumentsFor(
     const choices = optional[name];
     if (choices && !choices.includes(value))
       throw new ArgumentError(
-        `argument --${name}: invalid choice: ${pythonRepr(value)} (choose from ${choices.map(pythonRepr).join(", ")})`,
+        `argument --${name}: invalid choice: ${pythonRepr(value)} (choose from ${choices.join(", ")})`,
       );
     values[name] = integerOptions.includes(name) ? integer(value, name) : value;
   }

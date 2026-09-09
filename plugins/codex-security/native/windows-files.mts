@@ -240,6 +240,7 @@ export function windowsFileSystem(native: WindowsBinding) {
       const directory =
         (info.attributes & flags.FILE_ATTRIBUTE_DIRECTORY) !== 0;
       return {
+        reparseTag: info.reparseTag,
         isDirectory: () => !link && directory,
         isFile: () => !link && !directory && type.value === 1,
         isSymbolicLink: () => link,

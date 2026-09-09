@@ -1,7 +1,11 @@
 import { getSystemErrorName } from "node:util";
 import { processBinding } from "../native";
 import { decodeFilename } from "../workbench-git";
-import { windowsJoin } from "../../../native/windows-files.mjs";
+import {
+  windowsJoin,
+  windowsParts,
+  windowsLexicalRelativePath,
+} from "../../../native/windows-files.mjs";
 import { encodePosixPath } from "./posix-path";
 import { compare } from "./rank-worklists";
 import { parsedPath } from "./resolve-security-md";
@@ -54,7 +58,7 @@ const excludedDirectories = new Set([
   "tmp",
   "vendor",
 ]);
-const excludedFilenames = new Set([
+export const excludedFilenames = new Set([
   ".DS_Store",
   "CHANGELOG",
   "CHANGELOG.md",
@@ -101,6 +105,24 @@ export function appendPath(directory: string, path: string): string {
         ? path
         : `${directory}/${path}`,
   );
+}
+
+export function relativePath(
+  path: string,
+  repository: string,
+): string | undefined {
+  if (process.platform === "win32")
+    return windowsLexicalRelativePath(path, repository)?.replaceAll("\\", "/");
+  if (path === repository) return "";
+  const prefix = repository.endsWith("/") ? repository : `${repository}/`;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
+}
+
+export function windowsStreamComponent(path: string): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  return windowsParts(path)[2]
+    .split(/[/\\]/u)
+    .find((part) => part.includes(":"));
 }
 
 /** These worklist commands intentionally inherit the caller's Git environment. */

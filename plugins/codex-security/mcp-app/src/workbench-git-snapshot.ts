@@ -56,7 +56,7 @@ function sameFile(left: string, right: string): boolean {
 }
 
 // Path.rglob("*") suppresses enumeration errors and does not descend into symlinks.
-function* descendants(directory: string): Iterable<string> {
+export function* descendants(directory: string): Iterable<string> {
   const pending = [directory];
   while (pending.length) {
     const parent = pending.pop()!;

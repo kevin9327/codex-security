@@ -5669,14 +5669,13 @@ describe("CodexSecurity orchestration", () => {
     expect(policyCommand).toMatch(
       /^<plugin_dir>\/scripts\/launch_codex_security_mcp --helper resolve-security-md /,
     );
-    const helper = shellEnvironmentReference(
-      "CODEX_SECURITY_PLUGIN_ROOT",
-      "/scripts/generate_rank_input.py",
-    );
     const scopes = shellEnvironmentReference(
       "CODEX_SECURITY_TARGET_PATHS_FILE",
     );
-    const makeScopeCommand = `${pythonCommand} ${helper} make-repo-scope-input --repo ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")} --scopes-file ${scopes} --out ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scoped-source-input.jsonl")}`;
+    const makeScopeCommand =
+      process.platform === "win32"
+        ? String.raw`cmd.exe /d /v:off /s /c '""%CODEX_SECURITY_PLUGIN_ROOT%\scripts\launch_codex_security_mcp.cmd" --helper make-repo-scope-input --repo "%CODEX_SECURITY_REPOSITORY%" --scopes-file "%CODEX_SECURITY_TARGET_PATHS_FILE%" --out "%CODEX_SECURITY_SCAN_DIR%\scoped-source-input.jsonl""'`
+        : `${shellEnvironmentReference("CODEX_SECURITY_PLUGIN_ROOT", "/scripts/launch_codex_security_mcp")} --helper make-repo-scope-input --repo ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")} --scopes-file ${scopes} --out ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scoped-source-input.jsonl")}`;
     const bindScopeCommand =
       process.platform === "win32"
         ? String.raw`cmd.exe /d /v:off /s /c '""%CODEX_SECURITY_PLUGIN_ROOT%\scripts\launch_codex_security_mcp.cmd" --helper bind-repo-scopes --scopes-file "%CODEX_SECURITY_TARGET_PATHS_FILE%" --manifest "%CODEX_SECURITY_SCAN_DIR%\scan-manifest.json" --coverage "%CODEX_SECURITY_SCAN_DIR%\coverage.json""'`
@@ -5720,9 +5719,6 @@ describe("CodexSecurity orchestration", () => {
         `${repository}\0${scanDir}\0${python}\0${serializedPaths}\n`,
       );
     }
-    const interpreter =
-      Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-    expect(interpreter).not.toBeNull();
     const scopedSourceInput = join(scanDir, "scoped-source-input.jsonl");
     const runScopedHelper = (command: string): void => {
       const shell =
@@ -5738,7 +5734,7 @@ describe("CodexSecurity orchestration", () => {
           env: {
             ...process.env,
             ...environment,
-            PYTHON: interpreter!,
+            PYTHON: join(root, "missing-python"),
             PYTHONDONTWRITEBYTECODE: "1",
             CODEX_MCP_NODE_PATH: Bun.which("node")!,
             PATH_LITERAL: "expanded-wrong-directory",
@@ -5783,9 +5779,6 @@ describe("CodexSecurity orchestration", () => {
     const vendored = join(source, "vendor");
     const scopes = join(root, "scopes.json");
     const output = join(root, "scoped-source-input.jsonl");
-    const interpreter =
-      Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-    expect(interpreter).not.toBeNull();
 
     await mkdir(join(source, "tests"), { recursive: true });
     await mkdir(join(source, "examples"));
@@ -5818,10 +5811,9 @@ describe("CodexSecurity orchestration", () => {
     const enumerate = async (requested: string[]) => {
       await writeFile(scopes, JSON.stringify(requested));
       execFileSync(
-        interpreter!,
+        Bun.which("node")!,
         [
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "generate_rank_input.py"),
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
           "make-repo-scope-input",
           "--repo",
           repository,

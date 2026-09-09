@@ -4,6 +4,7 @@ import { object, parseJson, stringifyJson } from "./python-json";
 import {
   ArgumentError,
   argumentsFor,
+  loadScopesFile,
   print,
   worklistPath,
 } from "./rank-worklists";
@@ -26,20 +27,7 @@ export function bindRepoScopesCommand(
       return 0;
     }
     const scopesPath = worklistPath(values["scopes-file"] as string, posixHome);
-    let scopes: unknown;
-    try {
-      scopes = read(scopesPath);
-    } catch {
-      throw new Error(`Unable to read scopes file: ${scopesPath}`);
-    }
-    if (
-      !Array.isArray(scopes) ||
-      scopes.length === 0 ||
-      scopes.some((scope: unknown) => typeof scope !== "string" || !scope)
-    )
-      throw new Error(
-        `Scopes file must contain a non-empty JSON string array: ${scopesPath}`,
-      );
+    const scopes = loadScopesFile(scopesPath);
     const manifestPath = worklistPath(values.manifest as string, posixHome);
     const coveragePath = worklistPath(values.coverage as string, posixHome);
     let manifest: unknown, coverage: unknown, scope: unknown;

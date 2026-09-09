@@ -515,10 +515,6 @@ describe("plugin runtime preparation", () => {
         join(repository, "source.ts:synthetic-stream"),
         "export const hidden = true;\n",
       );
-      const python =
-        process.env["PYTHON"] ?? Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
-
       const inventory = spawnSync(
         Bun.which("node")!,
         [
@@ -537,11 +533,9 @@ describe("plugin runtime preparation", () => {
       expect(inventory.stderr).toContain("NTFS alternate data streams");
 
       const rankInput = spawnSync(
-        python!,
+        Bun.which("node")!,
         [
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "generate_rank_input.py"),
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
           "make-repo-rank-input",
           "--repo",
           repository,
@@ -5764,21 +5758,17 @@ describe("runtime directories and plugin Python boundary", () => {
   });
 
   test.skipIf(process.platform !== "win32")(
-    "runs plugin helpers with UTF-8 standard streams",
+    "runs worklist helpers with UTF-8 standard streams without Python",
     async () => {
       const root = await temporaryDirectory("codex-security-python-utf8-");
       const repository = join(root, "repository");
       const output = join(root, "出力.jsonl");
       await mkdir(repository);
       await writeFile(join(repository, "source.py"), "value = 1\n");
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
-
       const result = spawnSync(
-        python!,
+        Bun.which("node")!,
         [
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "generate_rank_input.py"),
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
           "make-repo-rank-input",
           "--repo",
           repository,
@@ -5787,10 +5777,12 @@ describe("runtime directories and plugin Python boundary", () => {
         ],
         {
           encoding: "utf8",
-          env: pluginExecutionEnvironment(python!, {
+          env: {
             ...process.env,
+            PATH: "",
+            PYTHON: join(root, "missing-python"),
             pythonutf8: "0",
-          }),
+          },
         },
       );
 

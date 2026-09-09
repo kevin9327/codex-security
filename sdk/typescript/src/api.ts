@@ -3496,7 +3496,7 @@ function scanPrompt(
         ]
       : []),
     "Runtime paths are environment-backed; keep them quoted in POSIX shells and use the corresponding $env: names in PowerShell. Do not copy or reparse their values.",
-    targetInstruction(target, python),
+    targetInstruction(target),
     ...(skillName === "security-scan" || enforceCostLimit || customValidation
       ? [
           "Write the complete canonical scan-manifest.json, findings.json, and coverage.json, but do not finalize or seal them; the SDK workbench owns authoritative metadata, finalization, report generation, and sealing.",
@@ -3520,23 +3520,23 @@ function skillNameFor(target: NormalizedTarget, mode: ScanMode): string {
   return mode === "deep" ? "deep-security-scan" : "security-scan";
 }
 
-function targetInstruction(target: NormalizedTarget, python: string): string {
+function targetInstruction(target: NormalizedTarget): string {
   if (target.kind === "repository")
     return "Scan target: the entire repository.";
   if (target.kind === "paths") {
-    const helper = shellEnvironmentReference(
-      "CODEX_SECURITY_PLUGIN_ROOT",
-      "/scripts/generate_rank_input.py",
-    );
     const scopes = shellEnvironmentReference(
       "CODEX_SECURITY_TARGET_PATHS_FILE",
     );
     // CMD expands the environment references once, preserving percent signs in path values.
+    const makeScope =
+      process.platform === "win32"
+        ? String.raw`cmd.exe /d /v:off /s /c '""%CODEX_SECURITY_PLUGIN_ROOT%\scripts\launch_codex_security_mcp.cmd" --helper make-repo-scope-input --repo "%CODEX_SECURITY_REPOSITORY%" --scopes-file "%CODEX_SECURITY_TARGET_PATHS_FILE%" --out "%CODEX_SECURITY_SCAN_DIR%\scoped-source-input.jsonl""'`
+        : `${shellEnvironmentReference("CODEX_SECURITY_PLUGIN_ROOT", "/scripts/launch_codex_security_mcp")} --helper make-repo-scope-input --repo ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")} --scopes-file ${scopes} --out ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scoped-source-input.jsonl")}`;
     const bindScopes =
       process.platform === "win32"
         ? String.raw`cmd.exe /d /v:off /s /c '""%CODEX_SECURITY_PLUGIN_ROOT%\scripts\launch_codex_security_mcp.cmd" --helper bind-repo-scopes --scopes-file "%CODEX_SECURITY_TARGET_PATHS_FILE%" --manifest "%CODEX_SECURITY_SCAN_DIR%\scan-manifest.json" --coverage "%CODEX_SECURITY_SCAN_DIR%\coverage.json""'`
         : `${shellEnvironmentReference("CODEX_SECURITY_PLUGIN_ROOT", "/scripts/launch_codex_security_mcp")} --helper bind-repo-scopes --scopes-file ${scopes} --manifest ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scan-manifest.json")} --coverage ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/coverage.json")}`;
-    return `Scan target paths: resolve every requested file and all non-ignored descendants of requested directories using ${python} ${helper} make-repo-scope-input --repo ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")} --scopes-file ${scopes} --out ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scoped-source-input.jsonl")}. Before finalization, preserve every requested scope with ${bindScopes}. Do not print, evaluate, or modify the target-paths file.`;
+    return `Scan target paths: resolve every requested file and all non-ignored descendants of requested directories using ${makeScope}. Before finalization, preserve every requested scope with ${bindScopes}. Do not print, evaluate, or modify the target-paths file.`;
   }
   if (target.kind === "refs") {
     return `Scan target: Git diff from ${target.base} to ${target.head}.`;
