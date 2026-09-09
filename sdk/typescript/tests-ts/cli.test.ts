@@ -410,15 +410,16 @@ describe("CLI", () => {
       },
     });
 
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
+    const node = Bun.which("node");
+    expect(node).not.toBeNull();
     const root = await mkdtemp(join(tmpdir(), "codex-security-deep-defaults-"));
 
     try {
       const { status, stdout, stderr } = await runCommand(
-        python!,
+        node!,
         [
-          join(PLUGIN_ROOT, "scripts", "deep_scan_config.py"),
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "deep-scan-config",
           "--available-parallelism",
           "12",
         ],
@@ -426,7 +427,7 @@ describe("CLI", () => {
           env: {
             ...process.env,
             CODEX_HOME: join(root, "codex-home"),
-            PYTHONDONTWRITEBYTECODE: "1",
+            PYTHON: "/unavailable/python",
           },
           timeout: 30_000,
         },

@@ -416,19 +416,22 @@ describe("deep scan workbench ownership", () => {
         `[deep_scan]\n${configuredHours === undefined ? "" : `max_time_hours = ${configuredHours}\n`}`,
       );
 
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
+      const node = Bun.which("node");
+      expect(node).not.toBeNull();
       const result = Bun.spawnSync(
         [
-          python!,
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "deep_scan_config.py"),
+          node!,
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "deep-scan-config",
           "--available-parallelism",
           "8",
         ],
         {
-          env: { ...process.env, CODEX_HOME: codexHome },
+          env: {
+            ...process.env,
+            CODEX_HOME: codexHome,
+            PYTHON: "/unavailable/python",
+          },
           stdout: "pipe",
           stderr: "pipe",
         },
@@ -453,15 +456,14 @@ describe("deep scan workbench ownership", () => {
     await mkdir(dirname(sharedConfig), { recursive: true });
     await writeFile(sharedConfig, "[deep_scan]\nworkers = 2\n");
     await writeFile(isolatedConfig, "[deep_scan]\nworkers = 7\n");
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
+    const node = Bun.which("node");
+    expect(node).not.toBeNull();
 
     const result = Bun.spawnSync(
       [
-        python!,
-        "-I",
-        "-B",
-        join(PLUGIN_ROOT, "scripts", "deep_scan_config.py"),
+        node!,
+        join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+        "deep-scan-config",
         "--available-parallelism",
         "8",
       ],
@@ -470,6 +472,7 @@ describe("deep scan workbench ownership", () => {
           ...process.env,
           CODEX_HOME: codexHome,
           CODEX_SECURITY_DEEP_SCAN_CONFIG_PATH: isolatedConfig,
+          PYTHON: "/unavailable/python",
         },
         stdout: "pipe",
         stderr: "pipe",
@@ -491,22 +494,25 @@ describe("deep scan workbench ownership", () => {
     const configDirectory = join(codexHome, "codex-security");
     const configPath = join(configDirectory, "config.toml");
     await mkdir(configDirectory, { recursive: true });
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
+    const node = Bun.which("node");
+    expect(node).not.toBeNull();
 
     for (const hours of ["0", "-0.5", "true", '"2"', "nan", "inf", "96.5"]) {
       await writeFile(configPath, `[deep_scan]\nmax_time_hours = ${hours}\n`);
       const result = Bun.spawnSync(
         [
-          python!,
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "deep_scan_config.py"),
+          node!,
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "deep-scan-config",
           "--available-parallelism",
           "8",
         ],
         {
-          env: { ...process.env, CODEX_HOME: codexHome },
+          env: {
+            ...process.env,
+            CODEX_HOME: codexHome,
+            PYTHON: "/unavailable/python",
+          },
           stdout: "pipe",
           stderr: "pipe",
         },
