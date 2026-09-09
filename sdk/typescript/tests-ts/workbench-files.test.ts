@@ -213,19 +213,34 @@ test("JSON reading preserves workbench values and its basename-scoped errors", (
 test("invalid path values retain workbench error categories and directory JSON errors name the file", () => {
   const scan = root("path-errors"),
     invalid = "bad\0path";
-  const [canonical, available, artifact, json, directory] = run(
-    { operation: "canonical", root: scan + "\0" },
-    { operation: "available", root: scan, path: join(scan, invalid) },
-    { operation: "artifact", root: scan, path: invalid, required: false },
-    { operation: "json", path: join(scan, invalid) },
-    { operation: "json", path: scan },
-  );
+  const [canonical, available, artifact, requiredArtifact, json, directory] =
+    run(
+      { operation: "canonical", root: scan + "\0" },
+      { operation: "available", root: scan, path: join(scan, invalid) },
+      { operation: "artifact", root: scan, path: invalid, required: false },
+      { operation: "artifact", root: scan, path: invalid },
+      { operation: "json", path: join(scan, invalid) },
+      { operation: "json", path: scan },
+    );
   expect(canonical!.error).toBe("stat: embedded null character in path");
   expect(canonical!.systemExit).toBe(false);
-  expect(available!.result).toBeNull();
-  expect(artifact!.error).toBe(
-    invalid + ": expected a regular file inside the scan directory.",
-  );
+  const windowsResolveError = {
+    error: "_getfinalpathname: embedded null character in path",
+    systemExit: false,
+  };
+  if (process.platform === "win32") {
+    expect(available).toMatchObject(windowsResolveError);
+    expect(artifact).toMatchObject(windowsResolveError);
+    expect(requiredArtifact).toMatchObject(windowsResolveError);
+  } else {
+    expect(available!.result).toBeNull();
+    const invalidArtifact = {
+      error: invalid + ": expected a regular file inside the scan directory.",
+      systemExit: true,
+    };
+    expect(artifact).toMatchObject(invalidArtifact);
+    expect(requiredArtifact).toMatchObject(invalidArtifact);
+  }
   expect(json!.error).toBe(invalid + ": invalid JSON: embedded null byte");
   expect(json!.systemExit).toBe(true);
   expect(directory!.error).toContain(
@@ -240,9 +255,30 @@ test("invalid path values retain workbench error categories and directory JSON e
     },
     { operation: "available", root: scan, path: fixture + "/child/" + invalid },
   );
-  expect(missingParent!.result).toBeNull();
-  expect(notDirectory!.error).toContain("Not a directory");
-  expect(notDirectory!.systemExit).toBe(false);
+  if (process.platform === "win32") {
+    expect(missingParent).toMatchObject(windowsResolveError);
+    expect(notDirectory).toMatchObject(windowsResolveError);
+  } else {
+    expect(missingParent!.result).toBeNull();
+    expect(notDirectory!.error).toContain("Not a directory");
+    expect(notDirectory!.systemExit).toBe(false);
+  }
+  const cancelledNul = invalid + "/..";
+  const [cancelledAvailable, ...cancelledArtifacts] = run(
+    { operation: "available", root: scan, path: scan + "/" + cancelledNul },
+    { operation: "artifact", root: scan, path: cancelledNul },
+    { operation: "artifact", root: scan, path: cancelledNul, required: false },
+  );
+  expect(cancelledAvailable!.result).toBeNull();
+  for (const artifact of cancelledArtifacts)
+    expect(artifact).toMatchObject({
+      error:
+        cancelledNul +
+        (process.platform === "win32"
+          ? ": expected a regular non-symlink file."
+          : ": expected a regular file inside the scan directory."),
+      systemExit: true,
+    });
 });
 
 test("patch previews verify the entire digest, count headers, and decode invalid UTF-8", () => {

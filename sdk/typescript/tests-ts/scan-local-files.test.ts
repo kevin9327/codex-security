@@ -44,7 +44,14 @@ function request(input: Request, cwd?: string): unknown[] {
     maxBuffer: Infinity,
     timeout: 15000,
   });
-  expect(child.status, child.stderr).toBe(0);
+  expect(
+    child.status,
+    JSON.stringify({
+      error: child.error?.message,
+      signal: child.signal,
+      stderr: child.stderr,
+    }),
+  ).toBe(0);
   expect(child.stderr).toBe("");
   return JSON.parse(child.stdout) as unknown[];
 }

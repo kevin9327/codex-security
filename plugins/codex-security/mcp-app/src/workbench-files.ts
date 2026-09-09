@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstatSync, type Stats } from "node:fs";
-import { basename, dirname, posix, sep } from "node:path";
+import { basename, dirname, posix, sep, win32 } from "node:path";
 import { widePath, windowsFileSystem } from "../../native/windows-files.mjs";
 import { unixBinding, windowsBinding } from "./native";
 import { filesystemErrorMessage } from "./helpers/file-errors";
@@ -74,9 +74,12 @@ const canonicalError = () =>
   );
 
 function resolveArtifactPath(path: string): string {
-  const invalid = (windows ? /\0/u : /[\0\ud800-\udc7f\udd00-\udfff]/u).exec(
-    path,
-  );
+  if (windows && path.includes("\0")) {
+    path = win32.normalize(path);
+    if (path.includes("\0"))
+      throw new Error("_getfinalpathname: embedded null character in path");
+  }
+  const invalid = windows ? null : /[\0\ud800-\udc7f\udd00-\udfff]/u.exec(path);
   if (invalid !== null) {
     // Path.resolve can fail on an earlier component before encoding this one.
     const separator = path.lastIndexOf(sep, invalid.index);
@@ -167,6 +170,7 @@ export function availableArtifactPath(
     throw error;
   }
   if (
+    candidate.includes("\0") ||
     scanPathNormcase(resolved) !== scanPathNormcase(candidate) ||
     !fileInfo(candidate)?.isFile()
   )
@@ -200,6 +204,7 @@ export function artifactPath(
     );
   }
   if (
+    candidate.includes("\0") ||
     scanPathNormcase(resolved) !== scanPathNormcase(candidate) ||
     !fileInfo(candidate)?.isFile()
   )
