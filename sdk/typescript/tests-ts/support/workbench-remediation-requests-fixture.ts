@@ -7,6 +7,10 @@ import { sqliteBinding } from "../../../../plugins/codex-security/mcp-app/src/na
 import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workbench-migrations";
 import * as remediation from "../../../../plugins/codex-security/mcp-app/src/workbench-remediation-requests";
 import * as remediationState from "../../../../plugins/codex-security/mcp-app/src/workbench-remediation-state";
+import {
+  setFindingTriage,
+  type FindingTriageArguments,
+} from "../../../../plugins/codex-security/mcp-app/src/workbench-finding-triage";
 import { TargetInspectionError } from "../../../../plugins/codex-security/mcp-app/src/workbench-git-snapshot";
 import { scanTargetIdentity } from "../../../../plugins/codex-security/mcp-app/src/workbench-target";
 import { timestamp } from "../../../../plugins/codex-security/mcp-app/src/helpers/utc-timestamp";
@@ -32,7 +36,8 @@ type Phase =
   | "patch"
   | "checkout"
   | "applied"
-  | "render";
+  | "render"
+  | "uuid";
 export type Action = (
   | { operation: "open"; occurrenceId?: string }
   | {
@@ -43,11 +48,13 @@ export type Action = (
       operation: "record";
       args?: Partial<remediationState.RemediationUpdateArguments>;
     }
+  | { operation: "triage"; args?: Partial<FindingTriageArguments> }
   | { operation: "sql"; sql: string; parameters?: Parameter[] }
   | { operation: "commit" | "rollback" }
 ) & {
   now?: bigint;
   appliedDigest?: string;
+  decisionId?: string;
   hooks?: Partial<
     Record<Phase, { sql?: string; error?: string; systemExit?: boolean }>
   >;
@@ -166,7 +173,7 @@ function execute(request: Request): Response {
     connection.exec("PRAGMA foreign_keys = ON");
     connection.exec("CREATE TABLE synthetic_audit(value TEXT)");
     for (const sql of request.setupSql ?? []) connection.exec(sql);
-    const outcomes = request.actions.map((action): Outcome => {
+    const outcomes = request.actions.map((action, actionIndex): Outcome => {
       const events: unknown[] = [],
         raw = connection.raw,
         prepare = raw.prepare,
@@ -287,6 +294,30 @@ function execute(request: Request): Response {
           case "rollback":
             connection.rollback();
             break;
+          case "triage":
+            value = setFindingTriage(
+              {
+                now: context.now,
+                nowMicroseconds: context.nowMicroseconds,
+                scanContext: context.scanContext,
+                uuid() {
+                  events.push(["uuid", connection.inTransaction]);
+                  hook("uuid");
+                  return (
+                    action.decisionId ?? `synthetic-decision-${actionIndex}`
+                  );
+                },
+              },
+              connection,
+              {
+                occurrenceId: OCCURRENCE,
+                status: "open",
+                closeReason: null,
+                note: null,
+                ...action.args,
+              },
+            );
+            break;
           default: {
             const args = {
               occurrenceId: OCCURRENCE,
@@ -371,6 +402,7 @@ function execute(request: Request): Response {
           "scans",
           "finding_occurrences",
           "finding_triage",
+          "finding_decisions",
           "finding_remediation_attempts",
           "synthetic_audit",
         ].map((table) => [
