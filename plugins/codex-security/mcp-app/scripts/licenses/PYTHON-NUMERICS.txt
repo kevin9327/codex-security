@@ -1,9 +1,19 @@
-CPython 3.12 numerical routines
+CPython 3.12 numerical routines and regular expression parser
 
 The vector norm and compensated sum in finding-similarity.ts adapt the
 algorithms in CPython mathmodule.c and bltinmodule.c. This TypeScript
 adaptation replaces fused multiplication with exact binary residuals and
 accepts parsed JSON numbers.
+
+The string-pattern parser and typed intermediate representation in
+python-regex-parser.ts and python-regex-ir.ts adapt Lib/re/_parser.py and
+Lib/re/_constants.py. They retain Python pattern syntax, flags, captures,
+width rules, and errors, using Unicode 15 data and TypeScript values.
+Copyright (c) 1998-2001 by Secret Labs AB. All rights reserved.
+
+This version of the SRE library can be redistributed under CNRI's
+Python 1.6 license.  For any other use, please contact Secret Labs
+AB (info@pythonware.com).
 
 A. HISTORY OF THE SOFTWARE
 ==========================
