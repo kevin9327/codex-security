@@ -882,11 +882,13 @@ The scan saves candidates and results, including suppressed and deferred
 cases, under `artifacts/custom-validation/`. Coverage is incomplete if setup
 fails, output is incomplete or invalid, or any candidate is deferred. An
 incompatible plugin stops the scan; validation never falls back to the default.
-Discovery candidates are checkpointed before custom validation starts, and validated
-decisions are checkpointed before publishing the final files. If all source work
-and custom validation are saved, `scans resume SCAN_ID` finishes local export
-without another model call. Missing evidence or unfinished work still requires
-the original validation prompt. Repeat `--validation-prompt-file` on reruns.
+Discovery candidates are checkpointed before custom validation starts, and
+validated decisions before publishing the final files. Once source review and
+custom validation are complete in saved checkpoints, `scans resume SCAN_ID`
+finishes export without repeating either step. Saved post-scan instructions still
+run after sealing under the remaining total budget. If custom validation is
+unfinished or its completion evidence is missing, the CLI requires a new scan:
+`scans rerun SCAN_ID --validation-prompt-file PATH` with the original instructions.
 
 ### Publish findings to Cloud
 
@@ -1213,9 +1215,10 @@ continuation restores completed independent review and reduction work before
 scheduling missing units. An incomplete model turn may need to run again.
 The original scan's sealed results remain unchanged.
 
-A Standard checkpoint that already contains complete reviewed coverage can finish
-without another model call. If it saved post-scan instructions, recovery runs only
-that follow-up after sealing the results, using the remaining saved budget.
+A Standard checkpoint with complete source review and validation, and no pending
+work, can finish without another model call. If it saved post-scan instructions,
+recovery runs only that follow-up after sealing the results, using the remaining
+saved budget.
 Resume uses the installed plugin with the saved configuration and instructions. Costs include prior attempts, and an existing
 `--max-cost` limit applies to the total. If the remaining budget cannot be
 established from saved usage, resume reports that before starting more work.
