@@ -500,6 +500,11 @@ async function readCurrentCheckpoints(
     if (input.scanId !== context.scanId) {
       throw new Error("scan checkpoint: current checkpoint belongs to a different scan.");
     }
+    // Only the accepted cumulative head can credit reviewed files. Unaccepted
+    // snapshots still preserve findings, but may contain rejected inventory paths.
+    if (context.layout === "worker" && entry.name !== checkpointHead) {
+      delete input.coverage.reviewedFiles;
+    }
     checkpoints.push({
       input,
       modifiedMs: Number(checkpointMetadata.mtimeMs),
@@ -694,6 +699,8 @@ async function readArchivedWorkerCheckpoints(
           parseJsonObject(contents, "archived scan checkpoint"),
         );
         requireMatchingScan(context, draft);
+        // The accepted head above already carries cumulative reviewed coverage.
+        delete draft.coverage.reviewedFiles;
         drafts.push({
           input: draft,
           modifiedMs: Number(checkpointMetadata.mtimeMs),

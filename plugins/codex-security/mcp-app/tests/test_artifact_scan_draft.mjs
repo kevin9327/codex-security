@@ -670,6 +670,43 @@ try {
   assert.deepEqual(resolvedRejection.coverage.deferred, []);
   assert.deepEqual(resolvedRejection.coverage.surfaces[0].candidate, candidate);
 
+  for (const disposition of ["rejected", "reported"]) {
+    const continuationRoot = path.join(root, `accepted-${disposition}-continuation`);
+    await mkdir(continuationRoot);
+    const continuationContext = { ...workerContext, root: continuationRoot };
+    await saveScanDraftCheckpoint(continuationContext, {
+      ...pending, findings: [finding],
+      coverage: { ...pending.coverage, reviewedFiles: ["clean.ts"] },
+    });
+    const decision = {
+      label: "Saved validation", candidateId: finding.provenance.candidateId,
+      disposition, reason: "The saved worker completed validation.",
+      provenance: { workerId: finding.provenance.workerId },
+    };
+    await saveScanDraftCheckpoint(continuationContext, {
+      ...pending, findings: disposition === "reported" ? [finding] : [],
+      coverage: {
+        ...pending.coverage, surfaces: [decision], deferred: [], reviewedFiles: ["clean.ts"],
+      },
+    });
+    await recordCodexSecurityWorkerScanDraft(continuationContext, {
+      ...pending, coverage: { ...pending.coverage, deferred: [] },
+    });
+    const continued = JSON.parse(await readFile(path.join(continuationRoot, "result.json"), "utf8"));
+    assert.equal(continued.complete, false);
+    assert.deepEqual(continued.coverage.deferred, [], "an accepted continuation decision must not reopen older deferred work");
+    assert.deepEqual(continued.coverage.reviewedFiles, ["clean.ts"]);
+    assert.equal(continued.findings.length, disposition === "reported" ? 1 : 0);
+    if (disposition === "rejected") {
+      assert.ok(continued.coverage.surfaces.some((surface) => (
+        surface.candidateId === finding.provenance.candidateId && surface.disposition === disposition
+      )), "an empty partial draft must retain the accepted head's rejection");
+    } else {
+      assert.equal(continued.findings[0].provenance.candidateId, finding.provenance.candidateId);
+      assert.equal(continued.findings[0].provenance.workerId, finding.provenance.workerId);
+    }
+  }
+
   const undefinedCandidateRoot = path.join(root, "undefined-candidate-worker");
   await mkdir(undefinedCandidateRoot);
   const undefinedCandidateContext = { ...workerContext, root: undefinedCandidateRoot };

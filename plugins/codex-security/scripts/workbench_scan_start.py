@@ -203,6 +203,41 @@ def archive_scan(
                 artifact["kind"],
             ),
         )
+    for table, key, columns in (
+        ("deep_scan_workers", "id", ("prompt_path", "artifact_dir", "result_manifest_path")),
+        (
+            "deep_scan_runs",
+            "scan_id",
+            (
+                "canonical_inventory_path",
+                "canonical_finding_report_path",
+                "canonical_candidates_path",
+                "dedupe_report_path",
+                "seed_research_path",
+                "work_ledger_path",
+                "raw_candidates_path",
+                "coverage_ledger_path",
+                "findings_dir",
+                "manifest_path",
+            ),
+        ),
+    ):
+        rows = connection.execute(
+            f"SELECT {key}, {', '.join(columns)} FROM {table} WHERE scan_id = ?",
+            (previous_scan["id"],),
+        ).fetchall()
+        for row in rows:
+            for column in columns:
+                if row[column] is None:
+                    continue
+                try:
+                    relative_path = Path(row[column]).relative_to(scan_dir)
+                except ValueError:
+                    continue
+                connection.execute(
+                    f"UPDATE {table} SET {column} = ? WHERE {key} = ?",
+                    (str(archived_scan_dir / relative_path), row[key]),
+                )
 
 
 def insert_running_scan(

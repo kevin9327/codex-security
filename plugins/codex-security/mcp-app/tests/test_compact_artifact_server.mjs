@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1169,6 +1169,15 @@ with sqlite3.connect(sys.argv[1]) as connection:
   };
   let client = await startClient(bundle, workerEnvironment);
   try {
+    requireToolError(await client.callTool({
+      name: "record_codex_security_scan_draft",
+      arguments: { ...input, coverage: { ...input.coverage, reviewedFiles: ["mistyped.ts"] } }
+    }), /outside the saved inventory or changed/, `${runtimeLabel}: reject invalid reviewed paths`);
+  } finally {
+    await client.close();
+  }
+  client = await startClient(bundle, workerEnvironment);
+  try {
     requireSuccessfulTool(await client.callTool({
       name: "record_codex_security_scan_draft", arguments: input
     }), `${runtimeLabel}: commit worker checkpoint through Python`);
@@ -1194,6 +1203,20 @@ with sqlite3.connect(sys.argv[1]) as connection:
 
   client = await startClient(bundle, workerEnvironment);
   try {
+    requireToolError(await client.callTool({
+      name: "record_codex_security_scan_draft",
+      arguments: { ...input, coverage: { ...input.coverage, reviewedFiles: ["another-typo.ts"] } }
+    }), /outside the saved inventory or changed/, `${runtimeLabel}: keep accepted coverage after a rejected update`);
+    // A retry archives the failed attempt's bytes; those rejected declarations
+    // must not be reintroduced from either current or archived checkpoints.
+    const rejectedRoot = path.join(workerRoot, "attempts", "attempt-01", "checkpoints");
+    await mkdir(rejectedRoot, { recursive: true });
+    for (const name of await readdir(path.join(artifactRoot, "checkpoints"))) {
+      const source = path.join(artifactRoot, "checkpoints", name);
+      if (JSON.parse(await readFile(source, "utf8")).coverage.reviewedFiles?.includes("another-typo.ts")) {
+        await rename(source, path.join(rejectedRoot, name));
+      }
+    }
     requireSuccessfulTool(await client.callTool({
       name: "record_codex_security_scan_draft",
       arguments: {

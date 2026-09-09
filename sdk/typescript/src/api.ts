@@ -919,10 +919,30 @@ export class CodexSecurity {
           );
         }
         const savedThreadId = resumeContext["threadId"];
-        const savedSession =
-          typeof savedThreadId === "string"
-            ? await findScanSession(runtime.codexHome, savedThreadId)
-            : null;
+        const needsNativeSession =
+          options.resumeScanId !== undefined &&
+          resumeContext["resumeMode"] !== "checkpoint";
+        const needsHistoricalCost =
+          savedScanCost(resumeContext["cost"]) === null;
+        let savedSession: Awaited<ReturnType<typeof findScanSession>> = null;
+        if (
+          typeof savedThreadId === "string" &&
+          (needsNativeSession || needsHistoricalCost)
+        ) {
+          try {
+            savedSession = await findScanSession(
+              runtime.codexHome,
+              savedThreadId,
+            );
+          } catch (error) {
+            notifyObserver(
+              "onWarning",
+              options.onWarning,
+              options.onObserverError,
+              `Previous scan session logs are unavailable: ${safeErrorMessage(error)}`,
+            );
+          }
+        }
         if (
           options.resumeScanId !== undefined &&
           (resumeContext["resumeMode"] === "checkpoint" ||

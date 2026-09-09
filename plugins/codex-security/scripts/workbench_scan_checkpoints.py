@@ -383,7 +383,7 @@ def copy_checkpoint_artifacts(
 def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> dict[str, Any]:
     """Seed a new bound scan from saved semantic results without reopening its parent."""
     # Reuse the stopped-result merger so finding identity and evidence retention have one owner.
-    from workbench_saved_results import merge_saved_results
+    from workbench_saved_results import _candidate_owner, merge_saved_results
 
     with db.scan_completion_lock(args.parent_scan_id), db.scan_completion_lock(args.scan_id):
         parent = db.require_scan(connection, args.parent_scan_id)
@@ -424,7 +424,20 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         worker_ids = db.deep_scan.restore_checkpoint_workers(connection, parent, child, db.now())
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
         hardening = copy_checkpoint_artifacts(db, parent, root, checkpoint)
-        for source in checkpoint["sources"]:
+        sequence = {
+            row["checkpoint_path"]: row["sequence"]
+            for row in connection.execute(
+                "SELECT checkpoint_path, sequence FROM scan_checkpoints WHERE scan_id = ?",
+                (parent["id"],),
+            )
+        }
+        sources = sorted(
+            checkpoint["sources"],
+            key=lambda source: sequence[source["checkpointPath"]],
+            reverse=True,
+        )
+        current_checkpoints = []
+        for source in sources:
             snapshot = {
                 "scanId": child["id"],
                 "complete": False,
@@ -443,25 +456,58 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 source_worker_id=worker["id"] if worker and worker["kind"] == "discovery" else None,
             )
             contents = (json.dumps(snapshot, indent=2) + "\n").encode()
-            write_scan_local_bytes(
-                root, f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json", contents
-            )
+            relative = f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json"
+            write_scan_local_bytes(root, relative, contents)
+            if source["checkpointPath"] != parent["continuation_checkpoint_path"]:
+                current_checkpoints.append(relative)
+        workers = connection.execute(
+            "SELECT * FROM deep_scan_workers WHERE scan_id = ?", (child["id"],)
+        ).fetchall()
         merged = merge_saved_results(
             root,
             child["id"],
             db.workbench_completion_binding(child, db.now()),
-            [],
+            workers,
             [],
             stopped=False,
             reason="Continue saved source work",
             include_parent=False,
+            current_checkpoint_paths=current_checkpoints,
         )
         if merged is None:
             raise SystemExit("The saved semantic checkpoint could not seed the continuation.")
         manifest, findings, coverage = merged
-        root_source = next(
-            (source for source in checkpoint["sources"] if source["source"] == "."), None
-        )
+        for worker in workers:
+            if worker["kind"] != "discovery" or worker["status"] != "queued":
+                continue
+            source_path = Path(worker["artifact_dir"]).relative_to(root).as_posix()
+            saved = connection.execute(
+                "SELECT snapshot_json FROM scan_checkpoints WHERE scan_id = ? AND source_path = ? "
+                "ORDER BY sequence DESC LIMIT 1",
+                (child["id"], source_path),
+            ).fetchone()
+            worker_snapshot = json.loads(saved["snapshot_json"])
+            # The aggregate contains the latest decisions for each mapped owner.
+            # Keep per-pass source coverage and scope, and carry those decisions
+            # into the actual checkpoint the queued worker will read.
+            worker_snapshot["findings"] = [
+                finding
+                for finding in findings["findings"]
+                if _candidate_owner(finding, None) == worker["id"]
+            ]
+            for field in ("surfaces", "explicitExclusions", "deferred"):
+                worker_snapshot["coverage"][field] = [
+                    item
+                    for item in coverage.get(field, [])
+                    if _candidate_owner(item, None) == worker["id"]
+                ]
+            worker_contents = (json.dumps(worker_snapshot, indent=2) + "\n").encode()
+            worker_path = (
+                f"{source_path}/checkpoints/{hashlib.sha256(worker_contents).hexdigest()}.json"
+            )
+            write_scan_local_bytes(root, worker_path, worker_contents)
+            record_checkpoint(connection, child, root / worker_path, db.now())
+        root_source = next((source for source in sources if source["source"] == "."), None)
         if root_source is not None and isinstance(root_source.get("scope"), dict):
             manifest["scan"]["scope"] = {
                 **root_source["scope"],
@@ -549,15 +595,26 @@ def continued_deep_documents(
     _, digest = _read_saved_result(root, relative, scan["id"])
     if digest != _digest(json.loads(saved["snapshot_json"])):
         raise SystemExit("The continuation's inherited checkpoint changed after it was saved.")
+    workers = connection.execute(
+        "SELECT * FROM deep_scan_workers WHERE scan_id = ? AND status = 'succeeded'",
+        (scan["id"],),
+    ).fetchall()
+    frozen = {relative: digest}
+    for worker in workers:
+        if worker["kind"] not in {"discovery", "dedup"}:
+            continue
+        result_path = Path(worker["result_manifest_path"]).relative_to(root).as_posix()
+        _, worker_digest = _read_saved_result(root, result_path, scan["id"], kind=worker["kind"])
+        frozen[result_path] = worker_digest
     return merge_saved_results(
         root,
         scan["id"],
         binding,
-        [],
+        workers,
         warnings,
         stopped=False,
         reason="",
-        frozen_source_digests={relative: digest},
+        frozen_source_digests=frozen,
         allow_frozen_legacy_parent=True,
         preserve_sources={relative},
     )

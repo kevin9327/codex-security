@@ -20,7 +20,11 @@ export async function testCheckpointResume({
     `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`
   );
 
-  for (const previousAttempt of [0, 3]) {
+  for (const { previousAttempt, interruptRetry } of [
+    { previousAttempt: 0, interruptRetry: false },
+    { previousAttempt: 3, interruptRetry: false },
+    { previousAttempt: 3, interruptRetry: true }
+  ]) {
     const fixture = await fixtureRun({
       workers: 1, subagents: 0, stopAfterNoNew: 2, maxDiscoveryRuns: 4
     });
@@ -94,6 +98,7 @@ export async function testCheckpointResume({
     };
     const calls = new Map();
     const delays = [];
+    const backoffStarted = deferred();
     const reducerExecutor = new FakeExecutor({ dedupNewFindings: [0, 0] });
     const executor = {
       async run(request) {
@@ -145,13 +150,51 @@ export async function testCheckpointResume({
       }
     };
     const completedDrafts = [];
-    const coordinator = new DeepScanCoordinator({
+    const coordinatorOptions = {
       run: store.run, store, executor, pluginRoot: fixture.pluginRoot,
-      clock: { now: immediateClock.now, sleep: async (delay) => { delays.push(delay); } },
+      clock: {
+        now: immediateClock.now,
+        sleep: async (delay, signal) => {
+          delays.push(delay);
+          if (interruptRetry && delays.length === 1) {
+            backoffStarted.resolve();
+            await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+            throw new DOMException("The coordinator stopped during retry backoff.", "AbortError");
+          }
+        }
+      },
       random: () => 0, retryDelaysMs: [1],
       onComplete: async (draft) => completedDrafts.push(draft)
-    });
+    };
+    let coordinator = new DeepScanCoordinator(coordinatorOptions);
     coordinator.start();
+    if (interruptRetry) {
+      await Promise.race([
+        backoffStarted.promise,
+        coordinator.settled().then((terminal) => assert.fail(`Continuation ended before retry: ${terminal.error}`))
+      ]);
+      const interrupted = store.workers.get(continuations[0].worker.id);
+      assert.equal(interrupted.attempt, previousAttempt + 1);
+      assert.equal(interrupted.completionSequence, undefined);
+      assert.equal(store.run.noNewStreak, 2);
+      coordinator.cancel("mcp_transport_closed");
+      await coordinator.settled();
+      assert.equal(store.run.status, "running");
+      await assert.rejects(readFile(path.join(
+        path.dirname(interrupted.artifactDir), "prompts",
+        `attempt-${String(previousAttempt + 2).padStart(2, "0")}.md`
+      )), { code: "ENOENT" }, "backoff must not create the next prompt before reserving its attempt");
+      for (const { worker } of continuations) {
+        const persisted = store.workers.get(worker.id);
+        store.workers.set(worker.id, { ...persisted, status: "queued" });
+      }
+      store.run = {
+        ...store.run, coordinatorGeneration: store.run.coordinatorGeneration + 1,
+        persistedWorkers: [...store.workers.values()].map((worker) => structuredClone(worker))
+      };
+      coordinator = new DeepScanCoordinator({ ...coordinatorOptions, run: store.run });
+      coordinator.start();
+    }
     await Promise.race([
       continuations[0].started.promise,
       coordinator.settled().then((terminal) => assert.fail(`Continuation ended before starting: ${terminal.error}`))

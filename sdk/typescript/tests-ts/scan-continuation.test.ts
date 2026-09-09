@@ -433,6 +433,46 @@ test.each([false, true])(
   },
 );
 
+test.each([false, true])(
+  "unavailable native history permits uncapped checkpoint recovery: capped=%j",
+  async (capped) => {
+    const f = await savedScan({
+      cost: false,
+      ...(capped ? { maxCostUsd: 100 } : {}),
+    });
+    await rm(join(f.codexHome, "sessions"), { recursive: true });
+    await writeFile(
+      join(f.codexHome, "sessions"),
+      "Unavailable native history\n",
+    );
+    let modelCalls = 0;
+    const outcome = await resume(f, (options) => ({
+      startThread(threadOptions) {
+        const threadId = randomUUID();
+        return {
+          id: threadId,
+          async runStreamed() {
+            modelCalls++;
+            await finishChild(
+              f,
+              threadOptions.workingDirectory!,
+              options.env!["CODEX_SECURITY_SCAN_ID"]!,
+            );
+            return { events: completedEvents(threadId) };
+          },
+        };
+      },
+    }));
+    expect(outcome.code, outcome.stderr).toBe(capped ? 2 : 0);
+    expect(modelCalls).toBe(capped ? 0 : 1);
+    expect(outcome.stderr).toContain(
+      "Previous scan session logs are unavailable",
+    );
+    if (capped) expect(outcome.stderr).toContain("limit cannot be enforced");
+    else expect(JSON.parse(outcome.stdout).findings.findings).toHaveLength(1);
+  },
+);
+
 test("a hard-killed continuation recovers native spend on top of its durable inherited cost", async () => {
   const f = await savedScan({ maxCostUsd: 20 });
   const child = join(f.root, "interrupted-child");
@@ -538,6 +578,12 @@ test("a complete Standard checkpoint retries final export without another model 
     "--cost-json",
     JSON.stringify(previousCost),
   ]);
+  // Native logs are unnecessary when analysis and spend are already durable.
+  await rm(join(f.codexHome, "sessions"), { recursive: true });
+  await writeFile(
+    join(f.codexHome, "sessions"),
+    "Unavailable native history\n",
+  );
   const parent = await readFile(join(f.scanDir, "scan-manifest.json"), "utf8");
   let modelCalls = 0;
   const noModel = () => {

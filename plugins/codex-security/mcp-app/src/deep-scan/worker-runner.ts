@@ -501,6 +501,7 @@ export class DeepScanWorkerRunner {
     let continuationPrompt: string | undefined;
     let lastThreadId: string | undefined;
     let executionPromptPath = input.initialExecutionPrompt?.path ?? input.promptPath;
+    let validationRetry: { failedAttempt: number; error: Error } | undefined;
     const attemptPromptPaths = [input.promptPath];
     if (executionPromptPath !== input.promptPath) attemptPromptPaths.push(executionPromptPath);
     for (let attempt = firstAttempt; attempt <= maximumAttempts; attempt += 1) {
@@ -525,6 +526,21 @@ export class DeepScanWorkerRunner {
         // Advance the durable attempt before creating its immutable execution
         // prompt, so another recovery uses the next numbered prompt file.
         await writePrivateFile(executionPromptPath, input.initialExecutionPrompt.contents);
+      }
+      if (validationRetry) {
+        // Retry backoff can be interrupted too. Reserve this attempt before
+        // writing its prompt so recovery cannot collide with a prewritten file.
+        executionPromptPath = await writeValidationRetryPrompt({
+          kind: input.kind,
+          basePromptPath: input.initialExecutionPrompt?.path ?? input.promptPath,
+          destinationPath: join(
+            input.promptRoot,
+            `attempt-${String(attempt).padStart(2, "0")}.md`
+          ),
+          ...validationRetry
+        });
+        attemptPromptPaths.push(executionPromptPath);
+        validationRetry = undefined;
       }
       this.options.log({
         event: "worker_started",
@@ -654,17 +670,7 @@ export class DeepScanWorkerRunner {
           continuationPrompt = undefined;
           await input.beforeRetry(attempt);
           if (validationStarted && !validationCompleted) {
-            executionPromptPath = await writeValidationRetryPrompt({
-              kind: input.kind,
-              basePromptPath: input.initialExecutionPrompt?.path ?? input.promptPath,
-              destinationPath: join(
-                input.promptRoot,
-                `attempt-${String(attempt + 1).padStart(2, "0")}.md`
-              ),
-              failedAttempt: attempt,
-              error: normalized
-            });
-            attemptPromptPaths.push(executionPromptPath);
+            validationRetry = { failedAttempt: attempt, error: normalized };
           }
         }
         const delayMs = Math.ceil(
