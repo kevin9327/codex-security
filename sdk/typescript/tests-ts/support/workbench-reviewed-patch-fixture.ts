@@ -38,8 +38,8 @@ function run(request: Request): Response {
   const native = processBinding(),
     original = native.rawProcess;
   const calls: Response["calls"] = [];
-  native.rawProcess = (options) => {
-    const result = original(options);
+  native.rawProcess = (options, stdoutFile) => {
+    const result = original(options, stdoutFile);
     calls.push({
       args: options.args.map((arg) =>
         process.platform === "win32"
