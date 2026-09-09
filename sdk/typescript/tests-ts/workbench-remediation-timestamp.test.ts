@@ -1,60 +1,27 @@
-import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { PLUGIN_ROOT } from "./plugin-root.js";
-
-const remediationLeaseProbe = `
-import json, sys
-from datetime import datetime, timezone
-sys.path.insert(0, sys.argv[1])
-import workbench_remediation as remediation
-
-class Python310DateTime(datetime):
-    @classmethod
-    def fromisoformat(cls, value):
-        if value.endswith(("Z", "z")):
-            raise ValueError("Python 3.10 rejects Z-suffixed timestamps")
-        return datetime.fromisoformat(value)
-
-    @classmethod
-    def now(cls, tz=None):
-        return datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
-
-remediation.datetime = Python310DateTime
-case = json.loads(sys.argv[2])
-print(json.dumps(remediation.remediation_claim_is_active({
-    "pending_action_claim_token": case.get("token"),
-    "pending_action_delivered_at": case.get("deliveredAt"),
-    "pending_action_claimed_at": case.get("claimedAt"),
-})))
-`;
+import { Row } from "../../../plugins/codex-security/native/sqlite.mjs";
+import { remediationClaimIsActive } from "../../../plugins/codex-security/mcp-app/src/workbench-remediation";
 
 interface RemediationClaim {
   token: string | null;
   claimedAt?: string;
   deliveredAt?: string;
 }
-
 function isClaimActive(claim: RemediationClaim): boolean {
-  const python = Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-  if (python === null) throw new Error("A Python interpreter is required.");
-
-  const result = Bun.spawnSync(
-    [
-      python,
-      "-I",
-      "-B",
-      "-c",
-      remediationLeaseProbe,
-      join(PLUGIN_ROOT, "scripts"),
-      JSON.stringify(claim),
-    ],
-    { stdout: "pipe", stderr: "pipe" },
+  return remediationClaimIsActive(
+    new Row(
+      [
+        "pending_action_claim_token",
+        "pending_action_delivered_at",
+        "pending_action_claimed_at",
+      ],
+      [claim.token, claim.deliveredAt ?? null, claim.claimedAt ?? null],
+    ),
+    () => BigInt(Date.parse("2026-08-15T12:00:00Z")) * 1000n,
   );
-  expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-  return JSON.parse(new TextDecoder().decode(result.stdout)) as boolean;
 }
 
-describe("workbench remediation timestamps on Python 3.10", () => {
+describe("workbench remediation timestamp compatibility", () => {
   test.each([
     [
       "expires at the claim deadline",

@@ -1,3 +1,5 @@
+import { requirePortableRelativePath } from "../../../plugins/codex-security/mcp-app/src/helpers/scan-local-files";
+import { ContractError } from "../../../plugins/codex-security/mcp-app/src/helpers/scan-contract-errors";
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import {
@@ -699,35 +701,17 @@ describe("canonical scan contract", () => {
   });
 
   test("keeps bundled finalizer paths portable to Windows", () => {
-    const python =
-      process.env["PYTHON"] ?? Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    if (python === null) return;
-    const program = [
-      "import json, sys",
-      "sys.path.insert(0, sys.argv[1])",
-      "import finalize_scan_contract as finalizer",
-      "def accepted(value):",
-      "    try:",
-      "        finalizer._require_portable_relative_path(value, 'artifact path')",
-      "    except finalizer.ContractError:",
-      "        return False",
-      "    return True",
-      "print(json.dumps([accepted(value) for value in ['artifacts/report.json.', 'artifacts/report.json ', 'artifacts/CON.txt', 'artifacts/report?.json', 'artifacts/report:stream']]))",
-    ].join("\n");
-    const result = Bun.spawnSync(
-      [python, "-I", "-B", "-c", program, join(PLUGIN_ROOT, "scripts")],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-
-    expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual([
-      false,
-      false,
-      false,
-      false,
-      false,
-    ]);
+    for (const path of [
+      "artifacts/report.json.",
+      "artifacts/report.json ",
+      "artifacts/CON.txt",
+      "artifacts/report?.json",
+      "artifacts/report:stream",
+    ]) {
+      expect(() => requirePortableRelativePath(path, "artifact path")).toThrow(
+        ContractError,
+      );
+    }
   });
 
   test("accepts Unix-valid source and scope path components", async () => {
