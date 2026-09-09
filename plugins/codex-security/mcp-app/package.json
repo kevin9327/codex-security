@@ -13,7 +13,8 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "0.149.1",
     "zod": "^4.3.6",
-    "py-ast": "1.16.0"
+    "py-ast": "1.16.0",
+    "@unicode/unicode-15.0.0": "2.0.2"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

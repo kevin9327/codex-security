@@ -267,6 +267,20 @@ export function windowsFileSystem(native: WindowsBinding) {
     check(native.createWindowsDirectories(operationPath(path)), path);
   }
 
+  function openRead(path: Buffer) {
+    const handle = open(path, flags.GENERIC_READ);
+    return {
+      read(buffer: Buffer): number {
+        const result = handle.read(buffer, 0, buffer.length);
+        check(result.error, path);
+        return result.value;
+      },
+      close(): void {
+        check(handle.close(), path);
+      },
+    };
+  }
+
   function readInto(path: Buffer, buffer: Buffer): number {
     const handle = open(path, flags.GENERIC_READ);
     let length = 0;
@@ -368,6 +382,7 @@ export function windowsFileSystem(native: WindowsBinding) {
     mkdir,
     readlink,
     readInto,
+    openRead,
     readFile,
     writeFile,
     rename,

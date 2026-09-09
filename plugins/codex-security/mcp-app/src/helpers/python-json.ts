@@ -153,7 +153,11 @@ export function parseJsonBytes(bytes: Buffer): unknown {
   return parseJson(text);
 }
 
-export function parseJson(source: string, rejectDuplicates = false): unknown {
+export function parseJson(
+  source: string,
+  rejectDuplicates = false,
+  parseInteger: (source: string) => bigint = BigInt,
+): unknown {
   const tokens = [
     ...source.matchAll(
       /"(?:\\[\s\S]|[^"\\])*"|[{}\[\]:,]|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|true|false|null|-?Infinity|NaN|[^ \t\r\n]/gu,
@@ -249,7 +253,8 @@ export function parseJson(source: string, rejectDuplicates = false): unknown {
     if (token === "true") return true;
     if (token === "false") return false;
     if (token === "null") return null;
-    if (token !== undefined && /^-?[0-9]+$/u.test(token)) return BigInt(token);
+    if (token !== undefined && /^-?[0-9]+$/u.test(token))
+      return parseInteger(token);
     if (
       token !== undefined &&
       (/^-?(?:[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|Infinity)$/u.test(

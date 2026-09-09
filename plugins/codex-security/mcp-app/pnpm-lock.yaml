@@ -19,6 +19,9 @@ importers:
       '@openai/codex-sdk':
         specifier: 0.149.1
         version: 0.149.1
+      '@unicode/unicode-15.0.0':
+        specifier: 2.0.2
+        version: 2.0.2
       py-ast:
         specifier: 1.16.0
         version: 1.16.0(patch_hash=3b0cedd93485df6d25b68538385a3287febae70c639192f369fc7e94d30cd831)
