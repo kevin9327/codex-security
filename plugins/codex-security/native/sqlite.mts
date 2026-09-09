@@ -22,6 +22,7 @@ interface NativeConnection {
   readonly changes: bigint;
   readonly lastInsertRowid: bigint;
   close(): void;
+  limit(category: number, value: number): number;
   busyTimeout(milliseconds: number): void;
   exec(sql: string): void;
   prepare(sql: string): NativeStatement;
@@ -202,6 +203,10 @@ export class Connection {
   }
   get inTransaction(): boolean {
     return this.raw.inTransaction;
+  }
+  get variableLimit(): number {
+    // SQLITE_LIMIT_VARIABLE_NUMBER; a negative value reads the current limit.
+    return this.raw.limit(9, -1);
   }
   close(): void {
     this.raw.close();

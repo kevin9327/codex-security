@@ -135,6 +135,10 @@ impl SqliteConnection {
     pub fn in_transaction(&self) -> Result<bool> {
         Ok(unsafe { sql::sqlite3_get_autocommit(self.inner.get()?) == 0 })
     }
+    #[napi]
+    pub fn limit(&self, category: i32, value: i32) -> Result<i32> {
+        Ok(unsafe { sql::sqlite3_limit(self.inner.get()?, category, value) })
+    }
     #[napi(getter)]
     pub fn changes(&self) -> Result<BigInt> {
         Ok(BigInt::from(unsafe {
