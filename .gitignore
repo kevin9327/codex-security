@@ -17,6 +17,7 @@ dist/
 .internal/
 
 # Emitted by sdk/typescript's build:ci script.
+/sdk/typescript/scripts/check-python-free.mjs
 /.github/scripts/check_plugin_source_compatibility.mjs
 /.github/scripts/test_check_plugin_source_compatibility.mjs
 

@@ -49,11 +49,6 @@ jobs:
           pnpm --dir sdk/typescript run build:ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node plugins/codex-security/native/generate-unicode.mjs
-      - name: Set up temporary Python filename oracle
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.12.10"
-          architecture: ${{ matrix.arch }}
       - name: Set up Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy --target ${{ matrix.target }}
       - name: Check Rust source
@@ -64,8 +59,6 @@ jobs:
       - name: Build and verify with Node.js 22
         run: |
           node build.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node proof-sqlite.mjs windows-oracle
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node proof-policy-windows.mjs build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

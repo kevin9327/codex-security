@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { binaryPath, output } from "./binding.mjs";
@@ -51,67 +51,79 @@ interface Result {
   rows: unknown;
   files: string[];
 }
-const oraclePath = join(output, "snapshot-windows-oracle.json");
-
-export function prepareSnapshotOracle(): void {
-  const result = spawnSync(
-    "python",
-    [
-      "-c",
-      String.raw`
-import json, os, shutil, sqlite3, sys, tempfile
-from pathlib import Path
-from contextlib import closing
-results = []
-with tempfile.TemporaryDirectory(prefix="snapshot-oracle-") as base:
-    for spec in json.loads(sys.stdin.buffer.read()):
-        root = Path(base, spec["name"]); root.mkdir()
-        seed = root / "seed.sqlite3"
-        with closing(sqlite3.connect(seed)) as db:
-            db.execute("CREATE TABLE records(value TEXT)")
-            db.execute("INSERT INTO records(rowid,value) VALUES(41,'sealed')")
-            db.commit()
-        source = root / spec["source"]; destination = root / spec["destination"]
-        shutil.copyfile(seed, source)
-        source_arg, destination_arg = str(source), str(destination)
-        if spec.get("home"):
-            os.environ["USERPROFILE"] = str(root)
-            source_arg, destination_arg = "~/"+spec["source"], "~/"+spec["destination"]
-        if spec.get("verbatim"):
-            source_arg, destination_arg = "\\\\?\\"+source_arg, "\\\\?\\"+destination_arg
-        status = 0
-        try:
-            source_path = Path(source_arg).expanduser().resolve(strict=True)
-            destination_path = Path(destination_arg).expanduser().absolute()
-            destination_path.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(f"{source_path.as_uri()}?mode=ro", uri=True) as reader:
-                with sqlite3.connect(destination_path) as writer:
-                    reader.backup(writer)
-            destination_path.chmod(0o600)
-        except (OSError, ValueError, sqlite3.Error): status = 1
-        finally:
-            if "writer" in locals(): writer.close(); del writer
-            if "reader" in locals(): reader.close(); del reader
-        rows = None
-        if status == 0:
-            with closing(sqlite3.connect(destination)) as db:
-                rows = db.execute("SELECT rowid,value FROM records").fetchall()
-        results.append(dict(name=spec["name"], status=status, rows=rows, files=sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())))
-print(json.dumps(results))
-`,
+// Recorded from CPython 3.12.10 / SQLite 3.49.1 on Windows x64 and arm64.
+// Both architectures produced identical results for these exact cases.
+const expected: Result[] = [
+  {
+    name: "ordinary",
+    status: 0,
+    rows: [[41, "sealed"]],
+    files: ["seed.sqlite3", "snapshot.sqlite3", "source.sqlite3"],
+  },
+  {
+    name: "unicode",
+    status: 0,
+    rows: [[41, "sealed"]],
+    files: [
+      "seed.sqlite3",
+      "snapshot.sqlite3",
+      "source # percent% \u6771\u4eac.sqlite3",
     ],
-    { input: JSON.stringify(cases), encoding: "utf8" },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  writeFileSync(oraclePath, result.stdout);
-  console.log(result.stdout.trim());
-}
+  },
+  {
+    name: "source-0",
+    status: 1,
+    rows: null,
+    files: ["seed.sqlite3", "source-\ud800.sqlite3"],
+  },
+  {
+    name: "destination-0",
+    status: 1,
+    rows: null,
+    files: ["seed.sqlite3", "source.sqlite3"],
+  },
+  {
+    name: "source-1",
+    status: 1,
+    rows: null,
+    files: ["seed.sqlite3", "source-\udc80.sqlite3"],
+  },
+  {
+    name: "destination-1",
+    status: 1,
+    rows: null,
+    files: ["seed.sqlite3", "source.sqlite3"],
+  },
+  {
+    name: "source-2",
+    status: 1,
+    rows: null,
+    files: ["seed.sqlite3", "source-\udfff.sqlite3"],
+  },
+  {
+    name: "destination-2",
+    status: 1,
+    rows: null,
+    files: ["seed.sqlite3", "source.sqlite3"],
+  },
+  {
+    name: "home",
+    status: 0,
+    rows: [[41, "sealed"]],
+    files: ["nested/snapshot.sqlite3", "seed.sqlite3", "source.sqlite3"],
+  },
+  {
+    name: "verbatim",
+    status: 1,
+    rows: null,
+    files: ["seed.sqlite3", "source.sqlite3"],
+  },
+];
 
 export function snapshotWindowsProof(helper: string): void {
   const native = createRequire(import.meta.url)(binaryPath) as SqliteBinding;
   const windows = loadWindowsBinding();
   const files = windowsFileSystem(windows);
-  const expected = JSON.parse(readFileSync(oraclePath, "utf8")) as Result[];
   const base = mkdtempSync(join(tmpdir(), "snapshot-proof-"));
   const results: Result[] = [];
   const relativeFiles = (root: string, prefix = ""): string[] =>

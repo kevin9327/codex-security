@@ -457,6 +457,8 @@ jobs:
           node .github/scripts/check_plugin_source_compatibility.mjs
       - name: Test source compatibility checker
         run: node --test .github/scripts/test_check_plugin_source_compatibility.mjs
+      - name: Check Python-free source
+        run: node sdk/typescript/scripts/check-python-free.mjs
       - name: Test deterministic triage eval contracts
         working-directory: plugins/codex-security/skills/triage-finding/evals
         run: node --run test:deterministic

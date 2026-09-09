@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
-import { output } from "./binding.mjs";
 import { Connection, type SqliteBinding } from "./sqlite.mjs";
 import { loadWindowsBinding } from "./windows-binding.mjs";
 import { pathText, widePath, windowsFileSystem } from "./windows-files.mjs";
-import { prepareSnapshotOracle } from "./proof-snapshot-windows.mjs";
 
 const cases = [
   { name: "ordinary", relative: "data.sqlite3" },
@@ -27,53 +24,62 @@ interface Result {
   error: number | null;
   files: string[];
 }
-interface Oracle {
-  python: string;
-  sqlite: string;
-  results: Result[];
-}
-const oraclePath = join(output, "sqlite-windows-oracle.json");
-
-export function prepareWindowsOracle(): void {
-  assert.equal(process.platform, "win32");
-  // Temporary migration parity preparation; retire this after recording Windows results.
-  const oracle = execFileSync(
-    "python",
-    [
-      "-c",
-      String.raw`
-import json, sqlite3, sys, tempfile
-from contextlib import closing
-from pathlib import Path
-results = []
-with tempfile.TemporaryDirectory(prefix="codex-sqlite-oracle-") as root:
-    for case in json.loads(sys.stdin.buffer.read()):
-        path = Path(root, case["name"], case["relative"])
-        path.parent.mkdir(parents=True)
-        value = path.as_uri() if case.get("uri") or case.get("uriName") else str(path)
-        if case.get("verbatim"):
-            value = "\\\\?\\" + value
-        error = None
-        try:
-            with closing(sqlite3.connect(value, uri=case.get("uri", False))) as db:
-                db.execute("CREATE TABLE probe(value)")
-                db.execute("INSERT INTO probe VALUES(1)")
-                db.commit()
-        except sqlite3.Error as failure:
-            error = failure.sqlite_errorcode & 255
-        results.append(dict(name=case["name"], error=error, files=sorted(p.name for p in path.parent.iterdir())))
-print(json.dumps(dict(python=sys.version.split()[0], sqlite=sqlite3.sqlite_version, results=results)))
-`,
-    ],
-    { input: JSON.stringify(cases), encoding: "utf8" },
-  );
-  writeFileSync(oraclePath, oracle);
-  console.log(oracle.trim());
-  prepareSnapshotOracle();
-}
+// Recorded from CPython 3.12.10 / SQLite 3.49.1 on Windows x64 and arm64.
+// Both architectures produced identical results for these exact cases.
+const expected: Result[] = [
+  {
+    name: "ordinary",
+    error: null,
+    files: ["data.sqlite3"],
+  },
+  {
+    name: "unicode",
+    error: null,
+    files: ["unicode-\ud83d\udd10-\u6771\u4eac.sqlite3"],
+  },
+  {
+    name: "high",
+    error: null,
+    files: ["raw-\ufffd\ufffd.sqlite3"],
+  },
+  {
+    name: "low",
+    error: null,
+    files: ["raw-\ufffd\ufffd.sqlite3"],
+  },
+  {
+    name: "tail",
+    error: null,
+    files: ["raw-\ufffd\ufffd.sqlite3"],
+  },
+  {
+    name: "parent",
+    error: 14,
+    files: [],
+  },
+  {
+    name: "verbatim",
+    error: null,
+    files: ["data.sqlite3"],
+  },
+  {
+    name: "long",
+    error: null,
+    files: ["data.sqlite3"],
+  },
+  {
+    name: "uri",
+    error: null,
+    files: ["uri-# space.sqlite3"],
+  },
+  {
+    name: "uri-disabled",
+    error: 14,
+    files: [],
+  },
+];
 
 export function windowsSqliteProof(native: SqliteBinding): number {
-  const expected = JSON.parse(readFileSync(oraclePath, "utf8")) as Oracle;
   const files = windowsFileSystem(loadWindowsBinding());
   const root = mkdtempSync(join(tmpdir(), "codex-sqlite-paths-"));
   const results: Result[] = [];
@@ -118,7 +124,7 @@ export function windowsSqliteProof(native: SqliteBinding): number {
           .sort(),
       });
     }
-    assert.deepEqual(results, expected.results);
+    assert.deepEqual(results, expected);
     return results.length;
   } finally {
     remove(root);

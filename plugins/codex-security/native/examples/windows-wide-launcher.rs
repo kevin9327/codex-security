@@ -72,9 +72,13 @@ fn main() -> std::io::Result<()> {
         {
             return Err(io::Error::last_os_error());
         }
-        let value = String::from_utf16_lossy(unsafe {
-            std::slice::from_raw_parts(text, length as usize - 1)
-        });
+        // The returned length is the buffer capacity, not the string length.
+        let mut text_length = 0;
+        while unsafe { *text.add(text_length) } != 0 {
+            text_length += 1;
+        }
+        let value =
+            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, text_length) });
         if !unsafe { LocalFree(text.cast()) }.is_null() {
             return Err(io::Error::last_os_error());
         }

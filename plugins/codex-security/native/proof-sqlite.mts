@@ -12,10 +12,7 @@ import {
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { binaryPath } from "./binding.mjs";
-import {
-  prepareWindowsOracle,
-  windowsSqliteProof,
-} from "./proof-sqlite-windows.mjs";
+import { windowsSqliteProof } from "./proof-sqlite-windows.mjs";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   Connection,
@@ -31,9 +28,7 @@ const open = (
   filename: string | Buffer,
   options?: ConstructorParameters<typeof Connection>[2],
 ) => new Connection(native, filename, options);
-if (process.argv[2] === "windows-oracle") {
-  prepareWindowsOracle();
-} else if (process.argv[2] === "writer" || process.argv[2] === "lock") {
+if (process.argv[2] === "writer" || process.argv[2] === "lock") {
   const db = open(process.argv[3]!);
   if (process.argv[2] === "lock") {
     db.exec("BEGIN IMMEDIATE");

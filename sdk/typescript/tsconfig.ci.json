@@ -3,6 +3,7 @@
   "include": [
     "../../.github/scripts/*.mts",
     "../../plugins/codex-security/native/*.mts",
+    "scripts/check-python-free.mts",
     "scripts/compare-test-reports.mts"
   ],
   "compilerOptions": {
