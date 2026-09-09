@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "bun:test";
 import { sendFeedback } from "../src/feedback.js";
@@ -56,7 +56,7 @@ async function setup() {
     args,
     options,
   ) => {
-    expect(command).toBe(process.execPath);
+    expect(command).toBe(toNamespacedPath(process.execPath));
     expect(args).toEqual(["app-server", "--stdio"]);
     expect(options.env?.["CODEX_HOME"]).toBe(home);
     child = spawn(process.execPath, [fixture], options);
