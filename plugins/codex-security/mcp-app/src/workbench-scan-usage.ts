@@ -496,13 +496,13 @@ function* binaryLines(path: string): Generator<Buffer> {
           read: (buffer: Buffer) => readSync(descriptor, buffer),
           close: () => closeSync(descriptor),
         };
-  let pending = Buffer.alloc(0);
+  let pending: Buffer[] = [];
   try {
     for (;;) {
       const buffer = Buffer.alloc(8192),
         count = file.read(buffer);
       if (!count) {
-        if (pending.length) yield pending;
+        if (pending.length) yield Buffer.concat(pending);
         return;
       }
       let start = 0;
@@ -511,11 +511,12 @@ function* binaryLines(path: string): Generator<Buffer> {
         end >= 0 && end < count;
         end = buffer.indexOf(10, start)
       ) {
-        yield Buffer.concat([pending, buffer.subarray(start, end + 1)]);
-        pending = Buffer.alloc(0);
+        pending.push(buffer.subarray(start, end + 1));
+        yield Buffer.concat(pending);
+        pending = [];
         start = end + 1;
       }
-      pending = Buffer.concat([pending, buffer.subarray(start, count)]);
+      if (start < count) pending.push(buffer.subarray(start, count));
     }
   } finally {
     file.close();

@@ -216,7 +216,7 @@ const randomName = () =>
     () => "abcdefghijklmnopqrstuvwxyz0123456789_"[randomInt(37)],
   ).join("");
 let temporaryParent: string | undefined;
-function temporaryDirectoryParent(): string {
+export function temporaryDirectoryParent(): string {
   if (temporaryParent !== undefined) return temporaryParent;
   const candidates = ["TMPDIR", "TEMP", "TMP"].flatMap(
     (name) => environment(name) || [],

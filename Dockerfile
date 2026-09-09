@@ -7,6 +7,7 @@ WORKDIR /build/sdk/typescript
 COPY package.json /build/package.json
 COPY sdk/typescript/package.json sdk/typescript/pnpm-lock.yaml sdk/typescript/pnpm-workspace.yaml ./
 COPY plugins/codex-security/mcp-app/package.json plugins/codex-security/mcp-app/pnpm-lock.yaml plugins/codex-security/mcp-app/pnpm-workspace.yaml /build/plugins/codex-security/mcp-app/
+COPY plugins/codex-security/mcp-app/patches/ /build/plugins/codex-security/mcp-app/patches/
 
 RUN corepack enable \
     && corepack prepare "$(node --print 'require("/build/package.json").packageManager')" --activate \

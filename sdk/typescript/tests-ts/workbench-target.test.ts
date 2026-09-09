@@ -153,6 +153,36 @@ const directoryDigest = (target: string, extra: Partial<Request> = {}) =>
 const worktreeDigest = (target: string) =>
   result({ action: "worktree", target });
 
+test("Git snapshots use the next temporary directory when TMPDIR is unusable", () => {
+  const path = repository();
+  write(path, "tracked.txt", "changed\n");
+  const expected = worktreeDigest(path);
+  const blocked = write(directory, "blocked-temporary-parent");
+  for (const temporary of [
+    blocked,
+    join(directory, "missing-temporary-parent"),
+  ]) {
+    const child = spawnSync(node, [fixture], {
+      env: {
+        ...environment,
+        PATH: childPath,
+        TMPDIR: temporary,
+        TEMP: spoolDirectory,
+      },
+      input: JSON.stringify([{ action: "worktree", target: path }]),
+      encoding: "utf8",
+    });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stderr).toBe("");
+    expect(JSON.parse(child.stdout)).toEqual([{ result: expected }]);
+    expect(
+      readdirSync(spoolDirectory).filter((name) =>
+        name.startsWith("codex-security-git-"),
+      ),
+    ).toEqual([]);
+  }
+});
+
 test.skipIf(process.platform === "win32")(
   "keeps the original directory hash framing, path order, modes, links and exclusions",
   () => {

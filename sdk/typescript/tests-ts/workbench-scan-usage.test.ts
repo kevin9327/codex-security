@@ -159,6 +159,34 @@ test("usage attributes descendants after their own task boundary and avoids dupl
   });
 });
 
+test("usage reads long records and excludes a final token event without a newline", () => {
+  const input = request();
+  const path = rollout(input, "root", []);
+  const prefix = JSON.stringify({ type: "response_item", payload: "" });
+  const lines = [8191, 8192, 8193, 2 * 1024 * 1024].map((length) =>
+    JSON.stringify({
+      type: "response_item",
+      payload: "x".repeat(length - prefix.length),
+    }),
+  );
+  writeFileSync(
+    path,
+    [
+      stringifyJson(meta("root"), { compact: true }),
+      ...lines,
+      stringifyJson(tokens(42, 7), { compact: true }),
+      stringifyJson(tokens(1000, 100), { compact: true }),
+    ].join("\n"),
+  );
+  expect(value(run(input))).toMatchObject({
+    coverage: "partial",
+    inputTokens: 42n,
+    outputTokens: 7n,
+    totalTokens: 49n,
+    warnings: ["rollout_record_incomplete"],
+  });
+});
+
 test("window filtering keeps the previous counter and counts resets and zero totals correctly", () => {
   const input = request();
   rollout(input, "root", [

@@ -8,7 +8,6 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { isAbsolute, sep } from "node:path";
 import { getSystemErrorName } from "node:util";
 import { readDescriptor } from "../../native/binding.mjs";
@@ -35,6 +34,7 @@ import {
   updateDigestField,
   updateDigestFieldHeader,
 } from "./workbench-git-snapshot";
+import { temporaryDirectoryParent } from "./workbench-temporary";
 import { environment } from "./helpers/environment";
 import { fileInfo } from "./helpers/helper-files";
 import { filesystemErrorMessage } from "./helpers/file-errors";
@@ -121,11 +121,7 @@ function updateDigestFieldFromGit(
   args: readonly string[],
   context: GitContext,
 ): boolean {
-  const directory =
-    environment("TMPDIR") ||
-    environment("TEMP") ||
-    environment("TMP") ||
-    tmpdir();
+  const directory = temporaryDirectoryParent();
   const path = appendPath(directory, `codex-security-git-${randomUUID()}`);
   if (windows) windowsFiles().writeFile(widePath(path), Buffer.alloc(0), true);
   else closeSync(openSync(encodePosixPath(path), "wx", 0o600));
