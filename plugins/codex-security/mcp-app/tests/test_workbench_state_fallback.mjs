@@ -1,32 +1,28 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-if (process.platform !== "win32") {
-  await testWorkbenchStateFallback();
-}
+await testWorkbenchStateFallback();
 
 async function testWorkbenchStateFallback() {
   const mcpAppRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const pluginRoot = path.resolve(mcpAppRoot, "../../../sdk/typescript/_bundled_plugin");
   const fixtureRoot = await mkdtemp(path.join(tmpdir(), "codex-security-state-fallback-"));
   const targetPath = path.join(fixtureRoot, "target");
-  const fakePythonPath = path.join(fixtureRoot, "fake-python.mjs");
-  const invocationLog = path.join(fixtureRoot, "python-invocations.jsonl");
-  const serverBundlePath = path.join(pluginRoot, "mcp", `.state-fallback-test-${randomUUID()}.cjs`);
-  const pythonCommand = process.env.PYTHON?.trim() || "python3";
-  const realPython = execFileSync(pythonCommand, ["-c", "import sys; print(sys.executable)"], {
-    encoding: "utf8"
-  }).trim();
+  const testPluginRoot = path.join(fixtureRoot, "plugin");
+  const helperPath = path.join(testPluginRoot, "mcp", "helpers.mjs");
+  const invocationLog = path.join(fixtureRoot, "helper-invocations.jsonl");
+  const serverBundlePath = path.join(testPluginRoot, "mcp", "server.cjs");
+  const realHelper = path.join(pluginRoot, "mcp", "helpers.mjs");
+  await cp(pluginRoot, testPluginRoot, { recursive: true });
 
   await mkdir(targetPath, { recursive: true });
   await writeFile(path.join(targetPath, "fixture.py"), "print('fixture')\n");
-  await writeFakePython(fakePythonPath);
+  await writeFakeHelper(helperPath);
   await build({
     bundle: true,
     define: { "import.meta.url": "__filename" },
@@ -46,11 +42,11 @@ async function testWorkbenchStateFallback() {
     const fallbackServer = startServer(serverBundlePath, childEnvironment({
       CODEX_SECURITY_SCAN_ROOT: scanRoot,
       CODEX_SECURITY_STATE_DIR: undefined,
-      FAKE_PYTHON_ALWAYS_FAIL: undefined,
-      FAKE_PYTHON_FAILURE: undefined,
-      FAKE_PYTHON_LOG: invocationLog,
-      FAKE_REAL_PYTHON: realPython,
-      PYTHON: fakePythonPath
+      FAKE_HELPER_ALWAYS_FAIL: undefined,
+      FAKE_HELPER_FAILURE: undefined,
+      FAKE_HELPER_LOG: invocationLog,
+      FAKE_REAL_HELPER: realHelper,
+      PYTHON: "/unavailable/python"
     }));
     try {
       await initialize(fallbackServer, 1);
@@ -87,11 +83,11 @@ async function testWorkbenchStateFallback() {
     const explicitServer = startServer(serverBundlePath, childEnvironment({
       CODEX_SECURITY_SCAN_ROOT: path.join(fixtureRoot, "explicit-scans"),
       CODEX_SECURITY_STATE_DIR: explicitStateDir,
-      FAKE_PYTHON_ALWAYS_FAIL: "1",
-      FAKE_PYTHON_FAILURE: "sqlite3.OperationalError: unable to open database file",
-      FAKE_PYTHON_LOG: invocationLog,
-      FAKE_REAL_PYTHON: realPython,
-      PYTHON: fakePythonPath
+      FAKE_HELPER_ALWAYS_FAIL: "1",
+      FAKE_HELPER_FAILURE: "unable to open database file",
+      FAKE_HELPER_LOG: invocationLog,
+      FAKE_REAL_HELPER: realHelper,
+      PYTHON: "/unavailable/python"
     }));
     try {
       await initialize(explicitServer, 10);
@@ -112,12 +108,12 @@ async function testWorkbenchStateFallback() {
       CODEX_HOME: inspectionFirstCodexHome,
       CODEX_SECURITY_SCAN_ROOT: inspectionFirstScanRoot,
       CODEX_SECURITY_STATE_DIR: undefined,
-      FAKE_PYTHON_ALWAYS_FAIL: undefined,
-      FAKE_PYTHON_FAILURE: "sqlite3.OperationalError: unable to open database file",
-      FAKE_PYTHON_LOG: invocationLog,
-      FAKE_PYTHON_PERSISTENT_SUCCESSES: undefined,
-      FAKE_REAL_PYTHON: realPython,
-      PYTHON: fakePythonPath
+      FAKE_HELPER_ALWAYS_FAIL: undefined,
+      FAKE_HELPER_FAILURE: "unable to open database file",
+      FAKE_HELPER_LOG: invocationLog,
+      FAKE_HELPER_PERSISTENT_SUCCESSES: undefined,
+      FAKE_REAL_HELPER: realHelper,
+      PYTHON: "/unavailable/python"
     }));
     try {
       await initialize(inspectionFirstServer, 15);
@@ -145,12 +141,12 @@ async function testWorkbenchStateFallback() {
       CODEX_HOME: provenCodexHome,
       CODEX_SECURITY_SCAN_ROOT: provenScanRoot,
       CODEX_SECURITY_STATE_DIR: undefined,
-      FAKE_PYTHON_ALWAYS_FAIL: undefined,
-      FAKE_PYTHON_FAILURE: "sqlite3.OperationalError: unable to open database file",
-      FAKE_PYTHON_LOG: invocationLog,
-      FAKE_PYTHON_PERSISTENT_SUCCESSES: "1",
-      FAKE_REAL_PYTHON: realPython,
-      PYTHON: fakePythonPath
+      FAKE_HELPER_ALWAYS_FAIL: undefined,
+      FAKE_HELPER_FAILURE: "unable to open database file",
+      FAKE_HELPER_LOG: invocationLog,
+      FAKE_HELPER_PERSISTENT_SUCCESSES: "1",
+      FAKE_REAL_HELPER: realHelper,
+      PYTHON: "/unavailable/python"
     }));
     try {
       await initialize(provenServer, 18);
@@ -171,11 +167,11 @@ async function testWorkbenchStateFallback() {
     const genericServer = startServer(serverBundlePath, childEnvironment({
       CODEX_SECURITY_SCAN_ROOT: genericScanRoot,
       CODEX_SECURITY_STATE_DIR: undefined,
-      FAKE_PYTHON_ALWAYS_FAIL: "1",
-      FAKE_PYTHON_FAILURE: "sqlite3.OperationalError: database disk image is malformed",
-      FAKE_PYTHON_LOG: invocationLog,
-      FAKE_REAL_PYTHON: realPython,
-      PYTHON: fakePythonPath
+      FAKE_HELPER_ALWAYS_FAIL: "1",
+      FAKE_HELPER_FAILURE: "database disk image is malformed",
+      FAKE_HELPER_LOG: invocationLog,
+      FAKE_REAL_HELPER: realHelper,
+      PYTHON: "/unavailable/python"
     }));
     try {
       await initialize(genericServer, 20);
@@ -202,24 +198,26 @@ function childEnvironment(overrides) {
   return environment;
 }
 
-async function writeFakePython(executablePath) {
+async function writeFakeHelper(executablePath) {
   await writeFile(executablePath, [
-    "#!/usr/bin/env node",
     'import { appendFileSync, readFileSync } from "node:fs";',
     'import { spawnSync } from "node:child_process";',
+    "const args = process.argv.slice(2);",
+    "if (!['inspect-target', 'inspect-setup'].includes(args[0])) {",
     "let priorInvocations = 0;",
-    "try { priorInvocations = readFileSync(process.env.FAKE_PYTHON_LOG, 'utf8').split(/\\r?\\n/).filter(Boolean).length; } catch {}",
-    "appendFileSync(process.env.FAKE_PYTHON_LOG, JSON.stringify({ stateDir: process.env.CODEX_SECURITY_STATE_DIR || null }) + '\\n');",
-    "const persistentSuccesses = Number(process.env.FAKE_PYTHON_PERSISTENT_SUCCESSES || 0);",
-    "if (process.env.FAKE_PYTHON_ALWAYS_FAIL === '1' || (!process.env.CODEX_SECURITY_STATE_DIR && priorInvocations >= persistentSuccesses)) {",
-    "  console.error(process.env.FAKE_PYTHON_FAILURE || 'sqlite3.OperationalError: unable to open database file');",
-    "  process.exit(1);",
+    "try { priorInvocations = readFileSync(process.env.FAKE_HELPER_LOG, 'utf8').split(/\\r?\\n/).filter(Boolean).length; } catch {}",
+    "appendFileSync(process.env.FAKE_HELPER_LOG, JSON.stringify({ stateDir: process.env.CODEX_SECURITY_STATE_DIR || null }) + '\\n');",
+    "const persistentSuccesses = Number(process.env.FAKE_HELPER_PERSISTENT_SUCCESSES || 0);",
+    "if (process.env.FAKE_HELPER_ALWAYS_FAIL === '1' || (!process.env.CODEX_SECURITY_STATE_DIR && priorInvocations >= persistentSuccesses)) {",
+    "  const message = process.env.FAKE_HELPER_FAILURE || 'unable to open database file';",
+    "  throw Object.assign(new Error(message), {sqliteErrorCode: message === 'unable to open database file' ? 14 : 11});",
     "}",
-    "const result = spawnSync(process.env.FAKE_REAL_PYTHON, process.argv.slice(2), { env: process.env, stdio: 'inherit' });",
+    "}",
+    "const result = spawnSync(process.execPath, [process.env.FAKE_REAL_HELPER, ...args], { env: process.env, stdio: 'inherit' });",
+    "if (result.error) throw result.error;",
     "process.exit(result.status ?? 1);",
     ""
   ].join("\n"));
-  await chmod(executablePath, 0o755);
 }
 
 function startServer(serverPath, env) {

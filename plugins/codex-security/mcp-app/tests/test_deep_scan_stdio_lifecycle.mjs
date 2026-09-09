@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { updateWorkbench } from "./workbench_test_support.mjs";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -10,8 +11,8 @@ import { build } from "esbuild";
 
 const execFileAsync = promisify(execFile);
 const mcpAppRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pluginRoot = path.resolve(mcpAppRoot, "..");
-const workbenchPath = path.join(pluginRoot, "scripts", "workbench_db.py");
+const pluginRoot = path.resolve(mcpAppRoot, "../../../sdk/typescript/_bundled_plugin");
+const workbenchPath = path.join(pluginRoot, "mcp", "helpers.mjs");
 const parentSandboxState = {
   permissionProfile: {
     type: "managed",
@@ -48,11 +49,13 @@ async function testDeepScanStdioLifecycle() {
     "fake-codex-signal-checkpoint-control.txt"
   );
   const fakeCodexPath = path.join(fixtureRoot, "fake-codex.mjs");
-  const pythonWrapperPath = path.join(fixtureRoot, "python-wrapper.mjs");
+  const testPluginRoot = path.join(fixtureRoot, "plugin");
+  const helperWrapperPath = path.join(testPluginRoot, "mcp", "helpers.mjs");
+  await cp(pluginRoot, testPluginRoot, { recursive: true });
   const cancelFailureControlPath = path.join(fixtureRoot, "fail-next-cancel-scan");
   const cancelLogPath = path.join(fixtureRoot, "cancel-scan-calls.jsonl");
   const serverBundlePath = path.join(
-    pluginRoot,
+    testPluginRoot,
     "mcp",
     `.deep-scan-stdio-test-${randomUUID()}.cjs`
   );
@@ -77,7 +80,7 @@ async function testDeepScanStdioLifecycle() {
     ].join("\n")
   );
   await writeFakeCodex(fakeCodexPath);
-  await writePythonWrapper(pythonWrapperPath);
+  await writeHelperWrapper(helperWrapperPath);
   await bundleServer(serverBundlePath);
 
   const environment = {
@@ -86,8 +89,8 @@ async function testDeepScanStdioLifecycle() {
     CODEX_HOME: codexHome,
     CODEX_SECURITY_SCAN_ROOT: scanRoot,
     CODEX_SECURITY_STATE_DIR: stateDir,
-    PYTHON: pythonWrapperPath,
-    REAL_PYTHON: process.env.PYTHON?.trim() || "python3",
+    PYTHON: "/unavailable/python",
+    REAL_WORKBENCH_HELPER: workbenchPath,
     FAKE_WORKBENCH_CANCEL_FAILURE_CONTROL: cancelFailureControlPath,
     FAKE_WORKBENCH_CANCEL_LOG: cancelLogPath,
     FAKE_CODEX_EXIT_LOG: exitLogPath,
@@ -157,7 +160,7 @@ async function testDeepScanStdioLifecycle() {
     const startedArtifactRoot = startedState.workers
       .find((worker) => worker.kind === "discovery")?.artifactDir;
     assert.equal(typeof startedArtifactRoot, "string");
-    assert.equal(workerContext.pluginRoot, pluginRoot);
+    assert.equal(workerContext.pluginRoot, testPluginRoot);
     assert.equal(workerContext.targetPath, await realpath(targetPath));
     assert.equal(workerContext.scope, ".");
     assert.equal(workerContext.scanId, scanId);
@@ -337,7 +340,7 @@ async function testDeepScanStdioLifecycle() {
     const failedArtifactRoot = activeFailureState.workers
       .find((worker) => worker.kind === "discovery")?.artifactDir;
     assert.equal(typeof failedArtifactRoot, "string");
-    assert.equal(failedWorkerContext.pluginRoot, pluginRoot);
+    assert.equal(failedWorkerContext.pluginRoot, testPluginRoot);
     assert.equal(failedWorkerContext.targetPath, await realpath(failedTargetPath));
     assert.equal(failedWorkerContext.scanId, failedScanId);
     assert.equal(Object.hasOwn(failedWorkerContext, "inScopeFilesPath"), false);
@@ -493,12 +496,12 @@ async function testDeepScanStdioLifecycle() {
       "deep_discovery",
       `coordinator-heartbeat-${partial.coordinatorGeneration}.json`
     ), { force: true });
-    await execFileAsync(process.env.PYTHON?.trim() || "python3", [
-      "-c",
-      "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('UPDATE deep_scan_runs SET updated_at = ? WHERE scan_id = ?', ('2000-01-01T00:00:00Z',sys.argv[2])); c.commit()",
+    updateWorkbench(
+      pluginRoot,
       path.join(stateDir, "workbench.sqlite3"),
-      resumedScanId
-    ]);
+      "UPDATE deep_scan_runs SET updated_at = ? WHERE scan_id = ?",
+      ["2000-01-01T00:00:00Z", resumedScanId]
+    );
     await writeFile(restartControlPath, "after-restart");
 
     const restartedServer = startServer(serverBundlePath, environment);
@@ -742,8 +745,7 @@ function discoveryPromptContext(prompt) {
 }
 
 async function runWorkbench(environment, args) {
-  const python = process.env.PYTHON?.trim() || "python3";
-  const { stdout } = await execFileAsync(python, [workbenchPath, ...args], {
+  const { stdout } = await execFileAsync(process.execPath, [workbenchPath, ...args], {
     cwd: pluginRoot,
     env: environment,
     maxBuffer: 4 * 1024 * 1024,
@@ -828,27 +830,25 @@ async function writeFakeCodex(executablePath) {
   await chmod(executablePath, 0o755);
 }
 
-async function writePythonWrapper(executablePath) {
+async function writeHelperWrapper(executablePath) {
   await writeFile(executablePath, [
-    "#!/usr/bin/env node",
     'import { appendFileSync, existsSync, unlinkSync } from "node:fs";',
     'import { spawnSync } from "node:child_process";',
     "const args = process.argv.slice(2);",
     "const control = process.env.FAKE_WORKBENCH_CANCEL_FAILURE_CONTROL;",
-    "if (args[1] === 'cancel-scan') {",
+    "if (args[0] === 'cancel-scan') {",
     "  appendFileSync(process.env.FAKE_WORKBENCH_CANCEL_LOG, JSON.stringify(args) + '\\n');",
     "}",
-    "if (args[1] === 'cancel-scan' && control && existsSync(control)) {",
+    "if (args[0] === 'cancel-scan' && control && existsSync(control)) {",
     "  unlinkSync(control);",
     "  console.error('injected cancel-scan failure');",
     "  process.exit(1);",
     "}",
-    "const result = spawnSync(process.env.REAL_PYTHON || 'python3', args, { stdio: 'inherit' });",
+    "const result = spawnSync(process.execPath, [process.env.REAL_WORKBENCH_HELPER, ...args], { stdio: 'inherit' });",
     "if (result.error) throw result.error;",
     "process.exit(result.status ?? 1);",
     "",
   ].join("\n"));
-  await chmod(executablePath, 0o755);
 }
 
 function assertNoError(response) {

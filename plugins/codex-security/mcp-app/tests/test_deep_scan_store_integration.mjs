@@ -11,8 +11,8 @@ import { build } from "esbuild";
 
 const execFileAsync = promisify(execFile);
 const mcpAppRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pluginRoot = path.resolve(mcpAppRoot, "..");
-const workbenchPath = path.join(pluginRoot, "scripts", "workbench_db.py");
+const pluginRoot = path.resolve(mcpAppRoot, "../../../sdk/typescript/_bundled_plugin");
+const workbenchPath = path.join(pluginRoot, "mcp", "helpers.mjs");
 
 const bundle = await build({
   bundle: true,
@@ -48,12 +48,12 @@ async function testRecoveredPublicationRejectsLateFailure() {
   const targetPath = path.join(fixtureRoot, "target");
   const environment = {
     ...process.env,
+    PYTHON: "/unavailable/python",
     CODEX_HOME: path.join(fixtureRoot, "home"),
     CODEX_SECURITY_STATE_DIR: path.join(fixtureRoot, "state"),
   };
-  const python = process.env.PYTHON?.trim() || "python3";
   const runWorkbench = async (args) => {
-    const { stdout } = await execFileAsync(python, [workbenchPath, ...args], {
+    const { stdout } = await execFileAsync(process.execPath, [workbenchPath, ...args], {
       cwd: pluginRoot, env: environment, timeout: 30_000, maxBuffer: 4 * 1024 * 1024,
     });
     return JSON.parse(stdout);
@@ -126,12 +126,12 @@ async function testNoopStoppedRefreshRetainsPublicationFailure() {
   const targetPath = path.join(fixtureRoot, "target");
   const environment = {
     ...process.env,
+    PYTHON: "/unavailable/python",
     CODEX_HOME: path.join(fixtureRoot, "home"),
     CODEX_SECURITY_STATE_DIR: path.join(fixtureRoot, "state"),
   };
-  const python = process.env.PYTHON?.trim() || "python3";
   const runWorkbench = async (args) => {
-    const { stdout } = await execFileAsync(python, [workbenchPath, ...args], {
+    const { stdout } = await execFileAsync(process.execPath, [workbenchPath, ...args], {
       cwd: pluginRoot, env: environment, timeout: 30_000, maxBuffer: 4 * 1024 * 1024,
     });
     return JSON.parse(stdout);
@@ -179,12 +179,12 @@ async function testConcurrentParentDraftsPreserveBothCheckpoints() {
   const targetPath = path.join(fixtureRoot, "target");
   const environment = {
     ...process.env,
+    PYTHON: "/unavailable/python",
     CODEX_HOME: path.join(fixtureRoot, "home"),
     CODEX_SECURITY_STATE_DIR: path.join(fixtureRoot, "state")
   };
-  const python = process.env.PYTHON?.trim() || "python3";
   const rawRunWorkbench = async (args) => {
-    const { stdout } = await execFileAsync(python, [workbenchPath, ...args], {
+    const { stdout } = await execFileAsync(process.execPath, [workbenchPath, ...args], {
       cwd: pluginRoot, env: environment, timeout: 30_000, maxBuffer: 4 * 1024 * 1024
     });
     return JSON.parse(stdout);
@@ -246,12 +246,12 @@ async function testLateParentDraftPreservesCheckpointWithoutOverwritingTerminalS
   const targetPath = path.join(fixtureRoot, "target");
   const environment = {
     ...process.env,
+    PYTHON: "/unavailable/python",
     CODEX_HOME: path.join(fixtureRoot, "home"),
     CODEX_SECURITY_STATE_DIR: path.join(fixtureRoot, "state")
   };
-  const python = process.env.PYTHON?.trim() || "python3";
   const runWorkbench = async (args) => {
-    const { stdout } = await execFileAsync(python, [workbenchPath, ...args], {
+    const { stdout } = await execFileAsync(process.execPath, [workbenchPath, ...args], {
       cwd: pluginRoot, env: environment, timeout: 30_000, maxBuffer: 4 * 1024 * 1024
     });
     return JSON.parse(stdout);
@@ -314,12 +314,12 @@ async function testReducerCommitAndFinishAgainstRealWorkbench() {
   const threadId = "deep-scan-store-integration-thread";
   const environment = {
     ...process.env,
+    PYTHON: "/unavailable/python",
     CODEX_HOME: codexHome,
     CODEX_SECURITY_STATE_DIR: stateDir
   };
-  const python = process.env.PYTHON?.trim() || "python3";
   const runWorkbench = async (args) => {
-    const { stdout } = await execFileAsync(python, [workbenchPath, ...args], {
+    const { stdout } = await execFileAsync(process.execPath, [workbenchPath, ...args], {
       cwd: pluginRoot,
       env: environment,
       maxBuffer: 4 * 1024 * 1024,
@@ -369,18 +369,20 @@ async function testReducerCommitAndFinishAgainstRealWorkbench() {
     assert.equal(observed.run.coordinatorGeneration, owned.run.coordinatorGeneration);
     assert.equal(observed.run.config.maxTimeHours, 2.5);
     await assert.rejects(observer.fail(run.scanId, "observer cannot fail its owner"), /current coordinator lease/);
-    const writer = spawn(python, [
-      "-c",
+    const writer = spawn(process.execPath, [
+      "--input-type=module", "--eval",
       [
-        "import sqlite3, sys",
-        "connection = sqlite3.connect(sys.argv[1])",
-        "connection.execute(\"UPDATE deep_scan_runs SET updated_at = ? WHERE scan_id = ?\", (\"2000-01-01T00:00:00Z\", sys.argv[2]))",
-        "connection.commit()",
-        "connection.execute(\"BEGIN IMMEDIATE\")",
-        "print(\"locked\", flush=True)",
-        "sys.stdin.read(1)",
-        "connection.rollback()"
+        `import {withWorkbenchDatabase} from ${JSON.stringify(new URL("./workbench_test_support.mjs", import.meta.url).href)};`,
+        "import {readSync, writeSync} from 'node:fs';",
+        "withWorkbenchDatabase(process.argv[1], process.argv[2], connection => {",
+        "  connection.transaction(() => connection.prepare('UPDATE deep_scan_runs SET updated_at = ? WHERE scan_id = ?').run(['2000-01-01T00:00:00Z', process.argv[3]]));",
+        "  connection.prepare('BEGIN IMMEDIATE').run();",
+        "  writeSync(1, 'locked\\n');",
+        "  readSync(0, Buffer.alloc(1), 0, 1, null);",
+        "  connection.rollback();",
+        "});"
       ].join("\n"),
+      pluginRoot,
       path.join(stateDir, "workbench.sqlite3"),
       run.scanId
     ]);
@@ -559,12 +561,12 @@ async function testExpiredDeadlineWithoutCompletedDiscoveryAgainstRealWorkbench(
   const threadId = "deep-scan-store-zero-discovery-thread";
   const environment = {
     ...process.env,
+    PYTHON: "/unavailable/python",
     CODEX_HOME: codexHome,
     CODEX_SECURITY_STATE_DIR: stateDir
   };
-  const python = process.env.PYTHON?.trim() || "python3";
   const runWorkbench = async (args) => {
-    const { stdout } = await execFileAsync(python, [workbenchPath, ...args], {
+    const { stdout } = await execFileAsync(process.execPath, [workbenchPath, ...args], {
       cwd: pluginRoot,
       env: environment
     });

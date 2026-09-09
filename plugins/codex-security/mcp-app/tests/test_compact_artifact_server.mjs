@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { updateWorkbench } from "./workbench_test_support.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -852,15 +853,12 @@ async function testClaimedParentArtifactOperations(bundle, runtimeLabel) {
       assert.equal(await readFile(inventoryPath, "utf8"), originalInventory);
     }
 
-    execFileSync(process.env.PYTHON ?? "python3", [
-      "-c",
-      "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); "
-        + "c.execute('UPDATE scans SET handoff_claim_token = ? WHERE id = ?', "
-        + "(sys.argv[2],sys.argv[3])); c.commit(); c.close()",
+    updateWorkbench(
+      bundledPluginRoot,
       path.join(stateRoot, "workbench.sqlite3"),
-      randomUUID(),
-      scanId
-    ]);
+      "UPDATE scans SET handoff_claim_token = ? WHERE id = ?",
+      [randomUUID(), scanId]
+    );
     for (const [name, arguments_] of phaseCalls) {
       requireToolError(
         await call(name, arguments_),

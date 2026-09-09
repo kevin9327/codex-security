@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { updateWorkbench } from "./workbench_test_support.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -410,11 +412,12 @@ async function assertBundledNodeLauncher() {
   }
 }
 
-async function assertMissingPythonError() {
+async function assertWorkbenchWithoutPython() {
+  const fixtureState = await mkdtemp(path.join(tmpdir(), "codex-security-no-python-state-"));
   const missingPythonServer = startTestServer({
     cwd: pluginRoot,
     env: {
-      CODEX_SECURITY_STATE_DIR: stateDir,
+      CODEX_SECURITY_STATE_DIR: fixtureState,
       PYTHON: path.join(
         tmpdir(),
         `codex-security-missing-python-${randomUUID()}`,
@@ -436,33 +439,31 @@ async function assertMissingPythonError() {
       name: "inspect_codex_security_target",
       arguments: { targetPath: target },
     });
-    assert.equal(response.result.isError, true);
-    const errorText = response.result.content
-      .map((item) => item.text)
-      .join(" ");
-    assert.match(errorText, /could not start its Python 3 helper/);
-    assert.match(errorText, /bundled Python runtime/);
-    assert.match(errorText, /set the PYTHON environment variable/);
-    assert.doesNotMatch(
-      errorText,
-      /ENOENT|spawn .*codex-security-missing-python/,
-    );
+    assertNoError(response);
+    const opened = await missingPythonServer.requestAndWait(3, "tools/call", {
+      name: "open_codex_security_workspace",
+      arguments: { targetPath: target },
+      _meta: { "openai/threadId": "fixture-without-python" },
+    });
+    assertNoError(opened);
+    assert.equal(opened.result.structuredContent.workspace.targetPath, await realpath(target));
   } finally {
     await missingPythonServer.stop();
+    await rm(fixtureState, { recursive: true, force: true });
   }
 }
 
 async function assertWorkbenchStdinFailureDoesNotCrashServer() {
-  if (process.platform === "win32") return;
   const helperRoot = await mkdtemp(
     path.join(tmpdir(), "codex-security-early-exit-helper-"),
   );
-  const helper = path.join(helperRoot, "python");
-  await writeFile(helper, "#!/bin/sh\nexit 2\n");
-  await chmod(helper, 0o755);
+  const testPlugin = path.join(helperRoot, "plugin");
+  await cp(pluginRoot, testPlugin, { recursive: true });
+  await writeFile(path.join(testPlugin, "mcp", "helpers.mjs"), "process.exit(2);\n");
   const server = startTestServer({
-    cwd: pluginRoot,
-    env: { CODEX_SECURITY_STATE_DIR: stateDir, PYTHON: helper },
+    args: [path.join(testPlugin, "mcp", "server.mjs"), "--stdio"],
+    cwd: testPlugin,
+    env: { CODEX_SECURITY_STATE_DIR: stateDir, PYTHON: "/unavailable/python" },
   });
   try {
     assertNoError(
@@ -791,18 +792,12 @@ async function assertDeepScanPersistsWorkerStartupFailure() {
 
     const publicationFailure =
       "Saved result publication failed: fixture retained result publication failure";
-    execFileSync(process.env.PYTHON?.trim() || "python3", [
-      "-c",
-      [
-        "import sqlite3, sys",
-        "with sqlite3.connect(sys.argv[1]) as connection:",
-        "    updated = connection.execute(\"UPDATE deep_scan_runs SET status = 'canceled', phase = 'terminal', cancel_requested = 1, error_message = ? WHERE scan_id = ?\", (sys.argv[2], sys.argv[3]))",
-        "    assert updated.rowcount == 1",
-      ].join("\n"),
+    assert.equal(updateWorkbench(
+      pluginRoot,
       path.join(fixtureState, "workbench.sqlite3"),
-      publicationFailure,
-      scan.scanId,
-    ]);
+      "UPDATE deep_scan_runs SET status = 'canceled', phase = 'terminal', cancel_requested = 1, error_message = ? WHERE scan_id = ?",
+      [publicationFailure, scan.scanId]
+    ).rowcount, 1n);
     const canceledWithPublicationFailure = await deepServer.requestAndWait(
       4,
       "tools/call",
@@ -901,70 +896,6 @@ async function assertUserInputFailureLogging() {
     });
   } finally {
     await failingElicitationServer.stop();
-  }
-}
-
-async function assertBundledPythonRuntime() {
-  if (process.platform === "win32") return;
-
-  const runtimeHome = await mkdtemp(
-    path.join(tmpdir(), "codex-security-runtime-home-"),
-  );
-  const bundledPythonPath = path.join(
-    runtimeHome,
-    ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
-  );
-  const launchMarkerPath = path.join(runtimeHome, "bundled-python-launched");
-  const systemPythonPath = execFileSync(
-    process.env.PYTHON?.trim() || "python3",
-    ["-c", "import sys; print(sys.executable)"],
-    { encoding: "utf8" },
-  ).trim();
-
-  const bundledPythonServer = startTestServer({
-    cwd: pluginRoot,
-    env: {
-      CODEX_SECURITY_BUNDLED_PYTHON_MARKER: launchMarkerPath,
-      CODEX_SECURITY_STATE_DIR: stateDir,
-      CODEX_SECURITY_TEST_SYSTEM_PYTHON: systemPythonPath,
-      HOME: runtimeHome,
-      PYTHON: undefined,
-    },
-  });
-  try {
-    assertNoError(
-      await bundledPythonServer.requestAndWait(1, "initialize", {
-        protocolVersion: "2025-11-25",
-        capabilities: {},
-        clientInfo: {
-          name: "codex-security-bundled-python-smoke",
-          version: "0.1.0",
-        },
-      }),
-    );
-    // Codex can install the primary runtime after the MCP server has started.
-    // Creating this wrapper after initialization verifies call-time discovery.
-    await mkdir(path.dirname(bundledPythonPath), { recursive: true });
-    await writeFile(
-      bundledPythonPath,
-      [
-        "#!/bin/sh",
-        'printf bundled > "$CODEX_SECURITY_BUNDLED_PYTHON_MARKER"',
-        'exec "$CODEX_SECURITY_TEST_SYSTEM_PYTHON" "$@"',
-        "",
-      ].join("\n"),
-      { mode: 0o755 },
-    );
-    assertNoError(
-      await bundledPythonServer.requestAndWait(2, "tools/call", {
-        name: "inspect_codex_security_target",
-        arguments: { targetPath: target },
-      }),
-    );
-    assert.equal(await readFile(launchMarkerPath, "utf8"), "bundled");
-  } finally {
-    await bundledPythonServer.stop();
-    await rm(runtimeHome, { recursive: true, force: true });
   }
 }
 
@@ -1411,8 +1342,7 @@ try {
   assert.equal(isolatedOtherTrustedAccess.result.structuredContent.status, "unknown");
 
   await assertBundledNodeLauncher();
-  await assertBundledPythonRuntime();
-  await assertMissingPythonError();
+  await assertWorkbenchWithoutPython();
   await assertWorkbenchStdinFailureDoesNotCrashServer();
   await assertUnavailableUserInputFallback();
   await assertWorkspaceWorksWithoutUiCapability();
@@ -3359,18 +3289,12 @@ try {
     "delivered",
   );
   const rotatedFallbackClaimToken = `recovery_${randomUUID()}`;
-  execFileSync(process.env.PYTHON?.trim() || "python3", [
-    "-c",
-    [
-      "import sqlite3, sys",
-      "with sqlite3.connect(sys.argv[1]) as connection:",
-      "    updated = connection.execute(\"UPDATE scans SET handoff_status = 'pending', handoff_claim_token = ?, continuation_thread_id = NULL WHERE id = ?\", (sys.argv[2], sys.argv[3]))",
-      "    assert updated.rowcount == 1",
-    ].join("\n"),
+  assert.equal(updateWorkbench(
+    pluginRoot,
     path.join(stateDir, "workbench.sqlite3"),
-    rotatedFallbackClaimToken,
-    fallbackScanId,
-  ]);
+    "UPDATE scans SET handoff_status = 'pending', handoff_claim_token = ?, continuation_thread_id = NULL WHERE id = ?",
+    [rotatedFallbackClaimToken, fallbackScanId]
+  ).rowcount, 1n);
   const staleRecoveryContext = await requestAndWait(20173, "tools/call", {
     name: "get_codex_security_scan_context",
     arguments: {
