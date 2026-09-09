@@ -1,3 +1,4 @@
+mod copy_metadata;
 mod errors;
 mod process;
 mod regex;

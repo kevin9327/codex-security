@@ -58,7 +58,7 @@ fn io_count(result: io::Result<usize>) -> WindowsResult {
     }
 }
 
-fn wide_path(bytes: Buffer) -> napi::Result<Vec<u16>> {
+pub(super) fn wide_path(bytes: Buffer) -> napi::Result<Vec<u16>> {
     if !bytes.len().is_multiple_of(2) {
         return Err(invalid("Path must contain whole UTF-16LE code units"));
     }

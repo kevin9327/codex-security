@@ -86,6 +86,92 @@ function remove(path: string): void {
   }
 }
 
+function copyMetadataProof(root: string) {
+  const source = join(root, "copy-source.EXE");
+  const destination = join(root, "copy-destination.EXE");
+  writeFileSync(source, "metadata payload");
+  writeFileSync(`${source}:synthetic`, "alternate stream");
+  const read = (path: string) => {
+    const result = checked(native.readCopyStat(pathBytes(path), true));
+    assert(result.metadata);
+    return result.metadata;
+  };
+  checked(
+    native.setWindowsTimes(
+      pathBytes(source),
+      1_700_000_000_123_456_700n,
+      1_700_000_000_876_543_200n,
+    ),
+  );
+  success(native.setWindowsWritable(pathBytes(source), false));
+  const captured = read(source);
+  assert.equal(captured.mode, 0o555);
+  try {
+    success(
+      native.copyFile2(
+        pathBytes(source),
+        pathBytes(destination),
+        flags.COPY_FILE_ALLOW_DECRYPTED_DESTINATION,
+      ),
+    );
+    const copied = read(destination);
+    assert.equal(copied.mode, captured.mode);
+    assert.equal(copied.mtimeNs, captured.mtimeNs);
+    assert.equal(readFileSync(destination, "utf8"), "metadata payload");
+    assert.equal(
+      readFileSync(`${destination}:synthetic`, "utf8"),
+      "alternate stream",
+    );
+    success(native.setWindowsWritable(pathBytes(destination), true));
+    checked(
+      native.setWindowsTimes(
+        pathBytes(destination),
+        captured.atimeNs,
+        captured.mtimeNs,
+      ),
+    );
+    assert.equal(read(destination).atimeNs, captured.atimeNs);
+    assert.equal(read(destination).mtimeNs, captured.mtimeNs);
+
+    const held = open(destination);
+    try {
+      assert.deepEqual(
+        native.setWindowsTimes(
+          pathBytes(destination),
+          captured.atimeNs,
+          captured.mtimeNs,
+        ),
+        { error: 32, path: pathBytes(destination) },
+      );
+    } finally {
+      success(held.close());
+    }
+    const missing = pathBytes(join(root, "copy-missing"));
+    assert.deepEqual(native.readCopyStat(missing, true), {
+      error: 2,
+      metadata: null,
+    });
+    assert.deepEqual(
+      native.setWindowsTimes(missing, captured.atimeNs, captured.mtimeNs),
+      {
+        error: 2,
+        path: missing,
+      },
+    );
+    assert.equal(native.copyFile2(missing, pathBytes(destination), 0), 2);
+    assert.throws(() => native.readCopyStat(Buffer.from([0]), true));
+    return {
+      timestamps: true,
+      copiedReadOnlyAndStreams: true,
+      errorPathAndSharing: true,
+    };
+  } finally {
+    success(native.setWindowsWritable(pathBytes(source), true));
+    if (existsSync(destination))
+      success(native.setWindowsWritable(pathBytes(destination), true));
+  }
+}
+
 function handleProof(root: string) {
   const held = new Set<WindowsHandle>();
   const rawPaths: string[] = [];
@@ -707,6 +793,7 @@ if (process.argv[2] === "worker") {
           architecture: process.arch,
           nodeApi: 8,
           rawProcess: rawProcessProof(root),
+          copyMetadata: copyMetadataProof(root),
           handles: handleProof(root),
           wideProcessAndPaths: wideProcessProof(root),
           garbageCollectionClosesHandle: await ownershipProof(root),

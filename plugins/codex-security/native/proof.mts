@@ -5,6 +5,7 @@ import {
   chmodSync,
   closeSync,
   constants,
+  copyFileSync,
   existsSync,
   fstatSync,
   fsyncSync,
@@ -73,6 +74,87 @@ const fixtureName = (prefix: string, byte: number) =>
   process.platform === "darwin"
     ? Buffer.from(`${prefix}-é`)
     : Buffer.from([prefix.charCodeAt(0), byte]);
+
+function copyMetadataProof(root: string) {
+  const source = rawPath(root, fixtureName("copy-source", 0xf5));
+  const destination = rawPath(root, fixtureName("copy-destination", 0xf6));
+  writeFileSync(source, "metadata payload");
+  const read = (path: Buffer, follow = true) => {
+    const result = checked(native.readCopyStat(path, follow));
+    assert(result.metadata);
+    return result.metadata;
+  };
+  checked(
+    native.copyStat(source, source, true, {
+      ...read(source),
+      mode: 0o751,
+      atimeNs: 1_700_000_000_123_456_789n,
+      mtimeNs: 1_700_000_000_876_543_210n,
+      flags: process.platform === "darwin" ? 1 : 0,
+    }),
+  );
+  const captured = read(source);
+  copyFileSync(source, destination);
+  const afterReading = read(source);
+  checked(native.copyStat(source, destination, true, captured));
+  assert.deepEqual(read(destination), captured);
+  assert.equal(
+    statSync(destination, { bigint: true }).mtimeNs,
+    captured.mtimeNs,
+  );
+
+  // A cached DirEntry stat must survive a source atime change during copying.
+  const changed = {
+    ...afterReading,
+    atimeNs: captured.atimeNs + 5_000_000_001n,
+  };
+  checked(native.copyStat(source, source, true, changed));
+  checked(native.copyStat(source, destination, true, captured));
+  assert.deepEqual(read(destination), captured);
+  assert.notEqual(read(source).atimeNs, read(destination).atimeNs);
+
+  const link = Buffer.concat([source, Buffer.from("-link")]);
+  const copiedLink = Buffer.concat([destination, Buffer.from("-link")]);
+  symlinkSync(source, link);
+  symlinkSync(destination, copiedLink);
+  const linkStat = read(link, false);
+  checked(native.copyStat(link, copiedLink, false, linkStat));
+  assert.deepEqual(read(copiedLink, false), linkStat);
+  assert.deepEqual(read(destination), captured);
+  assert(lstatSync(copiedLink).isSymbolicLink());
+
+  const directory = Buffer.from(join(root, "copy-directory"));
+  mkdirSync(directory);
+  checked(native.copyStat(source, directory, true, captured));
+  assert.deepEqual(read(directory), captured);
+  assert(statSync(directory).isDirectory());
+
+  const missing = Buffer.concat([source, Buffer.from("-missing")]);
+  assert.deepEqual(native.readCopyStat(missing, true), {
+    errno: errno.ENOENT,
+    metadata: null,
+  });
+  assert.deepEqual(native.copyStat(source, missing, true, captured), {
+    errno: errno.ENOENT,
+    path: null,
+  });
+  if (process.platform === "linux") {
+    assert.deepEqual(native.copyStat(missing, destination, true, changed), {
+      errno: errno.ENOENT,
+      path: missing,
+    });
+    assert.equal(read(destination).atimeNs, changed.atimeNs);
+  }
+  assert.throws(() => native.readCopyStat(Buffer.from([0]), true));
+  return {
+    capturedStatSurvivesCopy: true,
+    sourceAtimeChangedByRead: afterReading.atimeNs !== captured.atimeNs,
+    exactTimestampsAndMode: true,
+    symlinkAndDirectoryMetadata: true,
+    errorPathAndOrder: true,
+    fileFlags: captured.flags,
+  };
+}
 
 function accountProof() {
   let currentHomeMatches: boolean | null = null;
@@ -638,6 +720,7 @@ if (process.argv[2] === "lock-worker") {
           architecture: process.arch,
           nodeApi: 8,
           rawProcess: rawProcessProof(root),
+          copyMetadata: copyMetadataProof(root),
           descriptors,
           accounts,
           directories,

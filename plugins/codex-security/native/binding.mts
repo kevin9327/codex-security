@@ -23,6 +23,15 @@ export interface MetadataResult {
   inode: string;
 }
 
+export interface CopyStatMetadata {
+  /** Permission and special bits, without the file type. */
+  mode: number;
+  atimeNs: bigint;
+  mtimeNs: bigint;
+  /** macOS st_flags; zero on platforms without file flags. */
+  flags: number;
+}
+
 export interface DirectoryEntry {
   name: Buffer;
   isDirectory: boolean;
@@ -60,6 +69,17 @@ export interface UnixBinding {
   ): SyscallResult;
   unlinkAt(directory: number, name: Buffer): SyscallResult;
   statAt(directory: number, name: Buffer): MetadataResult;
+  readCopyStat(
+    source: Buffer,
+    followSymlinks: boolean,
+  ): { errno: number; metadata: CopyStatMetadata | null };
+  /** Applies a captured stat; followSymlinks is the resolved copystat choice. */
+  copyStat(
+    source: Buffer,
+    destination: Buffer,
+    followSymlinks: boolean,
+    metadata: CopyStatMetadata,
+  ): { errno: number; path: Buffer | null };
   readLinkAt(directory: number, name: Buffer): { errno: number; value: Buffer };
   fileLock(
     descriptor: number,

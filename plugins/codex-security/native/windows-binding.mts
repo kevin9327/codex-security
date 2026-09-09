@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { binaryPath } from "./binding.mjs";
+import { binaryPath, type CopyStatMetadata } from "./binding.mjs";
 
 export interface WindowsResult<T = number> {
   error: number;
@@ -51,6 +51,18 @@ export interface WindowsBinding {
   createWindowsDirectory(path: Buffer): number;
   createWindowsDirectories(path: Buffer): number;
   setWindowsWritable(path: Buffer, writable: boolean): number;
+  readCopyStat(
+    source: Buffer,
+    followSymlinks: boolean,
+  ): { error: number; metadata: CopyStatMetadata | null };
+  /** Follows links; reports null path for a SetFileTime failure. */
+  setWindowsTimes(
+    destination: Buffer,
+    atimeNs: bigint,
+    mtimeNs: bigint,
+  ): { error: number; path: Buffer | null };
+  /** Returns the Win32 error derived from CopyFile2's HRESULT, or zero. */
+  copyFile2(source: Buffer, destination: Buffer, flags: number): number;
 }
 
 export { windowsFlags } from "./windows-flags.mjs";

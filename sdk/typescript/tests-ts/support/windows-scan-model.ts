@@ -285,6 +285,9 @@ export class WindowsScanModel {
     },
     createWindowsDirectories: unavailable,
     setWindowsWritable: unavailable,
+    readCopyStat: unavailable,
+    setWindowsTimes: unavailable,
+    copyFile2: unavailable,
   };
   contents(path: string): string | null {
     return this.entries.get(key(path))?.bytes.toString("base64") ?? null;

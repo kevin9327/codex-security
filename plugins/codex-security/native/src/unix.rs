@@ -33,7 +33,7 @@ fn retry_eintr(mut operation: impl FnMut() -> i32) -> SyscallResult {
     }
 }
 
-fn path(value: Buffer) -> napi::Result<CString> {
+pub(super) fn path(value: Buffer) -> napi::Result<CString> {
     CString::new(value.as_ref()).map_err(|_| napi::Error::from_reason("Path contains a NUL byte"))
 }
 
