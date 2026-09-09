@@ -323,6 +323,7 @@ test("the norm and compensated dot product retain Python binary results for cuto
         [5e-324, 5e-324],
         [1e308, 1e308],
         [2.2250738585072014e-308, 5e-324],
+        Array.from({ length: 1536 }, (_, index) => (index - 750) / 1000),
       ],
     }),
     encoding: "utf8",
@@ -339,8 +340,12 @@ test("the norm and compensated dot product retain Python binary results for cuto
     "0000000000000001",
     "7fe92c80954c51f5",
     "0010000000000000",
+    "40316431988e777d",
   ]);
   expect(values[0]!.normalized[0]).toBe("3fe199999999999a");
+  expect(values[4]!.normalized[0]).toBe("bfa61474701686ea");
+  expect(values[4]!.normalized.at(-1)).toBe("3fa71c3c6e7dfa70");
+  expect(values[4]!.similarity).toBe("3ff0000000000000");
   const dot = spawnSync(node, [fixture], {
     input: JSON.stringify({
       dot: [{ left: [1e16, 1, -1e16], right: [1, 1, 1] }],

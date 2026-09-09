@@ -37,6 +37,25 @@ function rounded(coefficient: bigint, exponent: number): number {
 
 function product(left: number, right: number): [number, number] {
   const high = left * right;
+  // Dekker splitting is exact here: every partial product stays normal, and
+  // the split factors and their products cannot overflow.
+  if (
+    Math.abs(left) >= 2 ** -450 &&
+    Math.abs(left) <= 2 ** 450 &&
+    Math.abs(right) >= 2 ** -450 &&
+    Math.abs(right) <= 2 ** 450
+  ) {
+    const a = left * 134217729,
+      aHigh = a - (a - left),
+      aLow = left - aHigh,
+      b = right * 134217729,
+      bHigh = b - (b - right),
+      bLow = right - bHigh;
+    const low =
+      aLow * bLow - (high - aHigh * bHigh - aLow * bHigh - aHigh * bLow);
+    return [high, low];
+  }
+
   const [a, ae] = parts(left),
     [b, be] = parts(right),
     [p, pe] = parts(high);
