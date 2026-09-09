@@ -1,9 +1,57 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
+import type { Request } from "./support/path-compatibility-fixture";
 import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root.js";
+
+const probeDirectory = realpathSync(
+  mkdtempSync(join(tmpdir(), "path-compatibility-")),
+);
+const fixture = join(probeDirectory, "fixture.cjs");
+const node = Bun.which("node")!;
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/path-compatibility-fixture.ts", import.meta.url),
+      ),
+    ],
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+  }),
+);
+afterAll(() => rmSync(probeDirectory, { recursive: true, force: true }));
+function run<T = Record<string, unknown>>(request: Request): T {
+  const child = spawnSync(node, [fixture], {
+    input: JSON.stringify(request),
+    encoding: "utf8",
+    env: { ...process.env, PYTHON: "/unavailable/python" },
+  });
+  expect(child.status, child.stderr).toBe(0);
+  expect(child.stderr).toBe("");
+  return JSON.parse(child.stdout) as T;
+}
 
 const temporaryDirectories: string[] = [];
 
@@ -14,24 +62,6 @@ afterEach(async () => {
       .map((path) => rm(path, { recursive: true, force: true })),
   );
 });
-
-const patchProbe = [
-  "import json, sys",
-  "from pathlib import Path",
-  "sys.path.insert(0, sys.argv[1])",
-  "import workbench_db as workbench",
-  "scan_dir, digest = Path(sys.argv[2]), sys.argv[3]",
-  "scan = {'scan_dir': str(scan_dir)}",
-  "workbench.require_matching_patch_digest(scan, 'remediation.patch', digest)",
-  "preview, stats = workbench.patch_artifact_preview(scan_dir, 'remediation.patch', digest)",
-  "try:",
-  "    workbench.require_matching_patch_digest(scan, 'remediation.patch', 'sha256:' + '0' * 64)",
-  "except SystemExit as error:",
-  "    mismatch = str(error)",
-  "else:",
-  "    mismatch = None",
-  "print(json.dumps({'preview': preview, 'stats': stats, 'mismatch': mismatch}))",
-].join("\n");
 
 describe("workbench remediation patches", () => {
   test("streams patches larger than 2 MiB without weakening digest checks", async () => {
@@ -46,30 +76,11 @@ describe("workbench remediation patches", () => {
     ]);
     await writeFile(join(directory, "remediation.patch"), patch);
     const digest = `sha256:${createHash("sha256").update(patch).digest("hex")}`;
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    if (python === null) throw new Error("A Python interpreter is required.");
-
-    const result = Bun.spawnSync(
-      [
-        python,
-        "-I",
-        "-B",
-        "-c",
-        patchProbe,
-        join(PLUGIN_ROOT, "scripts"),
-        directory,
-        digest,
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    expect(new TextDecoder().decode(result.stderr)).toBe("");
-    expect(result.exitCode).toBe(0);
-    const output = JSON.parse(new TextDecoder().decode(result.stdout)) as {
+    const output = run<{
       preview: string;
       stats: Record<string, number | boolean>;
       mismatch: string;
-    };
+    }>({ operation: "patch", scanDirectory: directory, digest });
     expect(output.preview).toStartWith("diff --git a/src.ts b/src.ts\n+");
     expect(output.preview).toEndWith("... patch preview truncated ...");
     expect(output.stats).toMatchObject({
