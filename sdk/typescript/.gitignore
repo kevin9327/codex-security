@@ -7,3 +7,4 @@
 /private_release/dist/
 /*.tsbuildinfo
 /scripts/compare-test-reports.mjs
+/scripts/check-python-free.mjs
