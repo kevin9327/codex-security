@@ -230,10 +230,11 @@ async function testSemanticScanDraftCompletion(bundle, runtimeLabel) {
     `def execute(query):\n${sourceLine}\n`
   );
 
-  const client = await startClient(bundle, {
+  const serverEnvironment = {
     CODEX_SECURITY_SCAN_ROOT: scanRoot,
     CODEX_SECURITY_STATE_DIR: stateRoot
-  });
+  };
+  let client = await startClient(bundle, serverEnvironment);
   const ownerThread = `semantic-draft-owner-${runtimeLabel}`;
   const call = (name, arguments_) => client.callTool({
     name,
@@ -526,6 +527,24 @@ async function testSemanticScanDraftCompletion(bundle, runtimeLabel) {
         originalDraft,
         `${runtimeLabel}: rejecting ${description} must not write canonical artifacts`
       );
+    }
+
+    for (const complete of [false, true]) {
+      requireToolError(await call("record_codex_security_scan_draft", {
+        scanId, handoffClaimToken, complete, findings: [finding],
+        coverage: { ...coverage, reviewedFiles: [complete ? "another-typo.py" : "mistyped.py"] }
+      }), /outside the saved inventory or changed/, `${runtimeLabel}: reject Standard reviewed-file typo`);
+      await client.close();
+      client = await startClient(bundle, serverEnvironment);
+      requireSuccessfulTool(await call("get_codex_security_scan_context", {
+        scanId, handoffClaimToken
+      }), `${runtimeLabel}: restore the Standard checkpoint context`);
+      requireSuccessfulTool(await call("record_codex_security_scan_draft", {
+        scanId, handoffClaimToken, complete: false, findings: [finding],
+        coverage: { ...coverage, reviewedFiles: ["src/fixture.py"] }
+      }), `${runtimeLabel}: correct a rejected Standard checkpoint after restart`);
+      assert.equal(JSON.parse(await readFile(path.join(scanDirectory, "scan-manifest.json"), "utf8")).scan.complete, false);
+      assert.deepEqual(JSON.parse(await readFile(path.join(scanDirectory, "coverage.json"), "utf8")).reviewedFiles, ["src/fixture.py"]);
     }
 
     const drafted = requireSuccessfulTool(await call(

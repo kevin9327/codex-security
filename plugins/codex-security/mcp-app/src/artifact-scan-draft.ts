@@ -454,7 +454,7 @@ async function readCurrentCheckpoints(
   }
 
   let checkpointHead: string | undefined;
-  if (context.layout === "worker") {
+  if (context.layout === "worker" || context.layout === "scan") {
     const headMetadata = await lstatIfExists(join(context.root, "checkpoint-head.json"));
     if (headMetadata !== undefined) {
       if (headMetadata.isSymbolicLink() || !headMetadata.isFile()) {
@@ -500,9 +500,10 @@ async function readCurrentCheckpoints(
     if (input.scanId !== context.scanId) {
       throw new Error("scan checkpoint: current checkpoint belongs to a different scan.");
     }
-    // Only the accepted cumulative head can credit reviewed files. Unaccepted
-    // snapshots still preserve findings, but may contain rejected inventory paths.
-    if (context.layout === "worker" && entry.name !== checkpointHead) {
+    // Only the accepted cumulative head can credit completion or reviewed files.
+    // Unaccepted snapshots preserve findings, but may contain rejected declarations.
+    if (entry.name !== checkpointHead) {
+      input.complete = false;
       delete input.coverage.reviewedFiles;
     }
     checkpoints.push({
@@ -699,7 +700,8 @@ async function readArchivedWorkerCheckpoints(
           parseJsonObject(contents, "archived scan checkpoint"),
         );
         requireMatchingScan(context, draft);
-        // The accepted head above already carries cumulative reviewed coverage.
+        // The accepted head above carries completion and cumulative reviewed coverage.
+        draft.complete = false;
         delete draft.coverage.reviewedFiles;
         drafts.push({
           input: draft,

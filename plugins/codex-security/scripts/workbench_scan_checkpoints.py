@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import stat
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,9 @@ def record_checkpoint(
     scan: sqlite3.Row,
     checkpoint_path: Path,
     timestamp: str,
+    *,
+    commit: bool = True,
+    publish_head: bool = True,
 ) -> dict[str, Any]:
     """Index a bound immutable artifact; replay is safe after an interrupted projection."""
     root = Path(scan["scan_dir"])
@@ -160,13 +164,10 @@ def record_checkpoint(
         return result
     # The durable head closes the artifact/SQLite crash window. Only validated cumulative
     # snapshots advance it; replay never makes an older receipt current again.
-    write_scan_local_bytes(
-        root,
-        (relative.parent.parent / "checkpoint-head.json").as_posix(),
-        (json.dumps({"checkpoint": relative.name}) + "\n").encode(),
-    )
+    if publish_head:
+        _write_checkpoint_head(root, relative)
     # A transaction commits both the semantic projection and completed source coverage.
-    with connection:
+    with connection if commit else nullcontext():
         for path in set(reviewed):
             connection.execute(
                 "UPDATE scan_review_files SET reviewed_at = COALESCE(reviewed_at, ?) "
@@ -179,6 +180,14 @@ def record_checkpoint(
             (scan["id"], source, relative.as_posix(), digest, json.dumps(snapshot), timestamp),
         )
     return result
+
+
+def _write_checkpoint_head(root: Path, relative: Path) -> None:
+    write_scan_local_bytes(
+        root,
+        (relative.parent.parent / "checkpoint-head.json").as_posix(),
+        (json.dumps({"checkpoint": relative.name}) + "\n").encode(),
+    )
 
 
 def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, Any] | None:
@@ -385,7 +394,11 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
     # Reuse the stopped-result merger so finding identity and evidence retention have one owner.
     from workbench_saved_results import _candidate_owner, merge_saved_results
 
-    with db.scan_completion_lock(args.parent_scan_id), db.scan_completion_lock(args.scan_id):
+    with (
+        db.scan_completion_lock(args.parent_scan_id),
+        db.scan_completion_lock(args.scan_id),
+        connection,
+    ):
         parent = db.require_scan(connection, args.parent_scan_id)
         child = db.require_scan(connection, args.scan_id)
         if child["parent_scan_id"] != parent["id"] or child["status"] != "running":
@@ -506,7 +519,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 f"{source_path}/checkpoints/{hashlib.sha256(worker_contents).hexdigest()}.json"
             )
             write_scan_local_bytes(root, worker_path, worker_contents)
-            record_checkpoint(connection, child, root / worker_path, db.now())
+            record_checkpoint(connection, child, root / worker_path, db.now(), commit=False)
         root_source = next((source for source in sources if source["source"] == "."), None)
         if root_source is not None and isinstance(root_source.get("scope"), dict):
             manifest["scan"]["scope"] = {
@@ -540,13 +553,18 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 child["id"],
             ),
         )
-        record_checkpoint(connection, child, path, db.now())
+        record_checkpoint(connection, child, path, db.now(), commit=False, publish_head=False)
         for filename, document in (
             ("findings.json", findings),
             ("coverage.json", coverage),
             ("scan-manifest.json", manifest),
         ):
             write_scan_local_bytes(root, filename, (json.dumps(document, indent=2) + "\n").encode())
+        # Worker receipts, inherited spend, and the aggregate baseline become durable
+        # together. Until then, no root head may expose this child to reconciliation.
+        # Commit explicitly even when record_checkpoint replayed an existing receipt.
+        connection.commit()
+        _write_checkpoint_head(root, path.relative_to(root))
         if parent["status"] == "running":
             timestamp = db.now()
             message = f"Interrupted; continued from saved checkpoints in scan {child['id']}."
