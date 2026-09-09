@@ -31,6 +31,14 @@ import type { PublishedScanIssue } from "../src/publish.js";
 import { runWorkbench } from "../src/runtime.js";
 import * as runtime from "../src/runtime.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
+import type { Parameter } from "../../../plugins/codex-security/native/sqlite.mjs";
+import { MIGRATIONS } from "../../../plugins/codex-security/mcp-app/src/workbench-migrations";
+import { applyMigrations } from "../../../plugins/codex-security/mcp-app/src/workbench-schema";
+import {
+  withWorkbenchDatabase,
+  workbenchRows,
+  workbenchSnapshot,
+} from "./support/workbench-database.js";
 
 const SCAN_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_SCAN_ID = "33333333-3333-4333-8333-333333333333";
@@ -47,7 +55,6 @@ afterEach(async () => {
 interface PublicationFixture {
   environment: NodeJS.ProcessEnv;
   publication: PreparedScanPublication;
-  python: string;
   stateDirectory: string;
 }
 
@@ -66,16 +73,10 @@ async function publicationFixture(
   const scanDirectory = join(root, "completed-scan");
   await mkdir(scanDirectory, { mode: 0o700 });
   const stateDirectory = join(root, options.stateDirectoryName ?? "state");
-  const python = Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-  if (python === null) {
-    throw new Error(
-      "Publication workbench tests require a Python interpreter.",
-    );
-  }
   const environment = {
     ...process.env,
     CODEX_SECURITY_STATE_DIR: stateDirectory,
-    PYTHON: python,
+    PYTHON: "/unavailable/python",
   };
   const publication: PreparedScanPublication = {
     scanId: SCAN_ID,
@@ -94,10 +95,10 @@ async function publicationFixture(
       priority: 2,
     })),
   };
-  const fixture = { environment, publication, python, stateDirectory };
+  const fixture = { environment, publication, stateDirectory };
   if (options.createDatabase !== false) {
     await mkdir(stateDirectory, { mode: 0o700 });
-    await runWorkbench({ python, pluginRoot: PLUGIN_ROOT, environment }, [
+    await runWorkbench({ pluginRoot: PLUGIN_ROOT, environment }, [
       "database-info",
     ]);
     if (options.seedScan !== false) seedPublicationScan(fixture, publication);
@@ -109,65 +110,81 @@ function seedPublicationScan(
   fixture: PublicationFixture,
   publication: PreparedScanPublication,
 ): void {
-  const workspaceId = randomUUID();
-  const seed = spawnSync(
-    fixture.python,
-    [
-      "-I",
-      "-B",
-      "-c",
-      [
-        "import json, sqlite3, sys",
-        "database, workspace_id, publication = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])",
-        "connection = sqlite3.connect(database)",
-        "connection.execute('PRAGMA foreign_keys = ON')",
-        "timestamp = '2026-08-01T00:00:00Z'",
-        "connection.execute('INSERT INTO workspaces (id, created_at, updated_at) VALUES (?, ?, ?)', (workspace_id, timestamp, timestamp))",
-        "connection.execute('INSERT INTO scans (id, workspace_id, target_path, target_revision, scope, mode, scan_dir, status, phase, started_at, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (publication['scanId'], workspace_id, publication['scanDirectory'], 'example-revision', '.', 'standard', publication['scanDirectory'], 'complete', 'reporting', timestamp, timestamp, timestamp, timestamp))",
-        "for issue in publication['issues']:",
-        "    connection.execute('INSERT INTO findings (id, fingerprint, rule_id, identity_anchor, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING', (issue['findingId'], 'fingerprint-' + issue['findingId'], 'example-rule', issue['findingId'], timestamp, timestamp))",
-        "    connection.execute('INSERT INTO finding_occurrences (id, finding_id, scan_id, title, summary, severity, confidence, remediation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (issue['occurrenceId'], issue['findingId'], publication['scanId'], issue['title'], 'example summary', 'high', 'high', 'example remediation', timestamp))",
-        "connection.commit()",
-        "connection.close()",
-      ].join("\n"),
-      join(fixture.stateDirectory, "workbench.sqlite3"),
-      workspaceId,
-      JSON.stringify(publication),
-    ],
-    { encoding: "utf8" },
+  withWorkbenchDatabase(
+    join(fixture.stateDirectory, "workbench.sqlite3"),
+    (connection) => {
+      connection.exec("PRAGMA foreign_keys = ON");
+      connection.transaction(() => {
+        const workspaceId = randomUUID(),
+          timestamp = "2026-08-01T00:00:00Z";
+        connection
+          .prepare(
+            "INSERT INTO workspaces (id, created_at, updated_at) VALUES (?, ?, ?)",
+          )
+          .run([workspaceId, timestamp, timestamp]);
+        connection
+          .prepare(
+            "INSERT INTO scans (id, workspace_id, target_path, target_revision, scope, mode, scan_dir, status, phase, started_at, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run([
+            publication.scanId,
+            workspaceId,
+            publication.scanDirectory,
+            "example-revision",
+            ".",
+            "standard",
+            publication.scanDirectory,
+            "complete",
+            "reporting",
+            timestamp,
+            timestamp,
+            timestamp,
+            timestamp,
+          ]);
+        for (const issue of publication.issues) {
+          connection
+            .prepare(
+              "INSERT INTO findings (id, fingerprint, rule_id, identity_anchor, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+            )
+            .run([
+              issue.findingId,
+              "fingerprint-" + issue.findingId,
+              "example-rule",
+              issue.findingId,
+              timestamp,
+              timestamp,
+            ]);
+          connection
+            .prepare(
+              "INSERT INTO finding_occurrences (id, finding_id, scan_id, title, summary, severity, confidence, remediation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .run([
+              issue.occurrenceId,
+              issue.findingId,
+              publication.scanId,
+              issue.title,
+              "example summary",
+              "high",
+              "high",
+              "example remediation",
+              timestamp,
+            ]);
+        }
+      });
+    },
   );
-  expect(seed.status, seed.stderr).toBe(0);
 }
 
 function databaseRows(
   fixture: PublicationFixture,
   query: string,
-  values: readonly unknown[] = [],
+  values: readonly Parameter[] = [],
 ): Record<string, unknown>[] {
-  const result = spawnSync(
-    fixture.python,
-    [
-      "-I",
-      "-B",
-      "-c",
-      [
-        "import json, sqlite3, sys",
-        "connection = sqlite3.connect(sys.argv[1])",
-        "connection.row_factory = sqlite3.Row",
-        "cursor = connection.execute(sys.argv[2], json.loads(sys.argv[3]))",
-        "rows = [dict(row) for row in cursor.fetchall()] if cursor.description else []",
-        "connection.commit()",
-        "connection.close()",
-        "print(json.dumps(rows))",
-      ].join("\n"),
-      join(fixture.stateDirectory, "workbench.sqlite3"),
-      query,
-      JSON.stringify(values),
-    ],
-    { encoding: "utf8" },
+  return workbenchRows(
+    join(fixture.stateDirectory, "workbench.sqlite3"),
+    query,
+    values,
   );
-  expect(result.status, result.stderr).toBe(0);
-  return JSON.parse(result.stdout) as Record<string, unknown>[];
 }
 
 function publishedIssue(
@@ -201,42 +218,6 @@ describe("read-only publication history", () => {
         }),
       ).resolves.toEqual([]);
     }
-
-    const check = spawnSync(
-      fixture.python,
-      [
-        "-I",
-        "-B",
-        "-c",
-        [
-          "import sys",
-          "from dataclasses import replace",
-          "from pathlib import PureWindowsPath",
-          "from urllib.parse import unquote, urlsplit",
-          "sys.path.insert(0, sys.argv[1])",
-          "import workbench_db as workbench",
-          "import workbench_publication as publication",
-          "class Captured(Exception): pass",
-          "def capture(filename, **options):",
-          "    parsed = urlsplit(filename)",
-          "    assert parsed.scheme == 'file' and parsed.netloc == ''",
-          "    assert unquote(parsed.path) == str(path)",
-          "    assert parsed.query == 'mode=ro' and options == {'uri': True, 'timeout': 5}",
-          "    raise Captured",
-          "publication.sqlite3.connect = capture",
-          "publication.linear_publication_input = lambda *_args, **_options: ({}, {}, [])",
-          "for value in ['C:/state/history.sqlite3', '//server/share/state/history.sqlite3', '//?/C:/state/history.sqlite3', '//?/UNC/server/share/history.sqlite3']:",
-          "    path = PureWindowsPath(value)",
-          "    context = replace(workbench._WORKBENCH_PUBLICATION_CONTEXT, database_path=lambda path=path: path)",
-          "    try: publication.inspect_linear_publication(context, None)",
-          "    except Captured: pass",
-          "    else: raise AssertionError('SQLite connection was not attempted')",
-        ].join("\n"),
-        join(PLUGIN_ROOT, "scripts"),
-      ],
-      { encoding: "utf8" },
-    );
-    expect(check.status, check.stderr).toBe(0);
   });
 
   test("matches the manifest recorded when the scan completed", async () => {
@@ -325,7 +306,7 @@ describe("read-only publication history", () => {
     }
   });
 
-  test("forwards cancellation to Python discovery and the workbench and cleans up its input", async () => {
+  test("forwards cancellation to the workbench and cleans up its input", async () => {
     const fixture = await publicationFixture();
     const controller = new AbortController();
     const reason = new Error("Synthetic inspection cancellation.");
@@ -334,12 +315,6 @@ describe("read-only publication history", () => {
     const inspecting = new Promise<void>((resolve) => {
       started = resolve;
     });
-    const python = spyOn(runtime, "resolvePluginPython").mockImplementation(
-      async (options) => {
-        expect(options?.signal).toBe(controller.signal);
-        return fixture.python;
-      },
-    );
     const workbench = spyOn(runtime, "runWorkbench").mockImplementation(
       async (options, args) => {
         started();
@@ -369,7 +344,6 @@ describe("read-only publication history", () => {
     } finally {
       controller.abort(reason);
       workbench.mockRestore();
-      python.mockRestore();
     }
   });
 
@@ -432,27 +406,15 @@ describe("read-only publication history", () => {
     const fixture = await publicationFixture({ createDatabase: false });
     await mkdir(fixture.stateDirectory, { mode: 0o700 });
     const database = join(fixture.stateDirectory, "workbench.sqlite3");
-    const setup = spawnSync(
-      fixture.python,
-      [
-        "-I",
-        "-B",
-        "-c",
-        [
-          "import sqlite3, sys",
-          "sys.path.insert(0, sys.argv[1])",
-          "from workbench_schema import MIGRATIONS, apply_migrations",
-          "connection = sqlite3.connect(sys.argv[2])",
-          "connection.row_factory = sqlite3.Row",
-          "apply_migrations(connection, tuple(item for item in MIGRATIONS if item[0] < 8), lambda: '2026-08-01T00:00:00Z', lambda _: None)",
-          "connection.close()",
-        ].join("\n"),
-        join(PLUGIN_ROOT, "scripts"),
-        database,
-      ],
-      { encoding: "utf8" },
-    );
-    expect(setup.status, setup.stderr).toBe(0);
+    withWorkbenchDatabase(database, (connection, native) => {
+      applyMigrations(
+        native,
+        connection,
+        MIGRATIONS.filter(([version]) => version < 8),
+        () => "2026-08-01T00:00:00Z",
+        () => {},
+      );
+    });
     seedPublicationScan(fixture, fixture.publication);
     const before = await readFile(database);
     await expect(
@@ -545,26 +507,25 @@ describe("read-only publication history", () => {
     );
     const database = join(fixture.stateDirectory, "workbench.sqlite3");
     const update = spawnSync(
-      fixture.python,
+      process.execPath,
       [
-        "-I",
-        "-B",
-        "-c",
-        [
-          "import os, sqlite3, sys",
-          "connection = sqlite3.connect(sys.argv[1])",
-          "connection.execute('PRAGMA wal_autocheckpoint = 0')",
-          "connection.execute('UPDATE finding_publications SET external_id = ?, external_url = ?', (sys.argv[2], sys.argv[3]))",
-          "connection.commit()",
-          "os._exit(0)",
-        ].join("\n"),
+        "--eval",
+        `import {withWorkbenchDatabase} from ${JSON.stringify(new URL("./support/workbench-database.ts", import.meta.url).href)};
+withWorkbenchDatabase(process.argv[1], (connection) => {
+  connection.exec('PRAGMA wal_autocheckpoint = 0');
+  connection.transaction(() => connection.prepare('UPDATE finding_publications SET external_id = ?, external_url = ?').run([process.argv[2], process.argv[3]]));
+  // Bypass native finalizers so the committed WAL survives the fixture process.
+  process.kill(process.pid, 'SIGKILL');
+});`,
         database,
         changed.issueIdentifier,
         changed.url!,
       ],
-      { encoding: "utf8" },
+      { encoding: "utf8", env: fixture.environment },
     );
-    expect(update.status, update.stderr).toBe(0);
+    expect(update.error).toBeUndefined();
+    expect(update.stderr).toBe("");
+    expect(update.status).not.toBe(0);
     expect(existsSync(`${database}-wal`)).toBe(true);
     await expect(
       inspectPublicationStore(fixture.publication, fixture.environment),
@@ -586,57 +547,72 @@ describe("persisted finding publication associations", () => {
       [fixture.publication.issues[0]!.occurrenceId],
     );
 
-    const probe = spawnSync(
-      fixture.python,
-      [
-        "-I",
-        "-B",
-        "-c",
-        `import json, sqlite3, sys
-sys.path.insert(0, sys.argv[1])
-import workbench_db as db
-import workbench_schema as schema
-
-connection = sqlite3.connect(sys.argv[2])
-connection.row_factory = sqlite3.Row
-connection.execute("PRAGMA foreign_keys = ON")
-db.apply_migrations(connection)
-before = list(connection.iterdump())
-next_version = max(version for version, _, _ in schema.MIGRATIONS) + 1
-failing = (next_version, "synthetic failing migration", """
+    withWorkbenchDatabase(
+      join(fixture.stateDirectory, "workbench.sqlite3"),
+      (connection, native) => {
+        connection.exec("PRAGMA foreign_keys = ON");
+        const now = () => "2026-08-01T00:00:00Z";
+        const migrate = () =>
+          applyMigrations(native, connection, MIGRATIONS, now, () => {});
+        migrate();
+        const before = workbenchSnapshot(connection);
+        expect(() =>
+          applyMigrations(
+            native,
+            connection,
+            [
+              ...MIGRATIONS,
+              [
+                MIGRATIONS.at(-1)![0] + 1,
+                "synthetic failing migration",
+                `
 CREATE TABLE synthetic_migration_probe (value TEXT);
 INSERT INTO synthetic_migration_probe VALUES ('synthetic');
 DELETE FROM finding_triage;
 INSERT INTO synthetic_missing_table VALUES (1);
-""")
-try:
-    schema.apply_migrations(connection, (*schema.MIGRATIONS, failing), db.now, db.backfill_security_targets)
-except sqlite3.OperationalError as error:
-    assert "synthetic_missing_table" in str(error), error
-else:
-    raise AssertionError("The injected migration must fail")
-assert not connection.in_transaction
-assert list(connection.iterdump()) == before, "Failed migration changed committed data or schema"
-db.apply_migrations(connection)
-db.apply_migrations(connection)
-assert list(connection.iterdump()) == before, "Reapplying migrations changed existing history"
-assert list(connection.execute("PRAGMA foreign_key_check")) == []
-assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-print(json.dumps({table: connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] for table in ("scans", "finding_occurrences", "finding_triage", "finding_publications")}))
-connection.close()
 `,
-        join(PLUGIN_ROOT, "scripts"),
-        join(fixture.stateDirectory, "workbench.sqlite3"),
-      ],
-      { encoding: "utf8", env: fixture.environment },
+              ],
+            ],
+            now,
+            () => {},
+          ),
+        ).toThrow("synthetic_missing_table");
+        expect(connection.inTransaction).toBe(false);
+        expect(workbenchSnapshot(connection)).toEqual(before);
+        migrate();
+        migrate();
+        expect(workbenchSnapshot(connection)).toEqual(before);
+        expect(connection.prepare("PRAGMA foreign_key_check").all()).toEqual(
+          [],
+        );
+        expect(connection.prepare("PRAGMA integrity_check").get()!.get(0)).toBe(
+          "ok",
+        );
+        expect(
+          Object.fromEntries(
+            [
+              "scans",
+              "finding_occurrences",
+              "finding_triage",
+              "finding_publications",
+            ].map((table) => [
+              table,
+              Number(
+                connection
+                  .prepare(`SELECT COUNT(*) FROM ${table}`)
+                  .get()!
+                  .get(0),
+              ),
+            ]),
+          ),
+        ).toEqual({
+          scans: 1,
+          finding_occurrences: 1,
+          finding_triage: 1,
+          finding_publications: 1,
+        });
+      },
     );
-    expect(probe.status, probe.stderr).toBe(0);
-    expect(JSON.parse(probe.stdout)).toEqual({
-      scans: 1,
-      finding_occurrences: 1,
-      finding_triage: 1,
-      finding_publications: 1,
-    });
   });
 
   test("upgrades existing scan history and verifies every completed finding before publication", async () => {

@@ -501,7 +501,6 @@ export class CodexSecurity {
       workflowId,
       this.#dependencies.environment,
       this.#dependencies.runWorkbench,
-      this.config.pythonPath,
     );
     if (options.outputDir !== undefined)
       await workflow.protectArtifacts(options.outputDir);

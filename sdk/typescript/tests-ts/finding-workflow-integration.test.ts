@@ -5,14 +5,20 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import type { JsonObject } from "../src/config.js";
-import { FindingWorkflow } from "../src/finding-workflow.js";
+import {
+  FindingWorkflow,
+  type WorkflowState,
+} from "../src/finding-workflow.js";
 import { publishScanToCustomInternal } from "../src/custom-publish.js";
 import { deduplicateScanInternal } from "../src/deduplication/scan.js";
+import { runWorkbench } from "../src/runtime.js";
+import { MIGRATIONS } from "../../../plugins/codex-security/mcp-app/src/workbench-migrations";
+import { applyMigrations } from "../../../plugins/codex-security/mcp-app/src/workbench-schema";
 import {
-  resolvePluginPython,
-  runCodexCommand,
-  runWorkbench,
-} from "../src/runtime.js";
+  withWorkbenchDatabase,
+  workbenchRows,
+  workbenchSnapshot,
+} from "./support/workbench-database.js";
 import type { Finding, ScanManifest } from "../src/models.js";
 import type { CodexReview } from "../src/deduplication/codex-review.js";
 import { CheckpointedReviewRunner } from "../src/deduplication/checkpointed-review.js";
@@ -38,7 +44,6 @@ async function fixture() {
   const workbenchOptions = {
     environment,
     pluginRoot: PLUGIN_ROOT,
-    python: await resolvePluginPython({ environment }),
   };
   const history = async (args: readonly string[], input?: string) =>
     args[0] === "get-scan"
@@ -56,54 +61,58 @@ async function fixture() {
 
 async function restoreLegacyWorkflow(
   environment: NodeJS.ProcessEnv,
-  state: object,
-  reviews: object[],
+  state: WorkflowState,
+  reviews: { key: string; binding: object; result: unknown }[],
 ) {
-  const probe = await runCodexCommand(
-    { command: await resolvePluginPython({ environment }) },
-    [
-      "-I",
-      "-B",
-      "-c",
-      `import json, sqlite3, sys
-sys.path.insert(0, sys.argv[1])
-from workbench_schema import MIGRATIONS, apply_migrations, sql_statements
-db = sqlite3.connect(sys.argv[2])
-db.row_factory = sqlite3.Row
-db.execute("PRAGMA foreign_keys = ON")
-payload = json.load(sys.stdin)
-state = payload["state"]
-timestamp = "2026-08-01T00:00:00Z"
-with db:
-    db.execute("DROP TABLE finding_workflow_reviews")
-    db.execute("DROP TABLE finding_workflows")
-    db.execute("DELETE FROM schema_migrations WHERE version IN (38, 39)")
-    for version, _, sql in MIGRATIONS:
-        if version in (36, 37):
-            for statement in sql_statements(sql):
-                db.execute(statement)
-    db.execute("INSERT INTO finding_workflows VALUES (?, ?, ?, ?)",
-               (state["id"], json.dumps(state), timestamp, timestamp))
-    for review in payload["reviews"]:
-        db.execute("INSERT INTO finding_workflow_reviews VALUES (?, ?, ?, ?, ?)",
-                   (state["id"], review["key"], json.dumps(review["binding"]), json.dumps(review["result"]), timestamp))
-before = list(db.iterdump())
-try:
-    apply_migrations(db, (*MIGRATIONS, (999, "synthetic failure", "INSERT INTO synthetic_missing_table VALUES (1);")), lambda: timestamp, lambda _: None)
-except sqlite3.OperationalError:
-    pass
-else:
-    raise AssertionError("Migration should fail")
-assert not db.in_transaction
-assert list(db.iterdump()) == before, "Failed migration must preserve workflow and review rows together"
-db.close()`,
-      join(PLUGIN_ROOT, "scripts"),
-      join(environment["CODEX_SECURITY_STATE_DIR"]!, "workbench.sqlite3"),
-    ],
-    environment,
-    JSON.stringify({ state, reviews }),
+  withWorkbenchDatabase(
+    join(environment["CODEX_SECURITY_STATE_DIR"]!, "workbench.sqlite3"),
+    (db, native) => {
+      db.exec("PRAGMA foreign_keys=ON");
+      const timestamp = "2026-08-01T00:00:00Z";
+      db.transaction(() => {
+        db.exec(
+          "BEGIN; DROP TABLE finding_workflow_reviews; DROP TABLE finding_workflows; DELETE FROM schema_migrations WHERE version IN (38, 39)",
+        );
+        for (const [version, , sql] of MIGRATIONS)
+          if (version === 36 || version === 37) db.exec(sql);
+        db.prepare("INSERT INTO finding_workflows VALUES (?, ?, ?, ?)").run([
+          state.id,
+          JSON.stringify(state),
+          timestamp,
+          timestamp,
+        ]);
+        for (const review of reviews)
+          db.prepare(
+            "INSERT INTO finding_workflow_reviews VALUES (?, ?, ?, ?, ?)",
+          ).run([
+            state.id,
+            review.key,
+            JSON.stringify(review.binding),
+            JSON.stringify(review.result),
+            timestamp,
+          ]);
+      });
+      const before = workbenchSnapshot(db);
+      expect(() =>
+        applyMigrations(
+          native,
+          db,
+          [
+            ...MIGRATIONS,
+            [
+              999,
+              "synthetic failure",
+              "INSERT INTO synthetic_missing_table VALUES (1);",
+            ],
+          ],
+          () => timestamp,
+          () => {},
+        ),
+      ).toThrow("synthetic_missing_table");
+      expect(db.inTransaction).toBe(false);
+      expect(workbenchSnapshot(db)).toEqual(before);
+    },
   );
-  expect(probe.exitCode, probe.stderr).toBe(0);
 }
 
 test("scan registration commits its workflow identity atomically and rolls back failed registration", async () => {
@@ -498,7 +507,7 @@ test("replays an unacknowledged group write after migrating its workflow databas
     findingsUrl: "http://synthetic.test",
   };
   const bodies: string[] = [];
-  const checkpoints: object[] = [];
+  const checkpoints: { key: string; binding: object; result: unknown }[] = [];
   let modelCalls = 0;
   const reviewRunner = {
     async run<T>(review: CodexReview<T>): Promise<T> {
@@ -572,26 +581,19 @@ test("replays an unacknowledged group write after migrating its workflow databas
 test.each(["current", "legacy", "workflow-columns"])(
   "persists DISTINCT and complete SAME checkpoints across %s databases",
   async (version) => {
-    const { environment, repository, document, workbenchOptions } =
-      await fixture();
+    const { environment, repository, document } = await fixture();
     const workflow = new FindingWorkflow("all-decisions", environment);
     await workflow.bind({});
     if (version === "workflow-columns") {
-      const probe = await runCodexCommand(
-        { command: workbenchOptions.python },
-        [
-          "-I",
-          "-B",
-          "-c",
-          `import sqlite3, sys
-with sqlite3.connect(sys.argv[1]) as db:
-    db.execute("DROP TABLE finding_workflow_reviews")
-    db.execute("DELETE FROM schema_migrations WHERE version IN (37, 39)")`,
-          join(environment.CODEX_SECURITY_STATE_DIR, "workbench.sqlite3"),
-        ],
-        environment,
+      withWorkbenchDatabase(
+        join(environment.CODEX_SECURITY_STATE_DIR, "workbench.sqlite3"),
+        (db) =>
+          db.transaction(() => {
+            db.exec(
+              "BEGIN; DROP TABLE finding_workflow_reviews; DELETE FROM schema_migrations WHERE version IN (37, 39)",
+            );
+          }),
       );
-      expect(probe.exitCode, probe.stderr).toBe(0);
     }
     const originals = [
       document.findings[0]!,
@@ -650,30 +652,27 @@ with sqlite3.connect(sys.argv[1]) as db:
     expect(pair).toEqual(merged(originals));
     expect(calls).toBe(2);
     expect(checkpoints).toHaveLength(2);
-    const probe = await runCodexCommand(
-      { command: workbenchOptions.python },
-      [
-        "-I",
-        "-B",
-        "-c",
-        `import json, sqlite3, sys
-db = sqlite3.connect(sys.argv[1])
-db.row_factory = sqlite3.Row
-assert "binding_json" not in {row["name"] for row in db.execute("PRAGMA table_info(finding_workflow_reviews)")}
-assert list(db.execute("PRAGMA foreign_key_check")) == []
-assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-print(json.dumps([dict(row) for row in db.execute("SELECT * FROM finding_workflow_reviews ORDER BY review_key")]))`,
-        join(environment.CODEX_SECURITY_STATE_DIR, "workbench.sqlite3"),
-      ],
-      environment,
+    const database = join(
+      environment.CODEX_SECURITY_STATE_DIR,
+      "workbench.sqlite3",
     );
-    expect(probe.exitCode, probe.stderr).toBe(0);
-    const rows = JSON.parse(probe.stdout);
+    expect(
+      workbenchRows(
+        database,
+        "PRAGMA table_info(finding_workflow_reviews)",
+      ).map((row) => row["name"]),
+    ).not.toContain("binding_json");
+    expect(workbenchRows(database, "PRAGMA foreign_key_check")).toEqual([]);
+    expect(workbenchRows(database, "PRAGMA integrity_check")).toEqual([
+      { integrity_check: "ok" },
+    ]);
+    const rows = workbenchRows(
+      database,
+      "SELECT * FROM finding_workflow_reviews ORDER BY review_key",
+    );
     for (const { key, binding, result } of checkpoints) {
       const source = binding["source"] as JsonObject;
-      const row = rows.find(
-        (row: { review_key: string }) => row.review_key === key,
-      );
+      const row = rows.find((row) => row["review_key"] === key);
       expect(row).toMatchObject({
         workflow_id: workflow.id,
         review_contract_version: binding["version"],
@@ -691,8 +690,8 @@ print(json.dumps([dict(row) for row in db.execute("SELECT * FROM finding_workflo
         contract_digest: binding["contractDigest"],
       });
       if (version === "legacy")
-        expect(row.created_at).toBe("2026-08-01T00:00:00Z");
-      expect(JSON.parse(row.result_json)).toEqual(result);
+        expect(row?.["created_at"]).toBe("2026-08-01T00:00:00Z");
+      expect(JSON.parse(row?.["result_json"] as string)).toEqual(result);
     }
   },
 );

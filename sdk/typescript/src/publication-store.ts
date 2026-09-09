@@ -8,7 +8,6 @@ import {
   bundledPluginRoot,
   codexSecurityStateDirectory,
   requireOutputOutsideRepository,
-  resolvePluginPython,
   runWorkbench,
 } from "./runtime.js";
 
@@ -142,14 +141,7 @@ async function runPublicationWorkbench(
       { cause: error },
     );
   }
-  const [python, pluginRoot] = await Promise.all([
-    resolvePluginPython({
-      environment,
-      protectedRoot: publication.scanDirectory,
-      ...(signal === undefined ? {} : { signal }),
-    }),
-    bundledPluginRoot(),
-  ]);
+  const pluginRoot = await bundledPluginRoot();
   signal?.throwIfAborted();
   const findings = (publication.sourceFindings ?? publication.issues).map(
     ({ findingId, occurrenceId }) => ({
@@ -179,7 +171,6 @@ async function runPublicationWorkbench(
     );
     return await runWorkbench(
       {
-        python,
         pluginRoot,
         environment,
         ...(signal === undefined ? {} : { signal }),

@@ -7,7 +7,6 @@ import {
   bundledPluginRoot,
   canonicalizeModelSafePath,
   codexSecurityStateDirectory,
-  resolvePluginPython,
   runWorkbench,
   type WorkbenchCommandOptions,
 } from "./runtime.js";
@@ -56,13 +55,12 @@ export function workflowDestination(url: string): string {
 
 /** State lives in the workbench database, never in sealed scan artifacts. */
 export class FindingWorkflow {
-  private options?: Promise<WorkbenchCommandOptions>;
+  private options?: Promise<Omit<WorkbenchCommandOptions, "python">>;
 
   constructor(
     readonly id: string,
     private readonly environment: NodeJS.ProcessEnv = process.env,
     private readonly workbench: typeof runWorkbench = runWorkbench,
-    private readonly pythonPath?: string,
   ) {
     if (!id.trim())
       throw new CodexSecurityError("workflowId must be a nonempty string.");
@@ -179,10 +177,6 @@ export class FindingWorkflow {
   ): Promise<JsonObject> {
     this.options ??= (async () => ({
       pluginRoot: await bundledPluginRoot(),
-      python: await resolvePluginPython({
-        environment: this.environment,
-        configuredPath: this.pythonPath,
-      }),
       environment: {
         ...this.environment,
         CODEX_SECURITY_STATE_DIR: codexSecurityStateDirectory(this.environment),

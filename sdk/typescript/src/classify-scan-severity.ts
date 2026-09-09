@@ -13,7 +13,6 @@ import type { Finding } from "./models.js";
 import {
   bundledPluginRoot,
   codexSecurityStateDirectory,
-  resolvePluginPython,
   runWorkbench,
 } from "./runtime.js";
 import {
@@ -66,9 +65,6 @@ export async function classifyScanSeverityInternal(
           {
             environment: stateEnvironment,
             pluginRoot,
-            python: await resolvePluginPython({
-              environment: stateEnvironment,
-            }),
             signal: options.signal,
             failureMessage: "Could not read Codex Security scan history",
           },

@@ -26,6 +26,7 @@ export async function workflowFixture() {
     if (process.platform !== "win32") await chmod(scanDir, 0o700);
     const environment = {
       PATH: process.env["PATH"],
+      PYTHON: "/unavailable/python",
       SystemRoot: process.env["SystemRoot"],
       TEMP: process.env["TEMP"],
       TMP: process.env["TMP"],

@@ -13,14 +13,13 @@ import {
   canonicalizeModelSafePath,
   codexSecurityStateDirectory,
   requireOutputOutsideRepository,
-  resolvePluginPython,
   runWorkbench,
   type WorkbenchCommandOptions,
 } from "./runtime.js";
 
 /** @internal */
 export class SeverityStore {
-  private options?: Promise<WorkbenchCommandOptions>;
+  private options?: Promise<Omit<WorkbenchCommandOptions, "python">>;
 
   constructor(
     private readonly environment: NodeJS.ProcessEnv,
@@ -111,7 +110,9 @@ export class SeverityStore {
     );
   }
 
-  private async resolveOptions(): Promise<WorkbenchCommandOptions> {
+  private async resolveOptions(): Promise<
+    Omit<WorkbenchCommandOptions, "python">
+  > {
     const environment = {
       ...this.environment,
       CODEX_SECURITY_STATE_DIR: codexSecurityStateDirectory(this.environment),
@@ -121,16 +122,8 @@ export class SeverityStore {
       await canonicalizeModelSafePath(environment.CODEX_SECURITY_STATE_DIR),
       "runtime",
     );
-    const [python, pluginRoot] = await Promise.all([
-      resolvePluginPython({
-        environment,
-        protectedRoot: this.scanDirectory,
-        signal: this.signal,
-      }),
-      bundledPluginRoot(),
-    ]);
+    const pluginRoot = await bundledPluginRoot();
     return {
-      python,
       pluginRoot,
       environment,
       signal: this.signal,

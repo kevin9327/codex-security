@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -26,7 +25,7 @@ import type { JsonObject } from "../src/config.js";
 import type { Finding, FindingsDocument, ScanManifest } from "../src/models.js";
 import { prepareScanPublication } from "../src/publication.js";
 import { publishScanInternal } from "../src/publish.js";
-import { resolvePluginPython } from "../src/runtime.js";
+import { workbenchRows } from "./support/workbench-database.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 
 const directories: string[] = [];
@@ -91,6 +90,7 @@ async function fixture() {
     root,
     environment: {
       ...process.env,
+      PYTHON: "/unavailable/python",
       CODEX_SECURITY_STATE_DIR: join(root, "state"),
     },
     scanDirectory,
@@ -124,18 +124,10 @@ function classifier(
 }
 
 async function query(environment: NodeJS.ProcessEnv, sql: string) {
-  const result = spawnSync(
-    await resolvePluginPython({ environment }),
-    [
-      "-c",
-      "import json,sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.row_factory=sqlite3.Row; print(json.dumps([dict(r) for r in c.execute(sys.argv[2]) ])); c.commit()",
-      join(environment["CODEX_SECURITY_STATE_DIR"]!, "workbench.sqlite3"),
-      sql,
-    ],
-    { encoding: "utf8", env: environment },
+  return workbenchRows(
+    join(environment["CODEX_SECURITY_STATE_DIR"]!, "workbench.sqlite3"),
+    sql,
   );
-  expect(result.status, result.stderr).toBe(0);
-  return JSON.parse(result.stdout) as Record<string, unknown>[];
 }
 
 function recordingClassifier() {
