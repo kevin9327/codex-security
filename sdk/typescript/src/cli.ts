@@ -65,6 +65,7 @@ import {
 } from "./api.js";
 import { accountStatus } from "./auth.js";
 import { publishScanToCustom } from "./custom-publish.js";
+import { DEFAULT_DEDUPE_CONCURRENCY } from "./deduplication/deduplication.js";
 import { deduplicateScanInternal } from "./deduplication/scan.js";
 import {
   classifyScanSeverityInternal,
@@ -264,6 +265,7 @@ const EXPORT_DEFAULT_OUTPUTS = {
 const VALUE_OPTIONS = new Set([
   "--port",
   "--workflow-id",
+  "--concurrency",
   "--auth",
   "--safety-identifier",
   "--path",
@@ -3557,6 +3559,14 @@ export async function main(
       destructive: true,
       mcp: false,
       options: z.object({
+        concurrency: z
+          .number()
+          .int()
+          .positive()
+          .default(DEFAULT_DEDUPE_CONCURRENCY)
+          .describe(
+            "Maximum concurrent dedupe jobs per phase; use 1 for serial execution.",
+          ),
         workflowId: optionValue("--workflow-id")
           .optional()
           .describe(
@@ -3609,6 +3619,7 @@ export async function main(
             scanId,
             {
               findingsUrl: options.findingsUrl,
+              concurrency: options.concurrency,
               ...(options.workflowId === undefined
                 ? {}
                 : { workflowId: options.workflowId }),

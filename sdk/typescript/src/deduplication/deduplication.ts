@@ -1,10 +1,53 @@
 import type { Finding } from "../models.js";
 import type { FindingNeighborhood } from "../finding-retrieval.js";
+import { CodexSecurityError } from "../errors.js";
 import {
   pairKey,
   screeningPairSlot,
   type DeduplicationReviewer,
 } from "./deduplication-reviewer.js";
+
+export const DEFAULT_DEDUPE_CONCURRENCY = 8;
+
+export function deduplicationConcurrency(
+  concurrency = DEFAULT_DEDUPE_CONCURRENCY,
+): number {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1)
+    throw new CodexSecurityError(
+      "concurrency must be a positive safe integer.",
+    );
+  return concurrency;
+}
+
+async function mapConcurrent<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  operation: (item: T) => Promise<R>,
+  signal?: AbortSignal,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  let failure: { error: unknown } | undefined;
+  async function worker(): Promise<void> {
+    while (failure === undefined) {
+      try {
+        signal?.throwIfAborted();
+        const index = next++;
+        if (index >= items.length) return;
+        results[index] = await operation(items[index]!);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+  }
+  // Drain started jobs so successful reviews can finish saving their checkpoints.
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, worker),
+  );
+  signal?.throwIfAborted();
+  if (failure !== undefined) throw failure.error;
+  return results;
+}
 
 export interface DeduplicationResult {
   uniqueFindingIds: string[];
@@ -179,22 +222,37 @@ export class FindingDeduplicator {
     },
     private readonly reviewer: DeduplicationReviewer,
     private readonly signal?: AbortSignal,
+    private readonly concurrency = DEFAULT_DEDUPE_CONCURRENCY,
   ) {}
 
   async run(findingIds: readonly string[]): Promise<DeduplicationResult> {
     this.signal?.throwIfAborted();
+    const concurrency = deduplicationConcurrency(this.concurrency);
     const ids = [...new Set(findingIds)];
     const findings = new Map<string, Finding>();
     const nominated = new Map<string, [string, string]>();
     const rejected = new Map<string, [string, string]>();
-    for (const id of ids) {
+    const screenings = await mapConcurrent(
+      ids,
+      concurrency,
+      async (id) => {
+        const result = await this.candidates.potentialDuplicates(id);
+        this.signal?.throwIfAborted();
+        const neighborhood = [result.finding, ...result.potentialDuplicates];
+        const screening =
+          neighborhood.length < 2
+            ? undefined
+            : await this.reviewer.screen(neighborhood);
+        return { neighborhood, screening };
+      },
+      this.signal,
+    );
+    // Reduce in input order: completion order must not change grouping ties.
+    for (const { neighborhood, screening } of screenings) {
       this.signal?.throwIfAborted();
-      const result = await this.candidates.potentialDuplicates(id);
-      const neighborhood = [result.finding, ...result.potentialDuplicates];
       for (const finding of neighborhood)
         findings.set(finding.findingId, finding);
-      if (neighborhood.length < 2) continue;
-      const screening = await this.reviewer.screen(neighborhood);
+      if (screening === undefined) continue;
       for (let index = 0; index < neighborhood.length - 1; index++) {
         const decision = screening.decisions[screeningPairSlot(index)]!;
         const pair: [string, string] = [
@@ -212,10 +270,18 @@ export class FindingDeduplicator {
     }
 
     const supported: [string, string][] = [];
-    for (const pair of nominated.values()) {
+    const pairs = [...nominated.values()];
+    const decisions = await mapConcurrent(
+      pairs,
+      concurrency,
+      async (pair) =>
+        (await this.reviewer.reviewPair(pair.map((id) => findings.get(id)!)))
+          .decision,
+      this.signal,
+    );
+    for (const [index, pair] of pairs.entries()) {
       this.signal?.throwIfAborted();
-      const originals = pair.map((id) => findings.get(id)!);
-      if ((await this.reviewer.reviewPair(originals)).decision === "SAME") {
+      if (decisions[index] === "SAME") {
         supported.push(pair);
       } else {
         rejected.set(pairKey(pair), pair);

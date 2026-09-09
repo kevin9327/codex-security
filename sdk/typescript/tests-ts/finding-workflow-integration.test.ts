@@ -391,6 +391,7 @@ test.each(["screen", "pair"])(
     const options = {
       workflowId: `reviews-${interruptAt}`,
       findingsUrl: "http://synthetic.test",
+      concurrency: 1,
     };
     const calls: string[] = [];
     let interrupted = false;
@@ -487,6 +488,178 @@ test.each(["screen", "pair"])(
   },
 );
 
+test.each(["screening", "pair-review"] as const)(
+  "drains concurrent %s checkpoints after failure and resumes with different concurrency",
+  async (failedStage) => {
+    const { scanDir, environment, document, history } = await fixture();
+    const manifestPath = join(scanDir, "scan-manifest.json");
+    const manifest = JSON.parse(
+      await readFile(manifestPath, "utf8"),
+    ) as ScanManifest;
+    const digest = (value: string) =>
+      createHash("sha256").update(value).digest("hex");
+    document.findings = Array.from({ length: 4 }, (_value, index) => {
+      const finding = structuredClone(document.findings[0]!);
+      finding.identity.instance = `concurrent-${index}`;
+      const fingerprint = `codex-security/v1:sha256:${digest(
+        [
+          "codex-security/v1",
+          manifest.scan.target.targetId,
+          finding.ruleId,
+          finding.identity.anchor,
+          finding.identity.instance,
+        ].join("\0"),
+      )}`;
+      return {
+        ...finding,
+        findingId: `csf_${digest(fingerprint).slice(0, 24)}`,
+        occurrenceId: `occ_${digest([document.scanId, fingerprint].join("\0")).slice(0, 24)}`,
+        fingerprints: { ...finding.fingerprints, primary: fingerprint },
+        title: `Synthetic concurrent finding ${index}`,
+      };
+    });
+    const content = JSON.stringify(document);
+    await writeFile(join(scanDir, "findings.json"), content);
+    manifest.scan.artifacts!.find(
+      (artifact) => artifact.path === "findings.json",
+    )!.sha256 = createHash("sha256").update(content).digest("hex");
+    await writeFile(manifestPath, JSON.stringify(manifest));
+
+    const options = {
+      workflowId: `concurrent-${failedStage}`,
+      findingsUrl: "http://synthetic.test",
+      concurrency: 2,
+    };
+    const started = Promise.withResolvers<void>();
+    const failed = Promise.withResolvers<void>();
+    const sibling = Promise.withResolvers<void>();
+    const attempts = new Map<string, number>();
+    const events: string[] = [];
+    const interruptedKeys: string[] = [];
+    let interrupt = true;
+    let groupWrites = 0;
+    const reviewRunner = {
+      async run<T>(review: CodexReview<T>): Promise<T> {
+        const originals = JSON.parse(
+          review.prompt.slice(review.prompt.lastIndexOf("\n\n") + 2),
+        ).findings as Finding[];
+        const key = `${review.stage}:${originals.map((finding) => finding.findingId).join(",")}`;
+        attempts.set(key, (attempts.get(key) ?? 0) + 1);
+        if (interrupt && review.stage === failedStage) {
+          interruptedKeys.push(key);
+          if (interruptedKeys.length === 1) await failed.promise;
+          else if (interruptedKeys.length === 2) {
+            started.resolve();
+            await sibling.promise;
+          }
+        }
+        return review.validate(
+          review.stage === "screening"
+            ? {
+                decisions: Object.fromEntries(
+                  originals
+                    .slice(1)
+                    .map((_finding, index) => [
+                      screeningPairSlot(index),
+                      { ...sameRecommendation },
+                    ]),
+                ),
+              }
+            : merged(originals),
+        );
+      },
+    };
+    const dependencies = {
+      environment,
+      reviewRunner,
+      runWorkbench: async (args: readonly string[], input?: string) => {
+        const payload = input ? JSON.parse(input) : {};
+        if (payload.action === "fail") events.push("workflow-failed");
+        const response = await history(args, input);
+        if (
+          payload.action === "save-review" &&
+          payload.binding.stage === failedStage
+        )
+          events.push("checkpoint-saved");
+        return response;
+      },
+      fetch: async (url: URL) => {
+        if (url.pathname.endsWith("/bulk/findings"))
+          return Response.json(
+            document.findings.map((finding) => finding.findingId),
+          );
+        if (url.pathname.endsWith("/dedupe-groups")) {
+          groupWrites++;
+          return Response.json([]);
+        }
+        const id = decodeURIComponent(url.pathname.split("/").at(-2)!);
+        return Response.json({
+          finding: document.findings.find(
+            (finding) => finding.findingId === id,
+          ),
+          potentialDuplicates: document.findings.filter(
+            (finding) => finding.findingId !== id,
+          ),
+        });
+      },
+    };
+    const failure = new Error("Synthetic concurrent failure");
+    const first = deduplicateScanInternal(
+      document.scanId,
+      options,
+      dependencies,
+    ).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    try {
+      await Promise.race([
+        started.promise,
+        first.then((error) => {
+          throw error ?? new Error("Dedupe completed before reviews started");
+        }),
+      ]);
+      events.push("model-failed");
+      failed.reject(failure);
+      await new FindingWorkflow(options.workflowId, environment).get();
+    } finally {
+      sibling.resolve();
+    }
+    expect(await first).toBe(failure);
+    expect(interruptedKeys).toHaveLength(2);
+    expect(events).toEqual([
+      "model-failed",
+      "checkpoint-saved",
+      "workflow-failed",
+    ]);
+    expect(groupWrites).toBe(0);
+    expect(
+      (await new FindingWorkflow(options.workflowId, environment).get())?.stages
+        .dedupe,
+    ).toMatchObject({ status: "failed" });
+
+    interrupt = false;
+    const result = await deduplicateScanInternal(
+      document.scanId,
+      { ...options, concurrency: 1 },
+      dependencies,
+    );
+    expect(result.duplicateGroups).toEqual([
+      document.findings.map((finding) => finding.findingId).sort(),
+    ]);
+    expect(groupWrites).toBe(1);
+    expect(attempts.get(interruptedKeys[0]!)).toBe(2);
+    expect(attempts.get(interruptedKeys[1]!)).toBe(1);
+    expect(attempts.size).toBe(10);
+    for (const [key, count] of attempts)
+      expect(count).toBe(key === interruptedKeys[0] ? 2 : 1);
+    expect(
+      (await new FindingWorkflow(options.workflowId, environment).get())?.stages
+        .dedupe,
+    ).toEqual({ status: "completed", result });
+  },
+);
+
 test("replays an unacknowledged group write after migrating its workflow database", async () => {
   const { environment, document, history } = await fixture();
   const originals = [
@@ -530,9 +703,9 @@ test("replays an unacknowledged group write after migrating its workflow databas
     });
     expect(saved.pendingWrite).toEqual(JSON.parse(init.body as string));
     bodies.push(init.body as string);
-    return bodies.length === 1
-      ? new Response("incomplete acknowledgement", { status: 201 })
-      : Response.json([]);
+    if (bodies.length === 1)
+      throw new Error("Synthetic interrupted acknowledgement");
+    return Response.json([]);
   };
   await expect(
     deduplicateScanInternal(document.scanId, options, {

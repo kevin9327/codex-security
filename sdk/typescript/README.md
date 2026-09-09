@@ -1548,14 +1548,27 @@ change scan artifacts.
 codex-security dedupe --scan SCAN_ID --findings-url http://127.0.0.1:3000 --json
 ```
 
+Deduplication runs up to 8 jobs concurrently by default. Set `--concurrency N`
+to choose a positive integer, or `--concurrency 1` for serial execution. The SDK
+equivalent is `concurrency: N`. Each available worker takes the next queued job
+as soon as its current job finishes; it does not wait for a batch to finish.
+First, workers retrieve and screen finding neighborhoods with Luna. After all
+screenings finish, workers review the nominated pairs with Sol. Results are
+combined in input order so completion timing does not change the groups.
+
+If a job fails after its retries, queued jobs stop and already running jobs
+finish before the command reports the failure. No groups are posted from an
+incomplete review phase. To retain completed reviews across runs, use a
+`--workflow-id` as described below.
+
 The default scope is the saved scan's repository, identified by
 `scan.target.targetId` in its manifest. Add `--all-repositories` to search the
 entire stored corpus explicitly; the flag defaults to false. The SDK has the
 equivalent optional `allRepositories: true` setting. This narrows the previous
 preview's implicit all-repository behavior.
 
-Both `--scan` and `--findings-url` are required, with no implicit scan or service
-URL. As with `publish scan --scan`, the selector accepts a full ID, unique
+Provide `--findings-url` and either `--scan` or `--workflow-id`, with no implicit
+scan or service URL. As with `publish scan --scan`, the scan selector accepts a full ID, unique
 prefix, or `latest` for the current repository. The saved scan must be complete
 and its sealed artifacts must be available.
 
@@ -1564,6 +1577,7 @@ import { deduplicateScan } from "@openai/codex-security";
 
 const result = await deduplicateScan("scan_example_001", {
   findingsUrl: "http://127.0.0.1:3000",
+  // concurrency: 8, // Maximum concurrent jobs per review phase; use 1 for serial.
   // allRepositories: true, // Omit to search only this scan's repository.
   // signal: controller.signal,
 });
@@ -1579,6 +1593,7 @@ import { deduplicateScanDirectory } from "@openai/codex-security";
 const result = await deduplicateScanDirectory("/path/to/completed-scan", {
   repository: "/path/to/repository",
   findingsUrl: "http://127.0.0.1:3000",
+  // concurrency: 8,
   // expectedScanId: "scan_example_001",
   // allRepositories: true,
   // signal: controller.signal,
@@ -1661,8 +1676,9 @@ scan. Existing output-directory and archive safeguards still apply to scan retri
 
 Publication and dedupe can use the workflow ID in place of `--scan`; an explicit
 scan selector must identify that same scan. A workflow can also begin at custom
-publication of a completed scan. Dedupe still requires local scan history to locate
-the approved source checkout. For a workflow, dedupe first completes publication
+publication of a completed scan. The CLI and `deduplicateScan` require local scan
+history to locate the approved source checkout; `deduplicateScanDirectory` uses
+the supplied repository. For a workflow, dedupe first completes publication
 if its receipt is missing. `--all-repositories` retains its existing default of
 false. Changing a workflow's scan, destination, or bound scope is an error: choose
 a different workflow ID. Use one coordinating process per workflow.
@@ -1682,6 +1698,12 @@ A completed `dedupe --workflow-id` returns its saved result without repeating
 reviews or group writes. A publication whose acknowledgement was lost is retried
 using the service's existing idempotent upsert.
 
+Concurrent jobs save their validated reviews independently. Resuming with the
+same workflow ID reuses completed reviews and retries unfinished jobs. The
+concurrency setting is not part of a review's checkpoint identity, so it is safe
+to change `--concurrency` when resuming. Cancellation stops active reviews and
+leaves their completed checkpoints available for the next run.
+
 Each validated screening and pair review is checkpointed locally,
 including DISTINCT decisions. Screening checkpoints retain pair recommendations
 and rationales under host-assigned pair slots bound to the original records.
@@ -1691,8 +1713,17 @@ must satisfy the Finding schema and preserve the canonical finding ID. Validatio
 still happens through `review_validator.submit_decisions`; invalid submissions
 are corrected in the same review conversation. A completed turn without an
 accepted submission receives one corrective turn in that same conversation.
-Transport, model, cancellation, and accepted `submit_error` failures are terminal.
-Invalid or unfinished reviews are not cached.
+If formatting remains invalid, the job retries in a fresh review session.
+Explicit transient Codex failures and unexpected process exits also retry, with
+at most three fresh sessions per review. Transient findings-service failures, including
+rate limits and network errors, receive up to three request attempts. Retries use
+exponential backoff with jitter; HTTP retries honor `Retry-After`. Waiting to retry
+occupies the job's concurrency slot.
+
+Cancellation, authentication or configuration errors, permanent HTTP errors, and
+required-source-access blockers are not retried. Exhausted retries fail the phase;
+invalid or unfinished reviews are not cached. Completed checkpoints remain
+available when the workflow resumes.
 
 Checkpoints bind to the exact original records and ordering, approved source path,
 Git revision and current file contents (including ignored files), repository scope,

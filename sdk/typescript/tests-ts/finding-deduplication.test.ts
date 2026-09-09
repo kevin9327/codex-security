@@ -101,6 +101,149 @@ function screening(
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+test.each(["screening", "pair-review"])(
+  "%s fills each free slot immediately and preserves serial grouping",
+  async (stage) => {
+    const entries = [entry(1), entry(2), entry(3), entry(4)];
+    const neighbor = entry(5);
+    const ids = entries.map((finding) => finding.findingId);
+    const nominations = new Set(
+      ids.map((id) => pairKey([id, neighbor.findingId])),
+    );
+    const candidates = {
+      async potentialDuplicates(id: string) {
+        return {
+          finding: entries[ids.indexOf(id)]!,
+          potentialDuplicates: [neighbor],
+        };
+      },
+    };
+    const gates = entries.map(() => deferred<void>());
+    const started = entries.map(() => deferred<void>());
+    const starts: number[] = [];
+    const phases: string[] = [];
+    let active = 0;
+    let peak = 0;
+    const hold = async (findings: readonly Finding[]) => {
+      const index = ids.indexOf(findings[0]!.findingId);
+      starts.push(index);
+      peak = Math.max(peak, ++active);
+      started[index]!.resolve();
+      await gates[index]!.promise;
+      active--;
+    };
+    const reviewer: DeduplicationReviewer = {
+      async screen(findings) {
+        phases.push("screening");
+        if (stage === "screening") await hold(findings);
+        return screening(findings, nominations);
+      },
+      async reviewPair(findings) {
+        phases.push("pair-review");
+        if (stage === "pair-review") await hold(findings);
+        return same(findings);
+      },
+    };
+    const result = new FindingDeduplicator(
+      candidates,
+      reviewer,
+      undefined,
+      2,
+    ).run(ids);
+    await Promise.all([started[0]!.promise, started[1]!.promise]);
+    expect(starts).toEqual([0, 1]);
+    gates[1]!.resolve();
+    await started[2]!.promise;
+    expect(starts).toEqual([0, 1, 2]);
+    gates[2]!.resolve();
+    await started[3]!.promise;
+    gates[3]!.resolve();
+    gates[0]!.resolve();
+    const parallel = await result;
+    expect(peak).toBe(2);
+    expect(phases).toEqual([
+      ...entries.map(() => "screening"),
+      ...entries.map(() => "pair-review"),
+    ]);
+    expect(parallel).toEqual(
+      await new FindingDeduplicator(candidates, reviewer, undefined, 1).run(
+        ids,
+      ),
+    );
+  },
+);
+
+test("terminal failure drains started reviews without starting queued jobs", async () => {
+  const entries = [entry(1), entry(2), entry(3)];
+  const gates = entries.map(() => deferred<void>());
+  const started = entries.map(() => deferred<void>());
+  const calls: string[] = [];
+  const failure = new Error("Synthetic review failure");
+  const result = new FindingDeduplicator(
+    candidates(entries),
+    {
+      async screen(findings) {
+        const index = entries.findIndex(
+          (entry) => entry.findingId === findings[0]!.findingId,
+        );
+        calls.push(findings[0]!.findingId);
+        started[index]!.resolve();
+        await gates[index]!.promise;
+        return screening(findings, new Set());
+      },
+      async reviewPair() {
+        throw new Error("Pair review must not start after screening failure");
+      },
+    },
+    undefined,
+    2,
+  ).run(entries.map((entry) => entry.findingId));
+  let settled = false;
+  const observed = result.catch((error: unknown) => {
+    settled = true;
+    return error;
+  });
+  await Promise.all([started[0]!.promise, started[1]!.promise]);
+  gates[0]!.reject(failure);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  gates[1]!.resolve();
+  expect(await observed).toBe(failure);
+  expect(calls).toEqual(entries.slice(0, 2).map((entry) => entry.findingId));
+});
+
+test("SDK rejects invalid concurrency before reading scan artifacts or history", async () => {
+  for (const concurrency of [
+    0,
+    -1,
+    1.5,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    const options = { findingsUrl: "http://synthetic.test", concurrency };
+    await expect(deduplicateScanInternal("synthetic", options)).rejects.toThrow(
+      "concurrency must be a positive safe integer",
+    );
+    await expect(
+      deduplicateScanDirectoryInternal("unused", {
+        ...options,
+        repository: "unused",
+      }),
+    ).rejects.toThrow("concurrency must be a positive safe integer");
+  }
+});
+
 test("reviews nominated pairs once and groups non-conflicting accepted pairs by severity", async () => {
   const entries = [entry(1), entry(2), entry(3), entry(4)];
   entries[1]!.severity.level = "critical";
