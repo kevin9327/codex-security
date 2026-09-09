@@ -11,6 +11,7 @@ import {
 import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workbench-migrations";
 import * as results from "../../../../plugins/codex-security/mcp-app/src/workbench-results";
 import * as findingResults from "../../../../plugins/codex-security/mcp-app/src/workbench-finding-results";
+import * as mergedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-merge-saved-results";
 import * as savedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-saved-result-sources";
 import {
   backfillLegacyFindingDetails,
@@ -79,6 +80,8 @@ export interface Action {
     | "exportCsv"
     | "exportRows"
     | "finalize"
+    | "savedMerge"
+    | "savedFindingHelpers"
     | "sql"
     | "query"
     | "commit"
@@ -116,6 +119,11 @@ export interface Action {
   beforeBeginSql?: string;
   format?: string;
   failExportCallback?: "scan" | "workspace";
+  binding?: mergedResults.SavedMergeBinding;
+  mergeOptions?: mergedResults.SavedMergeOptions;
+  warnings?: string[];
+  candidateOnly?: boolean;
+  cycle?: boolean;
 }
 export interface Request {
   targetIdentityPath?: string;
@@ -366,6 +374,71 @@ function execute(request: Request): Response {
               { scanId: id, format: action.format ?? "json" },
             );
             break;
+          case "savedMerge": {
+            const warnings = action.warnings ?? [];
+            const workers = (action.workers ?? []).map(
+              (worker) =>
+                new Row(
+                  Object.keys(worker),
+                  Object.values(worker) as Row["values"],
+                ),
+            );
+            try {
+              result = {
+                merged: mergedResults.mergeSavedResults(
+                  action.directory!,
+                  id,
+                  action.binding!,
+                  workers,
+                  warnings,
+                  action.mergeOptions!,
+                ),
+                warnings,
+              };
+            } catch (error) {
+              result = { error: filesystemErrorMessage(error), warnings };
+            }
+            Object.assign(result as object, {
+              binding: action.binding,
+              workers: action.workers,
+              options: action.mergeOptions,
+            });
+            break;
+          }
+          case "savedFindingHelpers": {
+            const value = (
+              action.valueJson === undefined
+                ? action.value
+                : parseJson(action.valueJson)
+            ) as Record<string, unknown>;
+            const key = mergedResults.savedFindingKey(value);
+            const candidate = mergedResults.workerCandidateKey(
+              "worker",
+              "candidate",
+              value,
+            );
+            const content = mergedResults.savedFindingContent(value);
+            mergedResults.ensureSavedFindingIdentity(
+              value,
+              action.candidateOnly,
+            );
+            if (action.cycle)
+              value["provenance"] = {
+                previousFindings: [value],
+                sourceFindings: [{ finding: value }],
+              };
+            const retained = [
+              ...mergedResults.retainedSavedFindings(value),
+            ].map((finding) => finding["title"] ?? null);
+            result = {
+              key,
+              candidate,
+              content,
+              identity: value["identity"] ?? null,
+              retained,
+            };
+            break;
+          }
           case "savedEncoded":
             result = {
               text: savedResults
