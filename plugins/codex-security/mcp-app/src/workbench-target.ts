@@ -548,7 +548,7 @@ export function storedFilesystemIdentityMatches(
   return stored === serialized;
 }
 
-function filesystemIdentity(path: string): { dev: bigint; ino: bigint } {
+export function filesystemIdentity(path: string): { dev: bigint; ino: bigint } {
   if (!windows) return statSync(encodePosixPath(path), { bigint: true });
   const [dev, ino] = windowsFileIdentity(
     windowsFiles().identity(widePath(path)),

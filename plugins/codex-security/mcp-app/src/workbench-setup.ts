@@ -82,12 +82,12 @@ export function resolveGitCommit(
   return resolved;
 }
 
-export interface DiffTarget {
+export type DiffTarget = {
   kind: string;
   baseRevision: string;
   headRevision: string;
   contentDigest?: string;
-}
+};
 export function requireDiffTarget(
   target: string,
   kind: string | null,

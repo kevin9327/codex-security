@@ -1,3 +1,4 @@
+import { temporaryNameAttempts } from "./helpers/temporary-name-attempts";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { basename, dirname, sep } from "node:path";
@@ -57,7 +58,7 @@ export function compactTimestamp(): string {
 function temporaryDirectory(parent: string, prefix: string): string {
   const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789_";
   // tempfile.mkdtemp uses eight characters and the platform TMP_MAX retry count.
-  for (let attempt = 0; attempt < 238328; attempt++) {
+  for (let attempt = 0; attempt < temporaryNameAttempts; attempt++) {
     const suffix = Array.from(
       randomBytes(8),
       (byte) => alphabet[byte % alphabet.length],
