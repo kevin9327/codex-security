@@ -17,7 +17,17 @@ export type ScanRootIdentity = readonly [bigint, bigint];
 export interface ScanLocalReader {
   read(buffer: Buffer): number;
   size(): bigint;
+  identity(): ScanRootIdentity;
   close(): void;
+}
+
+export function windowsFileIdentity(
+  value: Pick<ReturnType<WindowsHandle["identity"]>, "volume" | "fileId">,
+): ScanRootIdentity {
+  return [
+    BigInt(value.volume),
+    value.fileId.readBigUInt64LE(0) | (value.fileId.readBigUInt64LE(8) << 64n),
+  ];
 }
 
 export class WindowsScanLocalFileError extends Error {
@@ -210,11 +220,7 @@ export function windowsScanLocalFiles(native: WindowsBinding) {
     try {
       const result = handle.identity();
       check(result.error, "GetFileInformationByHandleEx");
-      return [
-        BigInt(result.volume),
-        result.fileId.readBigUInt64LE(0) |
-          (result.fileId.readBigUInt64LE(8) << 64n),
-      ];
+      return windowsFileIdentity(result);
     } finally {
       close(handle);
     }
@@ -302,6 +308,11 @@ export function windowsScanLocalFiles(native: WindowsBinding) {
         const result = handle.size();
         check(result.error, "GetFileSizeEx");
         return BigInt(result.value);
+      },
+      identity() {
+        const result = handle.identity();
+        check(result.error, "GetFileInformationByHandleEx");
+        return windowsFileIdentity(result);
       },
       close: () => close(handle),
     };

@@ -271,6 +271,7 @@ function descriptorReader(descriptor: number): ScanLocalReader {
     read: (buffer) =>
       readDescriptor(descriptor, buffer, 0, buffer.length, null),
     size: () => fstatSync(descriptor, { bigint: true }).size,
+    identity: () => identity(fstatSync(descriptor, { bigint: true })),
     close: () => closeSync(descriptor),
   };
 }

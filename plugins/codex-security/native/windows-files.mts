@@ -252,8 +252,13 @@ export function windowsFileSystem(native: WindowsBinding) {
     }
   }
 
-  function identity(path: Buffer) {
-    const handle = open(path, flags.FILE_READ_ATTRIBUTES);
+  function identity(path: Buffer, follow = true) {
+    const handle = open(
+      path,
+      flags.FILE_READ_ATTRIBUTES,
+      flags.OPEN_EXISTING,
+      follow,
+    );
     try {
       const result = handle.identity();
       check(result.error, path);

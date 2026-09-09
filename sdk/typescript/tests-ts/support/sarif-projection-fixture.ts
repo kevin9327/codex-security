@@ -143,6 +143,7 @@ process.stdout.write(
                   return count;
                 },
                 size: () => BigInt(bytes.length),
+                identity: () => [0n, 0n],
                 close() {},
               },
               requested,
