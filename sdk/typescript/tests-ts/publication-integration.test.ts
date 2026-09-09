@@ -36,6 +36,10 @@ import {
 import { runWorkbench } from "../src/runtime.js";
 import { capture, dependencies, FakeSignals } from "./cli-fixtures.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
+import {
+  withWorkbenchDatabase,
+  workbenchRows,
+} from "./support/workbench-database.js";
 
 const SCAN_ID = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
@@ -51,7 +55,6 @@ const NODE_EXECUTABLE = execFileSync("node", ["-p", "process.execPath"], {
 const temporaryDirectories: string[] = [];
 
 interface PublicationFixture {
-  python: string;
   scanDirectory: string;
   stateDirectory: string;
   environment: NodeJS.ProcessEnv;
@@ -162,64 +165,81 @@ async function fixture(count: number): Promise<PublicationFixture> {
   }
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-  const python = Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
-  if (python === null) {
-    throw new Error("A Python interpreter is required for publication tests.");
-  }
   const environment: NodeJS.ProcessEnv = {
     PATH: process.env["PATH"],
     ...(process.env["SystemRoot"] === undefined
       ? {}
       : { SystemRoot: process.env["SystemRoot"] }),
-    PYTHON: python,
+    PYTHON: join(root, "missing-python"),
     CODEX_SECURITY_STATE_DIR: stateDirectory,
   };
-  await runWorkbench({ python, pluginRoot: PLUGIN_ROOT, environment }, [
+  await runWorkbench({ pluginRoot: PLUGIN_ROOT, environment }, [
     "database-info",
   ]);
 
-  const seedFile = join(root, "seed.json");
-  await writeFile(
-    seedFile,
-    JSON.stringify({
-      scanId: SCAN_ID,
-      workspaceId: WORKSPACE_ID,
-      scanDirectory,
-      repository,
-      findings: findings.findings,
-    }),
-  );
-  const seed = [
-    "import json, sqlite3, sys",
-    "from pathlib import Path",
-    "payload = json.loads(Path(sys.argv[2]).read_text())",
-    "connection = sqlite3.connect(sys.argv[1])",
-    "connection.execute('PRAGMA foreign_keys = ON')",
-    "timestamp = '2026-08-15T00:00:00Z'",
-    "connection.execute('INSERT INTO workspaces (id, created_at, updated_at) VALUES (?, ?, ?)', (payload['workspaceId'], timestamp, timestamp))",
-    "connection.execute('INSERT INTO scans (id, workspace_id, target_path, target_revision, scope, mode, scan_dir, status, phase, started_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (payload['scanId'], payload['workspaceId'], payload['repository'], 'deadbeef', '.', 'standard', payload['scanDirectory'], 'complete', 'reporting', timestamp, timestamp, timestamp))",
-    "for finding in payload['findings']:",
-    "    connection.execute('INSERT INTO findings (id, fingerprint, rule_id, identity_anchor, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', (finding['findingId'], finding['fingerprints']['primary'], finding['ruleId'], finding['identity']['anchor'], timestamp, timestamp))",
-    "    connection.execute('INSERT INTO finding_occurrences (id, finding_id, scan_id, title, summary, severity, confidence, remediation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (finding['occurrenceId'], finding['findingId'], payload['scanId'], finding['title'], finding['summary'], finding['severity']['level'], finding['confidence']['level'], finding['remediation'], timestamp))",
-    "connection.commit()",
-    "connection.close()",
-  ].join("\n");
-  execFileSync(
-    python,
-    [
-      "-I",
-      "-B",
-      "-c",
-      seed,
-      join(stateDirectory, "workbench.sqlite3"),
-      seedFile,
-    ],
-    { encoding: "utf8", env: environment },
+  withWorkbenchDatabase(
+    join(stateDirectory, "workbench.sqlite3"),
+    (connection) => {
+      connection.exec("PRAGMA foreign_keys = ON");
+      connection.transaction(() => {
+        const timestamp = "2026-08-15T00:00:00Z";
+        connection
+          .prepare(
+            "INSERT INTO workspaces (id, created_at, updated_at) VALUES (?, ?, ?)",
+          )
+          .run([WORKSPACE_ID, timestamp, timestamp]);
+        connection
+          .prepare(
+            "INSERT INTO scans (id, workspace_id, target_path, target_revision, scope, mode, scan_dir, status, phase, started_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run([
+            SCAN_ID,
+            WORKSPACE_ID,
+            repository,
+            "deadbeef",
+            ".",
+            "standard",
+            scanDirectory,
+            "complete",
+            "reporting",
+            timestamp,
+            timestamp,
+            timestamp,
+          ]);
+        for (const finding of findings.findings) {
+          connection
+            .prepare(
+              "INSERT INTO findings (id, fingerprint, rule_id, identity_anchor, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .run([
+              finding.findingId,
+              finding.fingerprints.primary,
+              finding.ruleId,
+              finding.identity.anchor,
+              timestamp,
+              timestamp,
+            ]);
+          connection
+            .prepare(
+              "INSERT INTO finding_occurrences (id, finding_id, scan_id, title, summary, severity, confidence, remediation, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .run([
+              finding.occurrenceId,
+              finding.findingId,
+              SCAN_ID,
+              finding.title,
+              finding.summary,
+              finding.severity.level,
+              finding.confidence.level,
+              finding.remediation,
+              timestamp,
+            ]);
+        }
+      });
+    },
   );
 
   return {
-    python,
     scanDirectory,
     stateDirectory,
     environment,
@@ -293,26 +313,10 @@ function killTestProcess(pid: number): void {
 }
 
 function storedPublications(fixture: PublicationFixture): StoredPublication[] {
-  const script = [
-    "import json, sqlite3, sys",
-    "connection = sqlite3.connect(sys.argv[1])",
-    "connection.row_factory = sqlite3.Row",
-    "rows = connection.execute('SELECT scan_id, finding_id, occurrence_id, destination_type, team_id, project_id, external_id, external_url FROM finding_publications ORDER BY id').fetchall()",
-    "print(json.dumps([dict(row) for row in rows]))",
-  ].join("\n");
-  return JSON.parse(
-    execFileSync(
-      fixture.python,
-      [
-        "-I",
-        "-B",
-        "-c",
-        script,
-        join(fixture.stateDirectory, "workbench.sqlite3"),
-      ],
-      { encoding: "utf8", env: fixture.environment },
-    ),
-  ) as StoredPublication[];
+  return workbenchRows(
+    join(fixture.stateDirectory, "workbench.sqlite3"),
+    "SELECT scan_id, finding_id, occurrence_id, destination_type, team_id, project_id, external_id, external_url FROM finding_publications ORDER BY id",
+  ) as unknown as StoredPublication[];
 }
 
 function receiptPath(fixture: PublicationFixture): string {
@@ -1128,7 +1132,7 @@ describe("database-backed Linear publication integration", () => {
       const publishing = publishScanInternal(completed.scanDirectory, OPTIONS, {
         environment: {
           PATH: completed.environment["PATH"],
-          PYTHON: completed.python,
+          PYTHON: completed.environment["PYTHON"],
           CODEX_SECURITY_STATE_DIR: completed.stateDirectory,
           NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
           CODEX_PUBLICATION_PARENT_PID: publisherPidFile,
@@ -1226,7 +1230,7 @@ for (;;) Atomics.wait(waiter, 0, 0, 1000);`,
         ? { SystemRoot: process.env["SystemRoot"] }
         : {}),
       PATH: completed.environment["PATH"],
-      PYTHON: completed.python,
+      PYTHON: completed.environment["PYTHON"],
       CODEX_SECURITY_STATE_DIR: completed.stateDirectory,
       CODEX_SECURITY_LINEAR_TEAM: OPTIONS.teamId,
       NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,

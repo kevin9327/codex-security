@@ -3,14 +3,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
 import type { Operation } from "./support/imported-findings-fixture";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import type { Finding, FindingsDocument } from "../src/models.js";
 import type { FindingDedupeGroup } from "../src/finding-dedupe-groups.js";
-import { resolvePluginPython, runCodexCommand } from "../src/runtime.js";
+import { MIGRATIONS } from "../../../plugins/codex-security/mcp-app/src/workbench-migrations";
+import { applyMigrations } from "../../../plugins/codex-security/mcp-app/src/workbench-schema";
+import { indexFindings } from "../../../plugins/codex-security/mcp-app/src/workbench-finding-index";
+import { withWorkbenchDatabase } from "./support/workbench-database.js";
 import type { FindingEmbedder } from "../src/server/embeddings.js";
 import { FindingsError } from "../src/server/errors.js";
 import { startFindingsServer } from "../src/server/server.js";
@@ -78,6 +81,7 @@ async function fixture() {
   directories.push(directory);
   const environment = {
     ...process.env,
+    PYTHON: join(directory, "missing-python"),
     CODEX_SECURITY_STATE_DIR: join(directory, "state with spaces"),
   };
   return { environment, store: new SqliteFindingsStore(environment) };
@@ -351,39 +355,6 @@ async function database(
   if (format === "rows") return value;
   const first = (value as unknown[][])[0]![0];
   return format === "json" ? (JSON.parse(first as string) as unknown) : first;
-}
-
-async function pythonDatabase(
-  environment: NodeJS.ProcessEnv,
-  script: string,
-  input?: unknown,
-): Promise<unknown> {
-  const python = await resolvePluginPython({ environment });
-  const result = await runCodexCommand(
-    { command: python },
-    [
-      "-I",
-      "-B",
-      "-X",
-      "utf8",
-      "-c",
-      `import json, sqlite3, sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[2])
-path = Path(sys.argv[1])
-path.parent.mkdir(parents=True, exist_ok=True)
-db = sqlite3.connect(path)
-db.row_factory = sqlite3.Row
-${script}
-`,
-      join(environment["CODEX_SECURITY_STATE_DIR"]!, "workbench.sqlite3"),
-      join(PLUGIN_ROOT, "scripts"),
-    ],
-    environment,
-    input === undefined ? undefined : JSON.stringify(input),
-  );
-  expect(result.success, result.stderr).toBe(true);
-  return JSON.parse(result.stdout);
 }
 
 test("bulk insert preserves complete findings and embeddings without creating scans", async () => {
@@ -909,42 +880,86 @@ test("does not start when storage initialization fails", async () => {
 test("migrates existing complete scan findings and invalidates stale embeddings on CLI updates", async () => {
   const { store, environment } = await fixture();
   const original = finding();
-  await pythonDatabase(
-    environment,
-    `from workbench_schema import MIGRATIONS, apply_migrations
-finding = json.load(sys.stdin)
-timestamp = "2026-01-01T00:00:00Z"
-apply_migrations(db, tuple(m for m in MIGRATIONS if m[0] <= 32), lambda: timestamp, lambda _: None)
-with db:
-    db.execute("INSERT INTO workspaces (id, created_at, updated_at) VALUES ('workspace', ?, ?)", (timestamp, timestamp))
-    db.execute("INSERT INTO security_targets (id, current_path, display_name, created_at, updated_at) VALUES ('repository-history', '/synthetic/repository', 'Synthetic repository', ?, ?)", (timestamp, timestamp))
-    db.execute("INSERT INTO scans (id, workspace_id, target_id, target_path, target_revision, scope, mode, scan_dir, status, phase, started_at, created_at, updated_at) VALUES ('scan', 'workspace', 'repository-history', '/synthetic/repository', 'revision', '.', 'standard', '/synthetic/output', 'complete', 'reporting', ?, ?, ?)", (timestamp, timestamp, timestamp))
-    db.execute("INSERT INTO findings (id, fingerprint, rule_id, identity_anchor, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", (finding["findingId"], finding["fingerprints"]["primary"], finding["ruleId"], finding["identity"]["anchor"], timestamp, timestamp))
-    db.execute("INSERT INTO finding_occurrences (id, finding_id, scan_id, title, summary, severity, confidence, remediation, details_json, created_at) VALUES (?, ?, 'scan', ?, ?, ?, ?, ?, ?, ?)", (finding["occurrenceId"], finding["findingId"], finding["title"], finding["summary"], finding["severity"]["level"], finding["confidence"]["level"], finding["remediation"], json.dumps(finding), timestamp))
-print("null")`,
-    original,
+  await mkdir(environment.CODEX_SECURITY_STATE_DIR, { recursive: true });
+  const filename = join(
+    environment.CODEX_SECURITY_STATE_DIR,
+    "workbench.sqlite3",
   );
+  withWorkbenchDatabase(filename, (db, native) => {
+    const timestamp = "2026-01-01T00:00:00Z";
+    applyMigrations(
+      native,
+      db,
+      MIGRATIONS.filter((migration) => migration[0] <= 32),
+      () => timestamp,
+      () => {},
+    );
+    db.transaction(() => {
+      db.prepare(
+        "INSERT INTO workspaces (id, created_at, updated_at) VALUES ('workspace', ?, ?)",
+      ).run([timestamp, timestamp]);
+      db.prepare(
+        "INSERT INTO security_targets (id, current_path, display_name, created_at, updated_at) VALUES ('repository-history', '/synthetic/repository', 'Synthetic repository', ?, ?)",
+      ).run([timestamp, timestamp]);
+      db.prepare(
+        "INSERT INTO scans (id, workspace_id, target_id, target_path, target_revision, scope, mode, scan_dir, status, phase, started_at, created_at, updated_at) VALUES ('scan', 'workspace', 'repository-history', '/synthetic/repository', 'revision', '.', 'standard', '/synthetic/output', 'complete', 'reporting', ?, ?, ?)",
+      ).run([timestamp, timestamp, timestamp]);
+      db.prepare(
+        "INSERT INTO findings (id, fingerprint, rule_id, identity_anchor, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).run([
+        original.findingId,
+        original.fingerprints.primary,
+        original.ruleId,
+        original.identity.anchor,
+        timestamp,
+        timestamp,
+      ]);
+      db.prepare(
+        "INSERT INTO finding_occurrences (id, finding_id, scan_id, title, summary, severity, confidence, remediation, details_json, created_at) VALUES (?, ?, 'scan', ?, ?, ?, ?, ?, ?, ?)",
+      ).run([
+        original.occurrenceId,
+        original.findingId,
+        original.title,
+        original.summary,
+        original.severity.level,
+        original.confidence.level,
+        original.remediation,
+        JSON.stringify(original),
+        timestamp,
+      ]);
+    });
+  });
   await store.initialize();
   expect((await store.list({ limit: 50, offset: 0 })).findings).toEqual([
     original,
   ]);
   expect(
-    await pythonDatabase(
+    await database(
       environment,
-      "print(json.dumps([list(row) for row in db.execute('SELECT repository_id, finding_id FROM finding_repositories')]))",
+      "SELECT repository_id, finding_id FROM finding_repositories",
     ),
   ).toEqual([["repository-history", original.findingId]]);
   await store.insert([
     { finding: original, embedding: { model: "synthetic", vector: [1, 0] } },
   ]);
 
-  const update = `from workbench_finding_index import index_findings
-with db:
-    index_findings(db, "scan", {"findings": [json.load(sys.stdin)]}, "2026-01-02T00:00:00Z")
-print(db.execute("SELECT COUNT(*) FROM finding_embeddings").fetchone()[0])`;
-  expect(await pythonDatabase(environment, update, original)).toBe(1);
+  const update = (value: Finding) =>
+    withWorkbenchDatabase(filename, (db) => {
+      db.transaction(() =>
+        indexFindings(
+          db,
+          "scan",
+          { findings: [value] },
+          "2026-01-02T00:00:00Z",
+        ),
+      );
+      return Number(
+        db.prepare("SELECT COUNT(*) FROM finding_embeddings").get()!.get(0),
+      );
+    });
+  expect(update(original)).toBe(1);
   const changed = { ...original, summary: "A newer scan updated this finding" };
-  expect(await pythonDatabase(environment, update, changed)).toBe(0);
+  expect(update(changed)).toBe(0);
   await expect(
     store.findPotentialDuplicates(original.findingId, {
       allRepositories: true,
@@ -953,11 +968,11 @@ print(db.execute("SELECT COUNT(*) FROM finding_embeddings").fetchone()[0])`;
   expect((await store.list({ limit: 50, offset: 0 })).findings).toEqual([
     changed,
   ]);
-  await pythonDatabase(environment, update, finding(2));
+  update(finding(2));
   expect(
-    await pythonDatabase(
+    await database(
       environment,
-      "print(json.dumps([list(row) for row in db.execute('SELECT repository_id, finding_id FROM finding_repositories ORDER BY finding_id')]))",
+      "SELECT repository_id, finding_id FROM finding_repositories ORDER BY finding_id",
     ),
   ).toEqual([
     ["repository-history", original.findingId],
