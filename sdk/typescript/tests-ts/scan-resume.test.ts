@@ -12,6 +12,7 @@ import {
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { main } from "../src/cli.js";
+import type { ScanOptions } from "../src/api.js";
 import { runWorkbench } from "../src/runtime.js";
 import { capture, dependencies } from "./cli-fixtures.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
@@ -28,6 +29,7 @@ afterEach(cleanup);
 async function interruptedScan(
   mode: "deep" | "standard" = "deep",
   bulk = false,
+  settings: Pick<ScanOptions, "safetyIdentifier" | "postScanPrompt"> = {},
 ) {
   const root = await temporaryDirectory();
   const repository = bulk
@@ -94,6 +96,9 @@ async function interruptedScan(
     TMP: process.env["TMP"],
     CODEX_HOME: codexHome,
     CODEX_SECURITY_STATE_DIR: join(root, "state"),
+    ...(settings.safetyIdentifier === undefined
+      ? {}
+      : { OPENAI_API_KEY: "synthetic-resume-key" }),
   };
   const command = (args: readonly string[], input?: string) =>
     runWorkbench({ python, pluginRoot: PLUGIN_ROOT, environment }, args, input);
@@ -103,6 +108,7 @@ async function interruptedScan(
     mode,
     config: { model: "gpt-5.6-sol", approval_policy: "never" },
     pluginVersion: "0.1.0",
+    ...settings,
     ...(mode === "deep"
       ? { deepScan: { workers: 2, maxDiscoveryRuns: 5 } }
       : {}),
@@ -584,6 +590,144 @@ test.each([
   },
 );
 
+test("CLI saves launch settings before execution without depending on the prompt file", async () => {
+  const root = await temporaryDirectory();
+  const repository = join(root, "repository");
+  const codexHome = join(root, "state", "codex-home");
+  await mkdir(repository);
+  await mkdir(codexHome, { recursive: true });
+  await writeFile(join(repository, "source.py"), "# synthetic source\n");
+  const promptFile = join(root, "post-scan.md");
+  const postScanPrompt = "Keep these original post-scan instructions.\n";
+  await writeFile(promptFile, postScanPrompt);
+  const python = Bun.which("python3") ?? Bun.which("python");
+  if (python === null) throw new Error("Python is required for this test.");
+  const environment = {
+    PATH: process.env["PATH"],
+    SystemRoot: process.env["SystemRoot"],
+    TEMP: process.env["TEMP"],
+    TMP: process.env["TMP"],
+    CODEX_HOME: codexHome,
+    CODEX_SECURITY_STATE_DIR: join(root, "state"),
+    OPENAI_API_KEY: "synthetic-launch-key",
+  };
+  const command = (args: readonly string[], input?: string) =>
+    runWorkbench({ python, pluginRoot: PLUGIN_ROOT, environment }, args, input);
+  const stdout = capture();
+  const stderr = capture();
+  const code = await main(
+    [
+      "scan",
+      repository,
+      "--mode",
+      "deep",
+      "--output-dir",
+      join(root, "scan"),
+      "--safety-identifier",
+      "synthetic-original-user",
+      "--post-scan-prompt-file",
+      promptFile,
+      "--json",
+    ],
+    stdout.stream,
+    stderr.stream,
+    {
+      ...dependencies({ environment, currentDirectory: root }),
+      runWorkbench: command,
+      createSecurity: (config) =>
+        new TestClient(config, {
+          environment,
+          prepareRuntime: async () => preparedRuntime(codexHome),
+          resolvePluginPython: async () => python,
+          runWorkbench,
+          createCodex: () => {
+            throw new Error("Synthetic stop after registration");
+          },
+        }),
+    },
+  );
+  expect(code).toBe(2);
+  expect(stderr.text()).toContain("Synthetic stop after registration");
+  await writeFile(
+    promptFile,
+    "Changed instructions that must not replace the saved text.",
+  );
+  await rm(promptFile);
+  const scans = (await command(["list-scans", "--repository", repository]))[
+    "scans"
+  ] as Array<{ scanId: string }>;
+  expect(scans).toHaveLength(1);
+  const saved = await command([
+    "get-scan-recipe",
+    "--scan-id",
+    scans[0]!.scanId,
+  ]);
+  expect(saved["recipe"]).toMatchObject({
+    safetyIdentifier: "synthetic-original-user",
+    postScanPrompt,
+  });
+  expect(JSON.stringify(saved)).not.toContain("synthetic-launch-key");
+  expect(JSON.stringify(saved)).not.toContain(promptFile);
+});
+
+test.each([false, true])(
+  "resume restores saved launch settings (bulk: %s)",
+  async (bulk) => {
+    const settings = {
+      safetyIdentifier: "synthetic-original-user",
+      postScanPrompt: "Run these exact saved post-scan instructions.\n",
+    };
+    const f = await interruptedScan("deep", bulk, settings);
+    const prompts: string[] = [];
+    const stdout = capture();
+    const stderr = capture();
+    const code = await main(
+      bulk
+        ? ["bulk-scan", f.input, "--output-dir", f.root, "--recover", "--json"]
+        : ["scans", "resume", f.scanId, "--json"],
+      stdout.stream,
+      stderr.stream,
+      {
+        ...dependencies({
+          environment: f.environment,
+          currentDirectory: f.root,
+        }),
+        runWorkbench: f.command,
+        createSecurity: resumeClient(f, (options) => {
+          expect(options.env?.["CODEX_SAFETY_IDENTIFIER"]).toBe(
+            settings.safetyIdentifier,
+          );
+          return {
+            startThread() {
+              throw new Error("Resume must use the original session.");
+            },
+            resumeThread(threadId) {
+              expect(threadId).toBe(f.threadId);
+              return {
+                id: threadId,
+                async runStreamed(prompt) {
+                  prompts.push(prompt as string);
+                  if (prompts.length === 1) await finishDiscovery(f);
+                  return { events: completedEvents(threadId) };
+                },
+              };
+            },
+          };
+        }),
+      },
+    );
+    expect(code, stderr.text()).toBe(2);
+    expect(prompts, stderr.text()).toHaveLength(2);
+    expect(prompts[1]).toBe(settings.postScanPrompt);
+    expect(
+      (await f.command(["get-scan", "--scan-id", f.scanId]))["scan"],
+    ).toMatchObject({
+      progress: { status: "complete" },
+      continuationThreadId: f.threadId,
+    });
+  },
+);
+
 test("missing session logs do not create another session or fail the original scan", async () => {
   const f = await interruptedScan();
   await rm(f.sessionPath);
@@ -655,8 +799,10 @@ test.each(["failed", "missing-checkout", "missing-session", "standard"])(
                 join(f.root, "recovery-checkouts", "repo", "attempt-2"),
               );
               expect(
-                await readFile(join(repository, "source.py"), "utf8"),
-              ).toMatch(/^# synthetic source\r?\n$/);
+                (
+                  await readFile(join(repository, "source.py"), "utf8")
+                ).replaceAll("\r\n", "\n"),
+              ).toBe("# synthetic source\n");
               return {
                 coverage: { completeness: "complete" },
                 cost: null,
