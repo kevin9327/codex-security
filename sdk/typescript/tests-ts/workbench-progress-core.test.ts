@@ -90,6 +90,20 @@ test("accepts non-ASCII preflight JSON above 64 KiB and the maximum issue list t
     ),
   ).toHaveLength(32);
   expect(response!.outcomes[1]!.events[0]!.event).toBe("stdin");
+  expect(
+    (
+      JSON.parse(response!.outcomes[0]!.result as string) as {
+        reason: string;
+      }[]
+    ).map(({ reason }) => reason),
+  ).toEqual(Array(24).fill("€".repeat(1000)));
+  expect(
+    (
+      JSON.parse(
+        response!.snapshot.progress[0]!["preflight_issues_json"] as string,
+      ) as { reason: string }[]
+    ).map(({ reason }) => reason),
+  ).toEqual(Array(32).fill("x".repeat(1200)));
 });
 
 test("missing progress rows fail when first read after earlier phase validation", () => {
