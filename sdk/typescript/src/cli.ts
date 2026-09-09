@@ -2919,7 +2919,7 @@ export async function main(
       dependencies.addSignalListener("SIGTERM", onTerminate);
       try {
         return await importScanCsv(
-          resolve(dependencies.currentDirectory(), options.csv),
+          resolveCliPath(dependencies.currentDirectory(), options.csv),
           dependencies,
           controller.signal,
         );
