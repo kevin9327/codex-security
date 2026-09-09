@@ -26,3 +26,30 @@ test("registers security access through the Codex Security MCP, not a hosted app
   expect(mcpServers).toHaveProperty("codex-security");
   expect(mcpServers).not.toHaveProperty("codex-security-access");
 });
+
+test("tracking providers are available on demand and the deep-scan override reaches MCP", async () => {
+  const read = async (name: string): Promise<Record<string, unknown>> =>
+    JSON.parse(await readFile(join(PLUGIN_ROOT, name), "utf8")) as Record<
+      string,
+      unknown
+    >;
+  const apps = (await read(".app.json"))["apps"] as Record<
+    string,
+    { id: string; capabilities: string[] }
+  >;
+  const ids = ["linear", "github", "atlassian"].map((name) => apps[name]!.id);
+  for (const id of ids) {
+    expect(typeof id).toBe("string");
+    expect(id.length).toBeGreaterThan(0);
+  }
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(apps["atlassian"]!.capabilities).toEqual(["read", "write"]);
+  expect((await read(".codex-plugin/plugin.json"))["apps"]).toBe("./.app.json");
+  const servers = (await read(".mcp.json"))["mcpServers"] as Record<
+    string,
+    { env_vars: string[] }
+  >;
+  expect(servers["codex-security"]!.env_vars).toContain(
+    "CODEX_SECURITY_DEEP_SCAN_CONFIG_PATH",
+  );
+});

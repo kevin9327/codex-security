@@ -187,3 +187,66 @@ test("the packaged finalizer retains non-contract exception diagnostics and exit
   expect(result.stdout).toBe("");
   expect(result.stderr.trimEnd()).toBe("TypeError: unhashable type: 'list'");
 });
+
+test("the packaged finalizer rejects case aliases and Windows-ambiguous sealed artifact paths", () => {
+  for (const value of [
+    "FINDINGS.JSON",
+    "D:/escape",
+    "D:escape",
+    "../escape",
+    "artifacts\\escape",
+    "artifacts/report.json.",
+    "artifacts/report.json ",
+    "artifacts/CON.txt",
+    "artifacts/COM¹.txt",
+    "artifacts/report?.json",
+    "artifacts/report:stream",
+    "artifacts/control\x01.json",
+  ]) {
+    const path = scan(),
+      manifestPath = join(path, "scan-manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.scan.artifacts.push({
+      path: value,
+      sha256: "0".repeat(64),
+      mediaType: "text/plain",
+    });
+    const bytes = JSON.stringify(manifest);
+    writeFileSync(manifestPath, bytes);
+    const result = run("--scan-dir", path);
+    expect(result.status, value).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toMatch(
+      value === "FINDINGS.JSON"
+        ? /duplicate artifact path/
+        : /safe .*relative POSIX path/,
+    );
+    expect(readFileSync(manifestPath, "utf8")).toBe(bytes);
+  }
+});
+
+test("the packaged finalizer preserves Unix-valid repository source paths", () => {
+  const path = scan(),
+    source = "src/CON.py:fixture";
+  const manifestPath = join(path, "scan-manifest.json"),
+    findingsPath = join(path, "findings.json"),
+    coveragePath = join(path, "coverage.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")),
+    findings = JSON.parse(readFileSync(findingsPath, "utf8")),
+    coverage = JSON.parse(readFileSync(coveragePath, "utf8"));
+  delete manifest.scan.sealedAt;
+  delete manifest.scan.artifacts;
+  manifest.scan.scope.includePaths = [source];
+  coverage.includePaths = [source];
+  coverage.surfaces[0].paths = [source];
+  findings.findings[0].locations[0].path = source;
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  writeFileSync(findingsPath, JSON.stringify(findings));
+  writeFileSync(coveragePath, JSON.stringify(coverage));
+  const result = run("--scan-dir", path);
+  expect(result.status, result.stderr).toBe(0);
+  expect(
+    JSON.parse(readFileSync(findingsPath, "utf8")).findings[0].locations[0]
+      .path,
+  ).toBe(source);
+});

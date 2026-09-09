@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { withWorkbenchDatabase } from "./support/workbench-database";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -405,3 +407,77 @@ test.skipIf(nodeMajor < 22)(
     expect(remaining[1]!.value["recipe"]).toEqual(recipe(s));
   },
 );
+
+test("get-scan reports only other running deep scans and removes failed peers", () => {
+  const s = setup();
+  const scans = new Map<
+    string,
+    { scanId: string; updatedAt: string; target: string }
+  >();
+  for (const name of ["current", "other", "standard", "failed", "complete"]) {
+    const id = randomUUID(),
+      target = join(s.directory, name);
+    mkdirSync(target);
+    result(
+      ["create-workspace", "--workspace-id", id, "--target-path", target],
+      s,
+    );
+    result(
+      [
+        "save-workspace",
+        "--workspace-id",
+        id,
+        "--target-path",
+        target,
+        "--scope",
+        ".",
+        "--mode",
+        name === "standard" ? "standard" : "deep",
+      ],
+      s,
+    );
+    const started = result(
+      ["start-scan", "--workspace-id", id, "--scan-root", s.scanRoot],
+      s,
+    )["results"] as { scanId: string; updatedAt: string };
+    scans.set(name, { ...started, target });
+  }
+  const other = scans.get("other")!,
+    failed = scans.get("failed")!,
+    complete = scans.get("complete")!;
+  withWorkbenchDatabase(join(s.state, "workbench.sqlite3"), (db) =>
+    db.transaction(() => {
+      db.prepare(
+        "UPDATE scans SET handoff_status = 'delivered' WHERE id IN (?, ?)",
+      ).run([failed.scanId, other.scanId]);
+      db.prepare(
+        "UPDATE scans SET status = 'complete', completed_at = updated_at WHERE id = ?",
+      ).run([complete.scanId]);
+    }),
+  );
+  const fail = (scanId: string) =>
+    result(
+      [
+        "fail-scan",
+        "--scan-id",
+        scanId,
+        "--message",
+        "Stopped for the fixture.",
+      ],
+      s,
+    );
+  fail(failed.scanId);
+  const context = () =>
+    result(["get-scan", "--scan-id", scans.get("current")!.scanId], s);
+  expect(context()["otherRunningDeepScans"]).toEqual([
+    {
+      phase: "preflight",
+      scanId: other.scanId,
+      startedAt: other.updatedAt,
+      targetPath: other.target,
+      updatedAt: other.updatedAt,
+    },
+  ]);
+  fail(other.scanId);
+  expect(context()["otherRunningDeepScans"]).toEqual([]);
+});

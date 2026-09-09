@@ -86,6 +86,8 @@ test("copies a Deep Scan publication when the filesystem rejects hardlinks", asy
   expect(new TextDecoder().decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);
   expect(await readFile(destination, "utf8")).toBe('{"finding":"synthetic"}\n');
+  await writeFile(destination, '{"finding":"different"}\n');
+  expect(await readFile(source, "utf8")).toBe('{"finding":"synthetic"}\n');
 });
 
 test("recovers an interrupted copied Deep Scan publication", async () => {
