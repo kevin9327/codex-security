@@ -27,6 +27,7 @@ export interface Action {
     | "sql"
     | "commit"
     | "rollback";
+  reportFault?: { remaining: number; kind: "io" | "value" | "type" };
   prepareOnly?: boolean;
   maxCostUsd?: number;
   message?: string | null;
@@ -52,6 +53,7 @@ export interface Request {
   actions: Action[];
 }
 export interface Outcome {
+  reportCalls?: string | null;
   result?: unknown;
   error?: string;
   systemExit?: boolean;
@@ -156,6 +158,15 @@ function execute(request: Request): Response {
     for (const sql of request.setupSql ?? []) connection.exec(sql);
     connection.commit();
     const outcomes = request.actions.map((action): Outcome => {
+      const globals = globalThis as unknown as {
+        finalizationReportFault?: {
+          remaining: number;
+          calls: number;
+          kind: string;
+        };
+      };
+      if (action.reportFault)
+        globals.finalizationReportFault = { ...action.reportFault, calls: 0 };
       const events: unknown[][] = [],
         raw = connection.raw,
         prepare = raw.prepare,
@@ -251,6 +262,9 @@ function execute(request: Request): Response {
         return {
           result: output(result),
           inTransaction: connection.inTransaction,
+          reportCalls: globals.finalizationReportFault
+            ? String(globals.finalizationReportFault.calls)
+            : null,
           events,
         };
       } catch (error) {
@@ -258,9 +272,13 @@ function execute(request: Request): Response {
           error: filesystemErrorMessage(error),
           systemExit: error instanceof WorkbenchValidationError,
           inTransaction: connection.inTransaction,
+          reportCalls: globals.finalizationReportFault
+            ? String(globals.finalizationReportFault.calls)
+            : null,
           events,
         };
       } finally {
+        delete globals.finalizationReportFault;
         raw.prepare = prepare;
         raw.exec = exec;
       }

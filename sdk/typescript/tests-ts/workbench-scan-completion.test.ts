@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildSync } from "esbuild";
+import { build } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   parseJson,
@@ -21,6 +21,7 @@ import type {
   Request,
   Response,
 } from "./support/workbench-scan-completion-fixture";
+import { reportFaultPlugin } from "./support/report-fault";
 import { PLUGIN_ROOT } from "./plugin-root";
 
 type Table = Record<string, unknown>;
@@ -42,8 +43,8 @@ const cost = stringifyJson(
   },
   { compact: true },
 );
-beforeAll(() =>
-  buildSync({
+beforeAll(async () => {
+  await build({
     entryPoints: [
       fileURLToPath(
         new URL(
@@ -62,8 +63,9 @@ beforeAll(() =>
         pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
       ),
     },
-  }),
-);
+    plugins: [reportFaultPlugin],
+  });
+});
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 function setup(actions: Action[] = [{ operation: "complete" }]): {
@@ -296,4 +298,148 @@ test("completion preserves iteration of legacy stored warning values", () => {
       ).toEqual(parseJson(value));
     }
   }
+});
+
+function deepSetup(actions?: Action[]) {
+  const input = setup(actions);
+  input.request.scan!["mode"] = "deep";
+  input.request.records = {
+    deep_scan_runs: [
+      {
+        scan_id: scanId,
+        schema_version: 1,
+        workflow_version: "deep-security-scan/v1",
+        phase: "terminal",
+        workers: 4,
+        subagents: 1,
+        stop_after_no_new: 3,
+        max_discovery_runs: 40,
+        status: "succeeded",
+        terminal_reason: "saturated",
+        manifest_path: join(input.directory, "scan-manifest.json"),
+        created_at: "created",
+        updated_at: "updated",
+      },
+    ],
+  };
+  const path = join(input.directory, "coverage.json"),
+    coverage = parseJson(readFileSync(path, "utf8")) as Table;
+  coverage["mode"] = "deep_repository";
+  coverage["surfaces"] = [];
+  writeFileSync(path, stringifyJson(coverage));
+  return input;
+}
+
+test("Deep completion retries report I/O failures and leaves exhausted drafts retryable", () => {
+  for (const [deep, failures] of [
+    [true, 2],
+    [true, 5],
+    [false, 2],
+  ] as const) {
+    const input = (deep ? deepSetup : setup)([
+      {
+        operation: "complete",
+        reportFault: { remaining: failures, kind: "io" },
+      },
+    ]);
+    writeFileSync(join(input.directory, "report.md"), "previous report\n");
+    const names = [
+        "scan-manifest.json",
+        "findings.json",
+        "coverage.json",
+        "report.md",
+      ],
+      original = names.map((name) => readFileSync(join(input.directory, name))),
+      response = run(input.request);
+    expect(Number(response.outcomes[0]!.reportCalls)).toBe(
+      deep ? Math.min(failures + 1, 5) : 1,
+    );
+    if (deep && failures < 5) {
+      outcome(response);
+      expect(scan(response)["status"]).toBe("complete");
+      expect(response.snapshot["finding_occurrences"]!.length).toBeGreaterThan(
+        0,
+      );
+      expect(
+        readFileSync(join(input.directory, "report.md"), "utf8"),
+      ).toContain("Unsafe archive extraction");
+    } else {
+      expect(response.outcomes[0]!.error).toBe(
+        "report projection failed: [Errno 5] Input/output error",
+      );
+      expect(scan(response)["status"]).toBe("running");
+      expect(response.snapshot["scan_artifacts"]).toEqual([]);
+      expect(response.snapshot["finding_occurrences"]).toEqual([]);
+      expect(
+        names.map((name) => readFileSync(join(input.directory, name))),
+      ).toEqual(original);
+    }
+  }
+});
+
+test("Deep completion preserves the authored aggregate despite stale and unusable worker drafts", () => {
+  const input = deepSetup(),
+    findingsPath = join(input.directory, "findings.json"),
+    findings = parseJson(readFileSync(findingsPath, "utf8")) as Table,
+    authored = (findings["findings"] as Table[])[0]!;
+  authored["summary"] = "Authored aggregate retained after discovery.";
+  writeFileSync(findingsPath, stringifyJson(findings));
+  const coverage = parseJson(
+    readFileSync(join(input.directory, "coverage.json"), "utf8"),
+  );
+  input.request.records!["deep_scan_workers"] = [
+    "stale",
+    "malformed",
+    "missing",
+  ].map((kind, index) => {
+    const directory = join(input.directory, "workers", kind),
+      result = join(directory, "result.json");
+    mkdirSync(directory, { recursive: true });
+    if (kind === "malformed") writeFileSync(result, "{unfinished draft");
+    if (kind === "stale")
+      writeFileSync(
+        result,
+        stringifyJson({
+          scanId,
+          complete: true,
+          findings: [{ ...authored, summary: "Stale worker wording." }],
+          coverage: {
+            mode: "deep_repository",
+            completeness: "partial",
+            deferred: [{ id: "old", reason: "obsolete" }],
+          },
+        }),
+      );
+    return {
+      id: `33333333-3333-4333-8333-${String(index + 1).padStart(12, "0")}`,
+      scan_id: scanId,
+      kind: "discovery",
+      status: "succeeded",
+      prompt_path: join(directory, "prompt.txt"),
+      artifact_dir: directory,
+      result_manifest_path: result,
+      merge_state: "merged",
+      created_at: "created",
+      updated_at: "updated",
+    };
+  });
+  const response = run(input.request);
+  outcome(response);
+  expect(scan(response)["status"]).toBe("complete");
+  const published = parseJson(readFileSync(findingsPath, "utf8")) as Table;
+  expect(
+    (published["findings"] as Table[]).map((row) => row["summary"]),
+  ).toEqual([authored["summary"]]);
+  expect(
+    parseJson(readFileSync(join(input.directory, "coverage.json"), "utf8")),
+  ).toEqual(coverage);
+  expect(readFileSync(join(input.directory, "report.md"), "utf8")).toContain(
+    authored["summary"] as string,
+  );
+  expect(
+    readFileSync(
+      join(input.directory, "workers/malformed/result.json"),
+      "utf8",
+    ),
+  ).toBe("{unfinished draft");
 });

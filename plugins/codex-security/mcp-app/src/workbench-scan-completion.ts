@@ -121,6 +121,7 @@ export function completeScanLocked(
     try {
       [manifest] = finalizeScan(scanDir, undefined, undefined, {
         expectedCoverageMode: expectedCoverageMode(scan),
+        reportAttempts: 5,
       });
     } catch (error) {
       if (!(error instanceof ContractError)) throw error;
@@ -221,6 +222,7 @@ export function completeScanLocked(
   try {
     const prepared = prepareScanFinalization(scanDir, undefined, {
       expectedCoverageMode: expectedCoverageMode(scan),
+      reportAttempts: 5,
       completionBinding: binding,
       completionWarnings: scan.get("mode") !== "deep" ? warnings : null,
       // Save a completed Deep result as submitted; recovery owns stopped drafts.

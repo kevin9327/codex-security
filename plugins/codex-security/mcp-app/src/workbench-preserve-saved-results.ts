@@ -120,7 +120,9 @@ export function coverageForComparison(scan: Row): Table {
   requireRecordedManifestDigest(scan, scanDir);
   let prepared;
   try {
-    prepared = prepareScanFinalization(scanDir);
+    prepared = prepareScanFinalization(scanDir, undefined, {
+      reportAttempts: 5,
+    });
   } catch (error) {
     if (!(error instanceof ContractError)) throw error;
     throw new WorkbenchValidationError(error.message);
@@ -284,7 +286,7 @@ export function preserveScanResultsLocked(
       scanDir,
       undefined,
       undefined,
-      { expectedCoverageMode: expectedCoverageMode(scan) },
+      { expectedCoverageMode: expectedCoverageMode(scan), reportAttempts: 5 },
     );
     verifyManifestBinding(scan, existing);
     if (jsonGet(existingScan, "status") === outcome) {
@@ -388,6 +390,7 @@ export function preserveScanResultsLocked(
   }
   const prepared = prepareScanFinalization(scanDir, undefined, {
       expectedCoverageMode: expectedCoverageMode(scan),
+      reportAttempts: 5,
       completionBinding: binding,
       completionWarnings: warnings,
       draftDocuments: documents,

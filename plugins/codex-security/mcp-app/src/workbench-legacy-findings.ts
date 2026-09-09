@@ -66,6 +66,7 @@ export function backfillLegacyFindingDetails(
     );
     const [manifest, findings] = finalizeScan(scanDir, undefined, undefined, {
       expectedCoverageMode: expectedCoverageMode(scan),
+      reportAttempts: 5,
     });
     verifyManifestBinding(scan, manifest);
     manifestDigest = publishedManifestDigest(scanDir, manifest);

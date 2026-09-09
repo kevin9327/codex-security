@@ -102,20 +102,29 @@ function ready() {
 }
 
 test("saturated completion cancels active workers and accepts failed discovery workers", () => {
-  const { request } = ready();
-  seedWorker(request, { status: "running", attempt: 1n });
-  seedWorker(request, {
-    id: second,
-    status: "failed",
-    error_message: "failed discovery",
-  });
-  const response = run(request);
-  expect(errors(response)).toEqual([undefined]);
-  expect(storedRun(response)["status"]).toBe("succeeded");
-  expect(storedRun(response)["terminal_reason"]).toBe("saturated");
-  expect(worker(response)["status"]).toBe("canceled");
-  expect(worker(response, second)["status"]).toBe("failed");
-  expect(response.snapshot["scans"]![0]!["status"]).toBe("running");
+  for (const status of ["queued", "running"] as const) {
+    const { request, scan } = ready();
+    const result = join(scan, "worker/result.json");
+    writeFileSync(result, "{unfinished draft");
+    seedWorker(request, { status, attempt: 1n, result_manifest_path: result });
+    seedWorker(request, {
+      id: second,
+      status: "failed",
+      error_message: "failed discovery",
+    });
+    const response = run(request);
+    expect(errors(response)).toEqual([undefined]);
+    expect(storedRun(response)["status"]).toBe("succeeded");
+    expect(storedRun(response)["terminal_reason"]).toBe("saturated");
+    expect(worker(response)["status"]).toBe("canceled");
+    expect(worker(response, second)["status"]).toBe("failed");
+    expect(worker(response, second)["error_message"]).toBe("failed discovery");
+    expect(response.snapshot["scans"]![0]!["status"]).toBe("running");
+    expect(worker(response)["completed_at"]).not.toBeNull();
+    expect(worker(response)["completion_sequence"]).toBeNull();
+    expect(worker(response)["merge_state"]).toBe("none");
+    expect(readFileSync(result, "utf8")).toBe("{unfinished draft");
+  }
 });
 
 test("saturation requires the threshold and exactly identifies omitted buffered workers", () => {
@@ -263,4 +272,20 @@ test("successful staged manifest publication removes the old backup and staged p
   expect(readdirSync(scan).some((name) => name.endsWith(".backup"))).toBe(
     false,
   );
+});
+
+test("saturated completion still rejects failed setup and reducer workers", () => {
+  for (const kind of ["setup", "dedup"] as const) {
+    const { request } = ready();
+    seedWorker(request, {
+      kind,
+      status: "failed",
+      error_message: "worker failed",
+    });
+    const response = run(request);
+    expect(response.outcomes[0]!.error).toContain("after a worker has failed");
+    expect(storedRun(response)["status"]).toBe("running");
+    expect(storedRun(response)["terminal_reason"]).toBeNull();
+    expect(worker(response)["error_message"]).toBe("worker failed");
+  }
 });

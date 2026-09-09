@@ -65,6 +65,7 @@ export function exportFindings(
   try {
     [manifest] = finalizeScan(scanDir, undefined, undefined, {
       expectedCoverageMode: expectedCoverageMode(scan),
+      reportAttempts: 5,
     });
   } catch (error) {
     if (!(error instanceof ContractError)) throw error;
