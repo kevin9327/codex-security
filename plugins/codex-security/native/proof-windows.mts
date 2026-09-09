@@ -682,7 +682,7 @@ async function exclusiveFileProof(root: string) {
       flags.FILE_ATTRIBUTE_NORMAL,
     );
     assert.equal(deletion.error, 32);
-    assert.equal(deletion.handle, null);
+    assert.equal(deletion.handle, undefined);
     assert.equal(file.close(), 0);
     assert.equal(file.close(), 0);
     assert.deepEqual(file.write(Buffer.from("closed")), {

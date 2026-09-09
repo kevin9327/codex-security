@@ -107,6 +107,34 @@ export function windowsSqliteProof(native: SqliteBinding): number {
         try {
           db.exec("CREATE TABLE probe(value); INSERT INTO probe VALUES(1)");
           assert.equal(db.prepare("SELECT value FROM probe").get()!.get(0), 1n);
+          if (spec.name === "long") {
+            db.exec("PRAGMA journal_mode=WAL; INSERT INTO probe VALUES(2)");
+            const reader = new Connection(native, pathToFileURL(path).href, {
+              uri: true,
+              readOnly: true,
+            });
+            try {
+              assert.equal(
+                reader.prepare("SELECT count(*) FROM probe").get()!.get(0),
+                2n,
+              );
+              const attached = new Connection(native, ":memory:");
+              try {
+                attached.prepare("ATTACH DATABASE ? AS saved").run([value]);
+                assert.equal(
+                  attached
+                    .prepare("SELECT count(*) FROM saved.probe")
+                    .get()!
+                    .get(0),
+                  2n,
+                );
+              } finally {
+                attached.close();
+              }
+            } finally {
+              reader.close();
+            }
+          }
         } finally {
           db.close();
         }

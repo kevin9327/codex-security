@@ -15,6 +15,8 @@ mod windows_copy;
 mod windows_crt;
 #[cfg(windows)]
 mod windows_exclusive_file;
+#[cfg(windows)]
+mod windows_sqlite;
 
 #[napi_derive::napi]
 pub fn wall_clock_microseconds() -> napi::bindgen_prelude::BigInt {

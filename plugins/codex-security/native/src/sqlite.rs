@@ -98,7 +98,14 @@ impl SqliteConnection {
             sql::SQLITE_OPEN_READWRITE | sql::SQLITE_OPEN_CREATE
         } | sql::SQLITE_OPEN_FULLMUTEX
             | if uri { sql::SQLITE_OPEN_URI } else { 0 };
-        let code = unsafe { sql::sqlite3_open_v2(name.as_ptr(), &mut raw, flags, ptr::null()) };
+        #[cfg(windows)]
+        let vfs = match crate::windows_sqlite::vfs_name() {
+            Ok(name) => name,
+            Err(code) => return failure(&env, ptr::null_mut(), code),
+        };
+        #[cfg(not(windows))]
+        let vfs = ptr::null();
+        let code = unsafe { sql::sqlite3_open_v2(name.as_ptr(), &mut raw, flags, vfs) };
         if code != sql::SQLITE_OK {
             let error = failure(&env, raw, code);
             if !raw.is_null() {
