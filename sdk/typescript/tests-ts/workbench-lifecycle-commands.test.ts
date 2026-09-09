@@ -171,6 +171,34 @@ test("workspace creation, setup and repeated start use the typed helper without 
   expect(rejected.stderr).toContain("already has a scan");
 });
 
+test("concurrent workspace starts create one running scan", async () => {
+  const s = setup();
+  result(["create-workspace", "--workspace-id", workspace], s);
+  result(["save-workspace", ...workspaceArgs(s)], s);
+  const starts = await Promise.all(
+    [0, 1].map(async () => {
+      const child = await promisify(execFile)(
+        node,
+        [
+          join(PLUGIN_ROOT, "mcp/helpers.mjs"),
+          "start-scan",
+          "--workspace-id",
+          workspace,
+          "--scan-root",
+          s.scanRoot,
+        ],
+        { env: { ...environment, CODEX_SECURITY_STATE_DIR: s.state } },
+      );
+      expect(child.stderr).toBe("");
+      return JSON.parse(child.stdout) as { results: { scanId: string } };
+    }),
+  );
+  expect(starts[0]!.results.scanId).toBe(starts[1]!.results.scanId);
+  expect(snapshot(s)["scans"]).toMatchObject([
+    { id: starts[0]!.results.scanId, status: "running" },
+  ]);
+});
+
 test("prompt and headless starts preserve ownership, context and join behavior", () => {
   for (const command of [
     "start-prompt-only-scan",

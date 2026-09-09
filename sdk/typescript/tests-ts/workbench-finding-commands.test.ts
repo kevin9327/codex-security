@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
@@ -60,12 +60,17 @@ function setup() {
   return { directory, target, state, scanRoot };
 }
 type Setup = ReturnType<typeof setup>;
-function helper(args: string[], s: Setup, input?: string | Buffer) {
+function helper(
+  args: string[],
+  s: Setup,
+  input?: string | Buffer,
+  env = environment,
+) {
   return spawnSync(node, [join(PLUGIN_ROOT, "mcp/helpers.mjs"), ...args], {
     input,
     encoding: "utf8",
     env: {
-      ...environment,
+      ...env,
       CODEX_SECURITY_STATE_DIR: s.state,
       CODEX_HOME: join(s.directory, "codex"),
       CODEX_SQLITE_HOME: join(s.directory, "sqlite"),
@@ -76,8 +81,9 @@ function result(
   args: string[],
   s: Setup,
   input?: string,
+  env = environment,
 ): Record<string, unknown> {
-  const child = helper(args, s, input);
+  const child = helper(args, s, input, env);
   expect(child.status, child.stderr).toBe(0);
   expect(child.stderr).toBe("");
   return JSON.parse(child.stdout) as Record<string, unknown>;
@@ -333,6 +339,98 @@ test("finding triage and remediation commands retain claim and patch ownership w
   expect(finding(value, s.occurrenceId)["triage"]).toMatchObject({
     status: "open",
     closeReason: null,
+  });
+});
+
+test("reviewed patches proceed through apply, verification and triage with persisted checkout guards", () => {
+  const s = completed(),
+    args = identity(s),
+    git = Bun.which("git")!;
+  const env = { ...environment, PATH: dirname(git) };
+  const run = (command: string[]) => result(command, s, undefined, env);
+  run(["request-finding-remediation", ...args]);
+  run(generatedArgs(s));
+  run([
+    "request-finding-remediation-action",
+    ...args,
+    "--expected-version",
+    "2",
+    "--action",
+    "apply",
+  ]);
+  const applied = spawnSync(
+    git,
+    [
+      "apply",
+      "--no-index",
+      join(current(s)["scan_dir"] as string, "reviewed.patch"),
+    ],
+    { cwd: s.target, encoding: "utf8" },
+  );
+  expect(applied.status, applied.stderr).toBe(0);
+  const setState = (version: number, state: string) => [
+    "set-finding-remediation",
+    ...args,
+    "--expected-version",
+    String(version),
+    "--state",
+    state,
+    "--base-revision",
+    "unversioned",
+  ];
+  const unrelated = join(s.target, "unrelated.txt");
+  writeFileSync(unrelated, "outside the reviewed patch\n");
+  const extraChanges = helper(setState(3, "applied"), s, undefined, env);
+  expect(extraChanges.status).toBe(1);
+  expect(extraChanges.stderr).toContain("changes outside the reviewed patch");
+  rmSync(unrelated);
+  expect(
+    finding(run(setState(3, "applied")), s.occurrenceId)["remediationState"],
+  ).toMatchObject({ state: "applied", version: 4 });
+  run([
+    "request-finding-remediation-action",
+    ...args,
+    "--expected-version",
+    "4",
+    "--action",
+    "verify",
+  ]);
+  expect(
+    finding(run(setState(5, "verifying")), s.occurrenceId)["remediationState"],
+  ).toMatchObject({ state: "verifying", version: 6, pendingAction: "verify" });
+  expect(
+    finding(
+      run([
+        ...setState(6, "verified"),
+        "--verification-summary",
+        "Focused regression tests passed.",
+      ]),
+      s.occurrenceId,
+    )["remediationState"],
+  ).toMatchObject({ state: "verified", version: 7, pendingAction: null });
+  const close = [
+    "set-finding-triage",
+    "--occurrence-id",
+    s.occurrenceId,
+    "--status",
+    "closed",
+    "--close-reason",
+    "already_fixed",
+  ];
+  writeFileSync(join(s.target, "source.ts"), "changed after verification\n");
+  const stale = helper(close, s, undefined, env);
+  expect(stale.status).toBe(1);
+  expect(stale.stderr).toContain("Working-tree contents changed");
+  writeFileSync(join(s.target, "source.ts"), "changed source\n");
+  expect(finding(run(close), s.occurrenceId)["triage"]).toMatchObject({
+    status: "closed",
+    closeReason: "already_fixed",
+  });
+  expect(
+    finding(run(["get-scan", "--scan-id", s.scanId]), s.occurrenceId),
+  ).toMatchObject({
+    triage: { status: "closed" },
+    remediationState: { state: "verified", version: 7 },
   });
 });
 

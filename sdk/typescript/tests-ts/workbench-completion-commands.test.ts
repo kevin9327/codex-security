@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { buildSync } from "esbuild";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root";
@@ -202,6 +203,35 @@ test("draft, preparation and completion seal the registered scan without Python"
   const before = snapshot(s);
   result(["complete-scan", ...identity], s);
   expect(snapshot(s)).toEqual(before);
+});
+
+test("concurrent completion seals one scan and indexes each occurrence once", async () => {
+  const s = setup(),
+    scanId = startScan(s),
+    staged = draft(s);
+  const identity = ["--scan-id", scanId, "--claim-token", token];
+  result(["write-scan-draft", ...identity, "--draft-path", staged.path], s);
+  const completions = await Promise.all(
+    [0, 1].map(() =>
+      promisify(execFile)(
+        node,
+        [join(PLUGIN_ROOT, "mcp/helpers.mjs"), "complete-scan", ...identity],
+        { env: { ...environment, CODEX_SECURITY_STATE_DIR: s.state } },
+      ),
+    ),
+  );
+  for (const child of completions) {
+    expect(child.stderr).toBe("");
+    expect(JSON.parse(child.stdout)).toMatchObject({
+      scan: { progress: { status: "complete" } },
+    });
+  }
+  const after = snapshot(s);
+  expect(after["scans"]).toHaveLength(1);
+  expect(after["scans"]![0]!["seal_manifest_digest"]).toMatch(
+    /^sha256:[a-f0-9]{64}$/,
+  );
+  expect(after["finding_occurrences"]).toHaveLength(1);
 });
 
 test("failure preserves retained evidence and recovery republishes it", () => {
