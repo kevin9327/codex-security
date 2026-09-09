@@ -498,6 +498,72 @@ test("missing Deep native history falls back to a new attempt from semantic chec
   });
 });
 
+test.each(["initialize", "start-thread", "run-streamed"] as const)(
+  "a failed continuation keeps inherited cost only before inference dispatch (%s)",
+  async (phase) => {
+    const f = await savedScan({ maxCostUsd: 100 });
+    let childId = "";
+    let modelCalls = 0;
+    const failure = new Error("Synthetic continuation setup failure");
+    const stopped = await resume(f, (options) => {
+      childId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+      if (phase === "initialize") throw failure;
+      return {
+        startThread() {
+          if (phase === "start-thread") throw failure;
+          return {
+            id: randomUUID(),
+            async runStreamed() {
+              modelCalls++;
+              throw failure;
+            },
+          };
+        },
+      };
+    });
+    expect(stopped.code).not.toBe(0);
+    expect(stopped.stderr).toContain(failure.message);
+    expect(childId).not.toBe(f.scanId);
+    expect(modelCalls).toBe(phase === "run-streamed" ? 1 : 0);
+    const saved = await f.command([
+      "get-cli-scan-resume",
+      "--scan-id",
+      childId,
+    ]);
+    expect(saved["cost"] ?? null).toEqual(
+      phase === "run-streamed" ? null : previousCost,
+    );
+
+    modelCalls = 0;
+    const retried = await resume({ ...f, scanId: childId }, (options) => ({
+      startThread(threadOptions) {
+        const scanDir = threadOptions.workingDirectory!;
+        const scanId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+        const threadId = randomUUID();
+        return {
+          id: threadId,
+          async runStreamed() {
+            modelCalls++;
+            await finishChild(f, scanDir, scanId);
+            return { events: completedEvents(threadId) };
+          },
+        };
+      },
+    }));
+    if (phase === "run-streamed") {
+      expect(retried.code).not.toBe(0);
+      expect(retried.stderr).toContain("cost is unavailable");
+      expect(modelCalls).toBe(0);
+    } else {
+      expect(retried.code, retried.stderr).toBe(0);
+      expect(modelCalls).toBe(1);
+      expect(JSON.parse(retried.stdout).cost.estimatedUsd).toBeGreaterThan(
+        previousCost.estimatedUsd,
+      );
+    }
+  },
+);
+
 test.each([
   "changed source",
   "missing cost",

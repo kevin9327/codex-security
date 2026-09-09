@@ -796,6 +796,7 @@ export class CodexSecurity {
     let completionCost: ScanCost | null = null;
     let previousCost: ScanCost | null = null;
     let completeFromCheckpoint = false;
+    let inferenceStarted = false;
     let completionSourceThreadId: string | undefined;
     const requireContinuationBudget = () => {
       if (
@@ -1785,6 +1786,7 @@ export class CodexSecurity {
       if (postScanPrompt?.trim()) {
         runPostScan = () => thread.runStreamed(postScanPrompt, { signal });
       }
+      inferenceStarted = true;
       const { events } = await thread.runStreamed(prompt, {
         signal,
       });
@@ -2097,27 +2099,23 @@ export class CodexSecurity {
       // Recorded first: everything below can throw a different error for this same failed
       // scan, and cleanup must treat all of those as a failure it is not allowed to mask.
       scanFailure = true;
-      const latestSnapshot = await costTracker?.stop().catch(() => null);
-      const snapshot = latestSnapshot
-        ? {
-            ...latestSnapshot,
-            cost: completeFromCheckpoint
-              ? previousCost
-              : cumulativeCost(latestSnapshot.cost),
-          }
-        : latestSnapshot;
+      const snapshot = await costTracker?.stop().catch(() => null);
+      const failureCost =
+        completeFromCheckpoint || (!inferenceStarted && snapshot?.cost == null)
+          ? previousCost
+          : cumulativeCost(snapshot?.cost ?? null);
       let failure =
         signal.reason instanceof ScanCostLimitExceededError
           ? signal.reason
           : error;
       if (
         failure instanceof ScanCostLimitExceededError &&
-        snapshot?.cost &&
-        snapshot.cost.estimatedUsd > failure.cost.estimatedUsd
+        failureCost &&
+        failureCost.estimatedUsd > failure.cost.estimatedUsd
       ) {
         failure = new ScanCostLimitExceededError(
           failure.maxCostUsd,
-          snapshot.cost,
+          failureCost,
           scanDir,
         );
       }
@@ -2137,7 +2135,7 @@ export class CodexSecurity {
               "--scan-id",
               activeScan.id,
               "--cost-json",
-              JSON.stringify(snapshot?.cost ?? failure.cost),
+              JSON.stringify(failureCost ?? failure.cost),
               "--message",
               failure.message.slice(0, 2400),
             ],
@@ -2197,7 +2195,7 @@ export class CodexSecurity {
             ? result
             : new ScanResult({
                 ...result,
-                cost: snapshot?.cost ?? failure.cost,
+                cost: failureCost ?? failure.cost,
               });
         } catch {}
       }
@@ -2222,8 +2220,8 @@ export class CodexSecurity {
             // Scan history can be shared; never persist credential-bearing failures.
             "--message",
             safeErrorMessage(failure).slice(0, 2400),
-            ...(snapshot?.cost
-              ? ["--cost-json", JSON.stringify(snapshot.cost)]
+            ...(failureCost
+              ? ["--cost-json", JSON.stringify(failureCost)]
               : []),
           ]);
         } catch {}
