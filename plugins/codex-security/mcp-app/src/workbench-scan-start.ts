@@ -55,7 +55,7 @@ export function compactTimestamp(): string {
   );
 }
 
-function temporaryDirectory(parent: string, prefix: string): string {
+export function temporaryDirectory(parent: string, prefix: string): string {
   const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789_";
   // tempfile.mkdtemp uses eight characters and the platform TMP_MAX retry count.
   for (let attempt = 0; attempt < temporaryNameAttempts; attempt++) {
