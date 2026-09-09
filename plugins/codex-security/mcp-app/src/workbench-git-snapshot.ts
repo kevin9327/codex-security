@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstatSync, statSync } from "node:fs";
 import { sep } from "node:path";
 import { unixBinding, windowsBinding } from "./native";
@@ -29,6 +30,21 @@ const pathParts = (path: string) =>
     .filter((part) => part !== "" && part !== ".");
 const equalPath = (left: string, right: string) =>
   windows ? left.toLowerCase() === right.toLowerCase() : left === right;
+
+export function cleanWorktreeContentDigest(): string {
+  const digest = createHash("sha256");
+  for (const [label, value] of [
+    ["format", "codex-security-snapshot/v1"],
+    ["tracked-diff", ""],
+  ] as const) {
+    const labelSize = Buffer.alloc(4),
+      valueSize = Buffer.alloc(8);
+    labelSize.writeUInt32BE(Buffer.byteLength(label));
+    valueSize.writeBigUInt64BE(BigInt(Buffer.byteLength(value)));
+    digest.update(labelSize).update(label).update(valueSize).update(value);
+  }
+  return `codex-security-snapshot/v1:sha256:${digest.digest("hex")}`;
+}
 
 export function gitWorktreeContext(target: string): [string, string] {
   const root = gitOutput(target, ["rev-parse", "--show-toplevel"]);
