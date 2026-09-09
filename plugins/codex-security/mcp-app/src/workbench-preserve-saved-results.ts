@@ -80,13 +80,17 @@ const storedJson = (value: unknown): unknown =>
   parseJson(value as string | Buffer, false, preflightInteger);
 const json = (value: unknown, sortKeys = false): string =>
   stringifyJson(value, { compact: true, sortKeys });
-function iterable(value: unknown): unknown[] {
+export function storedWarningValues(value: unknown, unpack = false): unknown[] {
   if (Array.isArray(value)) return value;
   if (typeof value === "string") return Array.from(value);
   if (object(value)) return objectEntries(value).map(([key]) => key);
-  throw new TypeError(`'${jsonTypeName(value)}' object is not iterable`);
+  throw new TypeError(
+    unpack
+      ? `Value after * must be an iterable, not ${jsonTypeName(value)}`
+      : `'${jsonTypeName(value)}' object is not iterable`,
+  );
 }
-function unique(values: unknown[]): unknown[] {
+export function uniqueWarnings(values: unknown[]): unknown[] {
   const seen = new Set<unknown>(),
     result: unknown[] = [];
   for (const value of values) {
@@ -203,7 +207,7 @@ export function preserveScanResultsLocked(
         ? "interrupted"
         : "failed",
     storedWarnings = storedJson(scan.get("completion_warnings_json")),
-    warningValues = iterable(storedWarnings),
+    warningValues = storedWarningValues(storedWarnings),
     followUpWarnings = warningValues.filter(
       (warning) =>
         typeof warning === "string" &&
@@ -256,7 +260,7 @@ export function preserveScanResultsLocked(
         .run([
           digest,
           json(sources, true),
-          json(unique(warnings)),
+          json(uniqueWarnings(warnings)),
           timestamp,
           scanId,
         ]);
@@ -355,7 +359,10 @@ export function preserveScanResultsLocked(
     },
   );
   if (documents === null) {
-    const unpublishedWarnings = unique([...warnings, ...followUpWarnings]);
+    const unpublishedWarnings = uniqueWarnings([
+      ...warnings,
+      ...followUpWarnings,
+    ]);
     const unchanged =
       Array.isArray(storedWarnings) &&
       unpublishedWarnings.length === storedWarnings.length &&
