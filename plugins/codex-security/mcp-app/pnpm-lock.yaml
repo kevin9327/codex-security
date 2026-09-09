@@ -7,7 +7,7 @@ settings:
 packageExtensionsChecksum: sha256-Atsq2tDocHOollJTodFPZPOFy793HEJUCwhDRy+yIPQ=
 
 patchedDependencies:
-  py-ast@1.16.0: a6b7c718d0c02b195cb130d230ecf14a5f468b6598c77c4bf2ce44e2321ba620
+  py-ast@1.16.0: 3b0cedd93485df6d25b68538385a3287febae70c639192f369fc7e94d30cd831
 
 importers:
 
@@ -21,7 +21,7 @@ importers:
         version: 0.149.1
       py-ast:
         specifier: 1.16.0
-        version: 1.16.0(patch_hash=a6b7c718d0c02b195cb130d230ecf14a5f468b6598c77c4bf2ce44e2321ba620)
+        version: 1.16.0(patch_hash=3b0cedd93485df6d25b68538385a3287febae70c639192f369fc7e94d30cd831)
       zod:
         specifier: ^4.3.6
         version: 4.4.3
@@ -1056,7 +1056,7 @@ snapshots:
       forwarded: 0.2.0
       ipaddr.js: 1.9.1
 
-  py-ast@1.16.0(patch_hash=a6b7c718d0c02b195cb130d230ecf14a5f468b6598c77c4bf2ce44e2321ba620):
+  py-ast@1.16.0(patch_hash=3b0cedd93485df6d25b68538385a3287febae70c639192f369fc7e94d30cd831):
     dependencies:
       '@unicode/unicode-15.0.0': 2.0.2
 

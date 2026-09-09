@@ -1,3 +1,288 @@
+diff --git a/dist/LICENSE-PYTHON b/dist/LICENSE-PYTHON
+new file mode 100644
+index 0000000000000000000000000000000000000000..f26bcf4d2de6eb136e31006ca3ab447d5e488adf
+--- /dev/null
++++ b/dist/LICENSE-PYTHON
+@@ -0,0 +1,279 @@
++A. HISTORY OF THE SOFTWARE
++==========================
++
++Python was created in the early 1990s by Guido van Rossum at Stichting
++Mathematisch Centrum (CWI, see https://www.cwi.nl) in the Netherlands
++as a successor of a language called ABC.  Guido remains Python's
++principal author, although it includes many contributions from others.
++
++In 1995, Guido continued his work on Python at the Corporation for
++National Research Initiatives (CNRI, see https://www.cnri.reston.va.us)
++in Reston, Virginia where he released several versions of the
++software.
++
++In May 2000, Guido and the Python core development team moved to
++BeOpen.com to form the BeOpen PythonLabs team.  In October of the same
++year, the PythonLabs team moved to Digital Creations, which became
++Zope Corporation.  In 2001, the Python Software Foundation (PSF, see
++https://www.python.org/psf/) was formed, a non-profit organization
++created specifically to own Python-related Intellectual Property.
++Zope Corporation was a sponsoring member of the PSF.
++
++All Python releases are Open Source (see https://opensource.org for
++the Open Source Definition).  Historically, most, but not all, Python
++releases have also been GPL-compatible; the table below summarizes
++the various releases.
++
++    Release         Derived     Year        Owner       GPL-
++                    from                                compatible? (1)
++
++    0.9.0 thru 1.2              1991-1995   CWI         yes
++    1.3 thru 1.5.2  1.2         1995-1999   CNRI        yes
++    1.6             1.5.2       2000        CNRI        no
++    2.0             1.6         2000        BeOpen.com  no
++    1.6.1           1.6         2001        CNRI        yes (2)
++    2.1             2.0+1.6.1   2001        PSF         no
++    2.0.1           2.0+1.6.1   2001        PSF         yes
++    2.1.1           2.1+2.0.1   2001        PSF         yes
++    2.1.2           2.1.1       2002        PSF         yes
++    2.1.3           2.1.2       2002        PSF         yes
++    2.2 and above   2.1.1       2001-now    PSF         yes
++
++Footnotes:
++
++(1) GPL-compatible doesn't mean that we're distributing Python under
++    the GPL.  All Python licenses, unlike the GPL, let you distribute
++    a modified version without making your changes open source.  The
++    GPL-compatible licenses make it possible to combine Python with
++    other software that is released under the GPL; the others don't.
++
++(2) According to Richard Stallman, 1.6.1 is not GPL-compatible,
++    because its license has a choice of law clause.  According to
++    CNRI, however, Stallman's lawyer has told CNRI's lawyer that 1.6.1
++    is "not incompatible" with the GPL.
++
++Thanks to the many outside volunteers who have worked under Guido's
++direction to make these releases possible.
++
++
++B. TERMS AND CONDITIONS FOR ACCESSING OR OTHERWISE USING PYTHON
++===============================================================
++
++Python software and documentation are licensed under the
++Python Software Foundation License Version 2.
++
++Starting with Python 3.8.6, examples, recipes, and other code in
++the documentation are dual licensed under the PSF License Version 2
++and the Zero-Clause BSD license.
++
++Some software incorporated into Python is under different licenses.
++The licenses are listed with code falling under that license.
++
++
++PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
++--------------------------------------------
++
++1. This LICENSE AGREEMENT is between the Python Software Foundation
++("PSF"), and the Individual or Organization ("Licensee") accessing and
++otherwise using this software ("Python") in source or binary form and
++its associated documentation.
++
++2. Subject to the terms and conditions of this License Agreement, PSF hereby
++grants Licensee a nonexclusive, royalty-free, world-wide license to reproduce,
++analyze, test, perform and/or display publicly, prepare derivative works,
++distribute, and otherwise use Python alone or in any derivative version,
++provided, however, that PSF's License Agreement and PSF's notice of copyright,
++i.e., "Copyright (c) 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010,
++2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023 Python Software Foundation;
++All Rights Reserved" are retained in Python alone or in any derivative version
++prepared by Licensee.
++
++3. In the event Licensee prepares a derivative work that is based on
++or incorporates Python or any part thereof, and wants to make
++the derivative work available to others as provided herein, then
++Licensee hereby agrees to include in any such work a brief summary of
++the changes made to Python.
++
++4. PSF is making Python available to Licensee on an "AS IS"
++basis.  PSF MAKES NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR
++IMPLIED.  BY WAY OF EXAMPLE, BUT NOT LIMITATION, PSF MAKES NO AND
++DISCLAIMS ANY REPRESENTATION OR WARRANTY OF MERCHANTABILITY OR FITNESS
++FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF PYTHON WILL NOT
++INFRINGE ANY THIRD PARTY RIGHTS.
++
++5. PSF SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON
++FOR ANY INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS
++A RESULT OF MODIFYING, DISTRIBUTING, OR OTHERWISE USING PYTHON,
++OR ANY DERIVATIVE THEREOF, EVEN IF ADVISED OF THE POSSIBILITY THEREOF.
++
++6. This License Agreement will automatically terminate upon a material
++breach of its terms and conditions.
++
++7. Nothing in this License Agreement shall be deemed to create any
++relationship of agency, partnership, or joint venture between PSF and
++Licensee.  This License Agreement does not grant permission to use PSF
++trademarks or trade name in a trademark sense to endorse or promote
++products or services of Licensee, or any third party.
++
++8. By copying, installing or otherwise using Python, Licensee
++agrees to be bound by the terms and conditions of this License
++Agreement.
++
++
++BEOPEN.COM LICENSE AGREEMENT FOR PYTHON 2.0
++-------------------------------------------
++
++BEOPEN PYTHON OPEN SOURCE LICENSE AGREEMENT VERSION 1
++
++1. This LICENSE AGREEMENT is between BeOpen.com ("BeOpen"), having an
++office at 160 Saratoga Avenue, Santa Clara, CA 95051, and the
++Individual or Organization ("Licensee") accessing and otherwise using
++this software in source or binary form and its associated
++documentation ("the Software").
++
++2. Subject to the terms and conditions of this BeOpen Python License
++Agreement, BeOpen hereby grants Licensee a non-exclusive,
++royalty-free, world-wide license to reproduce, analyze, test, perform
++and/or display publicly, prepare derivative works, distribute, and
++otherwise use the Software alone or in any derivative version,
++provided, however, that the BeOpen Python License is retained in the
++Software, alone or in any derivative version prepared by Licensee.
++
++3. BeOpen is making the Software available to Licensee on an "AS IS"
++basis.  BEOPEN MAKES NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR
++IMPLIED.  BY WAY OF EXAMPLE, BUT NOT LIMITATION, BEOPEN MAKES NO AND
++DISCLAIMS ANY REPRESENTATION OR WARRANTY OF MERCHANTABILITY OR FITNESS
++FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF THE SOFTWARE WILL NOT
++INFRINGE ANY THIRD PARTY RIGHTS.
++
++4. BEOPEN SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF THE
++SOFTWARE FOR ANY INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS
++AS A RESULT OF USING, MODIFYING OR DISTRIBUTING THE SOFTWARE, OR ANY
++DERIVATIVE THEREOF, EVEN IF ADVISED OF THE POSSIBILITY THEREOF.
++
++5. This License Agreement will automatically terminate upon a material
++breach of its terms and conditions.
++
++6. This License Agreement shall be governed by and interpreted in all
++respects by the law of the State of California, excluding conflict of
++law provisions.  Nothing in this License Agreement shall be deemed to
++create any relationship of agency, partnership, or joint venture
++between BeOpen and Licensee.  This License Agreement does not grant
++permission to use BeOpen trademarks or trade names in a trademark
++sense to endorse or promote products or services of Licensee, or any
++third party.  As an exception, the "BeOpen Python" logos available at
++http://www.pythonlabs.com/logos.html may be used according to the
++permissions granted on that web page.
++
++7. By copying, installing or otherwise using the software, Licensee
++agrees to be bound by the terms and conditions of this License
++Agreement.
++
++
++CNRI LICENSE AGREEMENT FOR PYTHON 1.6.1
++---------------------------------------
++
++1. This LICENSE AGREEMENT is between the Corporation for National
++Research Initiatives, having an office at 1895 Preston White Drive,
++Reston, VA 20191 ("CNRI"), and the Individual or Organization
++("Licensee") accessing and otherwise using Python 1.6.1 software in
++source or binary form and its associated documentation.
++
++2. Subject to the terms and conditions of this License Agreement, CNRI
++hereby grants Licensee a nonexclusive, royalty-free, world-wide
++license to reproduce, analyze, test, perform and/or display publicly,
++prepare derivative works, distribute, and otherwise use Python 1.6.1
++alone or in any derivative version, provided, however, that CNRI's
++License Agreement and CNRI's notice of copyright, i.e., "Copyright (c)
++1995-2001 Corporation for National Research Initiatives; All Rights
++Reserved" are retained in Python 1.6.1 alone or in any derivative
++version prepared by Licensee.  Alternately, in lieu of CNRI's License
++Agreement, Licensee may substitute the following text (omitting the
++quotes): "Python 1.6.1 is made available subject to the terms and
++conditions in CNRI's License Agreement.  This Agreement together with
++Python 1.6.1 may be located on the internet using the following
++unique, persistent identifier (known as a handle): 1895.22/1013.  This
++Agreement may also be obtained from a proxy server on the internet
++using the following URL: http://hdl.handle.net/1895.22/1013".
++
++3. In the event Licensee prepares a derivative work that is based on
++or incorporates Python 1.6.1 or any part thereof, and wants to make
++the derivative work available to others as provided herein, then
++Licensee hereby agrees to include in any such work a brief summary of
++the changes made to Python 1.6.1.
++
++4. CNRI is making Python 1.6.1 available to Licensee on an "AS IS"
++basis.  CNRI MAKES NO REPRESENTATIONS OR WARRANTIES, EXPRESS OR
++IMPLIED.  BY WAY OF EXAMPLE, BUT NOT LIMITATION, CNRI MAKES NO AND
++DISCLAIMS ANY REPRESENTATION OR WARRANTY OF MERCHANTABILITY OR FITNESS
++FOR ANY PARTICULAR PURPOSE OR THAT THE USE OF PYTHON 1.6.1 WILL NOT
++INFRINGE ANY THIRD PARTY RIGHTS.
++
++5. CNRI SHALL NOT BE LIABLE TO LICENSEE OR ANY OTHER USERS OF PYTHON
++1.6.1 FOR ANY INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES OR LOSS AS
++A RESULT OF MODIFYING, DISTRIBUTING, OR OTHERWISE USING PYTHON 1.6.1,
++OR ANY DERIVATIVE THEREOF, EVEN IF ADVISED OF THE POSSIBILITY THEREOF.
++
++6. This License Agreement will automatically terminate upon a material
++breach of its terms and conditions.
++
++7. This License Agreement shall be governed by the federal
++intellectual property law of the United States, including without
++limitation the federal copyright law, and, to the extent such
++U.S. federal law does not apply, by the law of the Commonwealth of
++Virginia, excluding Virginia's conflict of law provisions.
++Notwithstanding the foregoing, with regard to derivative works based
++on Python 1.6.1 that incorporate non-separable material that was
++previously distributed under the GNU General Public License (GPL), the
++law of the Commonwealth of Virginia shall govern this License
++Agreement only as to issues arising under or with respect to
++Paragraphs 4, 5, and 7 of this License Agreement.  Nothing in this
++License Agreement shall be deemed to create any relationship of
++agency, partnership, or joint venture between CNRI and Licensee.  This
++License Agreement does not grant permission to use CNRI trademarks or
++trade name in a trademark sense to endorse or promote products or
++services of Licensee, or any third party.
++
++8. By clicking on the "ACCEPT" button where indicated, or by copying,
++installing or otherwise using Python 1.6.1, Licensee agrees to be
++bound by the terms and conditions of this License Agreement.
++
++        ACCEPT
++
++
++CWI LICENSE AGREEMENT FOR PYTHON 0.9.0 THROUGH 1.2
++--------------------------------------------------
++
++Copyright (c) 1991 - 1995, Stichting Mathematisch Centrum Amsterdam,
++The Netherlands.  All rights reserved.
++
++Permission to use, copy, modify, and distribute this software and its
++documentation for any purpose and without fee is hereby granted,
++provided that the above copyright notice appear in all copies and that
++both that copyright notice and this permission notice appear in
++supporting documentation, and that the name of Stichting Mathematisch
++Centrum or CWI not be used in advertising or publicity pertaining to
++distribution of the software without specific, written prior
++permission.
++
++STICHTING MATHEMATISCH CENTRUM DISCLAIMS ALL WARRANTIES WITH REGARD TO
++THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
++FITNESS, IN NO EVENT SHALL STICHTING MATHEMATISCH CENTRUM BE LIABLE
++FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
++OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++
++ZERO-CLAUSE BSD LICENSE FOR CODE IN THE PYTHON DOCUMENTATION
++----------------------------------------------------------------------
++
++Permission to use, copy, modify, and/or distribute this software for any
++purpose with or without fee is hereby granted.
++
++THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
++REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
++AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
++INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
++LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
++OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
++PERFORMANCE OF THIS SOFTWARE.
 diff --git a/dist/LICENSE-UNICODE b/dist/LICENSE-UNICODE
 new file mode 100644
 index 0000000000000000000000000000000000000000..d7e7973c2fd6f2586a8999a69dc21e39af26be0f
@@ -46,7 +331,7 @@ index 0000000000000000000000000000000000000000..d7e7973c2fd6f2586a8999a69dc21e39
 +
 +SPDX-License-Identifier: Unicode-3.0
 diff --git a/dist/index.cjs b/dist/index.cjs
-index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13ffc75270 100644
+index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..d86bdaca78af846692756eae238cf3f0526f0915 100644
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
 @@ -1,5 +1,20 @@
@@ -55,8 +340,8 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
 +var xidStart = require('@unicode/unicode-15.0.0/Binary_Property/XID_Start/regex.js');
 +var xidContinue = require('@unicode/unicode-15.0.0/Binary_Property/XID_Continue/regex.js');
 +var loadNameData = require('./unicode-data.cjs');
-+require('@unicode/unicode-15.0.0/General_Category/Other/regex.js');
-+require('@unicode/unicode-15.0.0/General_Category/Separator/regex.js');
++var other = require('@unicode/unicode-15.0.0/General_Category/Other/regex.js');
++var separator = require('@unicode/unicode-15.0.0/General_Category/Separator/regex.js');
 +
 +const digits = "[0-9](?:_?[0-9])*";
 +const exponent = `[eE][+-]?${digits}`;
@@ -245,7 +530,22 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
    }
  }
  
-@@ -1124,6 +1158,119 @@ class PyComplex {
+@@ -1115,7 +1149,13 @@ class PyComplex {
+    * imaginary part of `-0.0` (e.g. from `3-0j`) needs to round-trip.
+    */
+   toString() {
+-    const formatPart = (n) => Object.is(n, -0) ? "-0" : `${n}`;
++    const formatPart = (n) => {
++      if (Object.is(n, -0)) return "-0";
++      if (Number.isNaN(n)) return "nan";
++      if (!Number.isFinite(n)) return n < 0 ? "-inf" : "inf";
++      const magnitude = Math.abs(n);
++      return magnitude !== 0 && (magnitude < 1e-4 || magnitude >= 1e16) ? n.toExponential().replace(/e([+-])([0-9])$/u, "e$10$2") : `${n}`;
++    };
+     if (Object.is(this.real, 0)) {
+       return `${formatPart(this.imag)}j`;
+     }
+@@ -1124,6 +1164,122 @@ class PyComplex {
    }
  }
  
@@ -361,11 +661,14 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
 +  }
 +  return point === void 0 ? void 0 : String.fromCodePoint(point);
 +}
++function isPrintable(character) {
++  return character === " " || !(other.test(character) || separator.test(character));
++}
 +
  const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
  const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
  class Parser {
-@@ -1141,6 +1288,7 @@ class Parser {
+@@ -1141,6 +1297,7 @@ class Parser {
      const lexer = new Lexer(source);
      this.tokens = lexer.tokenize();
      this.includeComments = options.comments ?? false;
@@ -373,7 +676,31 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
      if (!this.includeComments) {
        this.tokens = this.tokens.filter(
          (token) => token.type !== TokenType.COMMENT
-@@ -3603,6 +3751,7 @@ class Parser {
+@@ -2605,6 +2762,7 @@ class Parser {
+       let value = {
+         nodeType: "Constant",
+         value: this.parseNumber(numToken.value),
++        literal_kind: this.numberKind(numToken.value),
+         lineno: numToken.lineno,
+         col_offset: numToken.col_offset,
+         end_lineno: this.previous().end_lineno,
+@@ -3351,6 +3509,7 @@ class Parser {
+       return {
+         nodeType: "Constant",
+         value: this.parseNumber(token.value),
++        literal_kind: this.numberKind(token.value),
+         lineno: token.lineno,
+         col_offset: token.col_offset,
+         end_lineno: this.previous().end_lineno,
+@@ -3399,6 +3558,7 @@ class Parser {
+         nodeType: "Constant",
+         value: "...",
+         // Ellipsis representation
++        literal_kind: "ellipsis",
+         lineno: token.lineno,
+         col_offset: token.col_offset,
+         end_lineno: this.previous().end_lineno,
+@@ -3603,6 +3763,7 @@ class Parser {
            throw this.error("arguments cannot follow var-keyword argument");
          }
          if (this.match(TokenType.SLASH)) {
@@ -381,7 +708,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
            if (seenStar) {
              throw this.error("/ must be ahead of *");
            }
-@@ -3738,6 +3887,7 @@ class Parser {
+@@ -3738,6 +3899,7 @@ class Parser {
          throw this.error("arguments cannot follow var-keyword argument");
        }
        if (this.match(TokenType.SLASH)) {
@@ -389,7 +716,20 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
          if (seenStar) {
            throw this.error("/ must be ahead of *");
          }
-@@ -4424,6 +4574,8 @@ class Parser {
+@@ -4376,6 +4538,12 @@ class Parser {
+         break;
+     }
+   }
++  /** Preserve the numeric literal kind independently of its JavaScript value. */
++  numberKind(value) {
++    if (/[jJ]$/u.test(value)) return "complex";
++    if (/^0[xob]/iu.test(value)) return "int";
++    return /[.eE]/u.test(value) ? "float" : "int";
++  }
+   /**
+    * Converts a raw numeric literal token value to a JS `number`, handling
+    * hex (`0x`), octal (`0o`), binary (`0b`), float, and decimal-int forms.
+@@ -4424,6 +4592,8 @@ class Parser {
      if (actualValue.startsWith('"""') || actualValue.startsWith("'''")) {
        content = actualValue.slice(3, -3);
      }
@@ -398,7 +738,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
      if (prefix.includes("r")) {
        return content;
      }
-@@ -4438,9 +4590,8 @@ class Parser {
+@@ -4438,9 +4608,8 @@ class Parser {
     * additionally decode `\uxxxx` (4 hex digits) and `\Uxxxxxxxx` (8 hex
     * digits); those two, along with `\N{...}` named escapes, aren't
     * recognized in bytes literals and are left as literal text there,
@@ -410,7 +750,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
     * kept as-is (backslash plus the following character), matching
     * CPython's handling of unrecognized escapes.
     * @param content The literal's content, quotes and prefix already stripped.
-@@ -4503,8 +4654,7 @@ class Parser {
+@@ -4503,8 +4672,7 @@ class Parser {
              result += String.fromCharCode(parseInt(hex, 16));
              i += 4;
            } else {
@@ -420,7 +760,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
            }
            continue;
          }
-@@ -4514,7 +4664,8 @@ class Parser {
+@@ -4514,7 +4682,8 @@ class Parser {
          while (digits.length < 3 && content[i + 1 + digits.length] >= "0" && content[i + 1 + digits.length] <= "7") {
            digits += content[i + 1 + digits.length];
          }
@@ -430,7 +770,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
          i += 1 + digits.length;
          continue;
        }
-@@ -4525,6 +4676,7 @@ class Parser {
+@@ -4525,6 +4694,7 @@ class Parser {
            i += 6;
            continue;
          }
@@ -438,7 +778,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
        }
        if (!isBytes && next === "U") {
          const hex = content.slice(i + 2, i + 10);
-@@ -4533,14 +4685,16 @@ class Parser {
+@@ -4533,14 +4703,16 @@ class Parser {
            i += 10;
            continue;
          }
@@ -463,7 +803,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
        }
        result += ch + next;
        i += 2;
-@@ -4572,7 +4726,7 @@ class Parser {
+@@ -4572,7 +4744,7 @@ class Parser {
    }
    /**
     * Computes a plain string `Constant`'s real CPython `kind`: `"u"` for a
@@ -472,7 +812,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
     * `ast.Constant.kind` never holds anything else (no `r`/`b`/quote-style
     * info) — that richer info is round-tripping-only and lives in the
     * node's `quote_style` field instead (a py-ast extension, not part of
-@@ -4581,7 +4735,7 @@ class Parser {
+@@ -4581,7 +4753,7 @@ class Parser {
     * @returns `"u"` or `undefined`.
     */
    cpythonStringKind(quoteStyle) {
@@ -481,7 +821,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
    }
    /**
     * Determines whether a string token's prefix marks it as an f-string or
-@@ -4651,13 +4805,19 @@ class Parser {
+@@ -4651,13 +4823,19 @@ class Parser {
      const parts = [];
      let anyFString = false;
      let anyTemplateStr = false;
@@ -501,7 +841,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
          anyTemplateStr = true;
          parts.push(this.parseTemplateStr(token));
        } else {
-@@ -5399,7 +5559,7 @@ class Parser {
+@@ -5399,7 +5577,7 @@ class Parser {
      let tempParser;
      let expr;
      try {
@@ -510,7 +850,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
        expr = tempParser.parseTestListWithStar();
      } catch (_error) {
        throw this.errorAt(
-@@ -5799,6 +5959,7 @@ class Parser {
+@@ -5799,6 +5977,7 @@ class Parser {
          ).value;
          let default_value;
          if (this.match(TokenType.EQUAL)) {
@@ -518,7 +858,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
            default_value = this.parseTestOrStarred();
          }
          params.push({
-@@ -5817,6 +5978,7 @@ class Parser {
+@@ -5817,6 +5996,7 @@ class Parser {
          ).value;
          let default_value;
          if (this.match(TokenType.EQUAL)) {
@@ -526,7 +866,7 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
            default_value = this.parseTestOrStarred();
          }
          params.push({
-@@ -5839,6 +6001,7 @@ class Parser {
+@@ -5839,6 +6019,7 @@ class Parser {
            bound = this.parseTest();
          }
          if (this.match(TokenType.EQUAL)) {
@@ -534,13 +874,239 @@ index f8ec81faff20fc5862f628ffa4c0a52fe4226e1b..57a3ce3d5b565fef94e4f6ad72defb13
            default_value = this.parseTestOrStarred();
          }
          params.push({
-@@ -8262,4 +8425,3 @@ exports.parsePython = parsePython;
+@@ -6149,6 +6330,7 @@ function detectIndentStyle(node) {
+ function unparse(node, options = {}) {
+   const detectedIndent = options.indent || detectIndentStyle(node);
+   const context = {
++    canonical: options.canonical ?? false,
+     precedence: 0 /* TUPLE */,
+     source: [],
+     indent: 0,
+@@ -6283,9 +6465,10 @@ class Unparser extends NodeVisitor {
+       case "YieldFrom":
+         return 1 /* YIELD */;
+       case "IfExp":
+-      case "NamedExpr":
+       case "Lambda":
+         return 2 /* TEST */;
++      case "NamedExpr":
++        return this.context.canonical ? 16 /* ATOM */ : 2 /* TEST */;
+       case "BoolOp":
+         return node.op.nodeType === "Or" ? 3 /* OR */ : 4 /* AND */;
+       case "UnaryOp":
+@@ -6663,7 +6846,7 @@ class Unparser extends NodeVisitor {
+   /** Renders an expression-statement (an expression evaluated for its side effects). */
+   visit_Expr(node) {
+     this.fill();
+-    if (node.value.nodeType === "NamedExpr") {
++    if (node.value.nodeType === "NamedExpr" && !this.context.canonical) {
+       this.write("(");
+       this.visit(node.value);
+       this.write(")");
+@@ -7054,6 +7237,14 @@ class Unparser extends NodeVisitor {
+   }
+   /** Renders a walrus/named expression (`target := value`). */
+   visit_NamedExpr(node) {
++    if (this.context.canonical) {
++      this.write("(");
++      this.visitParenthesizedIfNeeded(16 /* ATOM */, node.target);
++      this.write(" := ");
++      this.visitParenthesizedIfNeeded(16 /* ATOM */, node.value);
++      this.write(")");
++      return;
++    }
+     this.visit(node.target);
+     this.write(" := ");
+     this.visit(node.value);
+@@ -7068,7 +7259,7 @@ class Unparser extends NodeVisitor {
+    */
+   visit_Lambda(node) {
+     this.write("lambda");
+-    if (node.args.args.length > 0 || node.args.vararg || node.args.kwarg || node.args.kwonlyargs.length > 0) {
++    if (node.args.posonlyargs.length > 0 || node.args.args.length > 0 || node.args.vararg || node.args.kwarg || node.args.kwonlyargs.length > 0) {
+       this.write(" ");
+       this.visit_arguments(node.args);
+     }
+@@ -7139,6 +7330,10 @@ class Unparser extends NodeVisitor {
+   }
+   /** Renders an f-string (`JoinedStr`), preserving its original quote style. */
+   visit_JoinedStr(node) {
++    if (this.context.canonical) {
++      this.write(this.canonicalFString(node));
++      return;
++    }
+     const [openQuote, closeQuote] = this.chooseInterpolatedStringQuotes(
+       node,
+       'f"'
+@@ -7177,6 +7372,70 @@ class Unparser extends NodeVisitor {
+       quoteChar: closeQuote[0]
+     };
+   }
++  /** Render normalized f-string contents while selecting a compatible quote style. */
++  canonicalFString(node) {
++    const originalParts = node.values.map((value) => ({
++      literal: value.nodeType === "Constant",
++      text: this.canonicalFStringInner(value)
++    }));
++    let quotes = ["'", '"', '"""', "'''"];
++    const parts = [];
++    let fallback = false;
++    for (const part of originalParts) {
++      let text = part.text;
++      if (part.literal) {
++        text = this.canonicalStringBody(text);
++        let available = quotes.filter((quote) => !text.includes(quote));
++        if (!available.length) {
++          const representation = this.canonicalString(part.text);
++          const quote = quotes.find((candidate) => candidate.includes(representation[0])) ?? representation[0];
++          text = representation.slice(1, -1);
++          available = [quote];
++        } else if (text) {
++          const last = text[text.length - 1];
++          available.sort((left, right) => Number(left[0] === last) - Number(right[0] === last));
++          if (available[0][0] === last) text = text.slice(0, -1) + "\\" + last;
++        }
++        if (!available.some((quote) => quotes.includes(quote))) {
++          fallback = true;
++          break;
++        }
++        quotes = available;
++      } else {
++        if (text.includes("\n")) quotes = quotes.filter((quote) => quote.length === 3);
++        const available = quotes.filter((quote) => !text.includes(quote));
++        if (available.length) quotes = available;
++      }
++      parts.push(text);
++    }
++    if (fallback) {
++      quotes = ["'''"];
++      parts.length = 0;
++      for (const part of originalParts)
++        parts.push(part.literal ? this.canonicalString('"' + part.text).slice(2, -1) : part.text);
++    }
++    return `f${quotes[0]}${parts.join("")}${quotes[0]}`;
++  }
++  canonicalFStringInner(node, formatSpec = false) {
++    if (node.nodeType === "JoinedStr")
++      return node.values.map((value) => this.canonicalFStringInner(value, formatSpec)).join("");
++    if (node.nodeType === "Constant") {
++      let text = String(node.value).replace(/\{/gu, "{{").replace(/\}/gu, "}}");
++      if (formatSpec)
++        text = text.replace(/\\/gu, "\\\\").replace(/'/gu, "\\'").replace(/"/gu, '\\"').replace(/\n/gu, "\\n");
++      return text;
++    }
++    if (node.nodeType !== "FormattedValue") throw new Error("Invalid f-string field");
++    const saved = this.context.source;
++    this.context.source = [];
++    this.visitParenthesizedIfNeeded(3 /* OR */, node.value);
++    let expression = this.context.source.join("");
++    this.context.source = saved;
++    if (expression.startsWith("{")) expression = " " + expression;
++    const conversion = node.conversion === -1 ? "" : "!" + String.fromCodePoint(node.conversion);
++    const spec = node.format_spec ? ":" + this.canonicalFStringInner(node.format_spec, true) : "";
++    return `{${expression}${conversion}${spec}}`;
++  }
+   /**
+    * Writes the interior parts of an f-string/t-string (between the
+    * quotes), handling literal text segments and
+@@ -7350,7 +7609,7 @@ class Unparser extends NodeVisitor {
+     if (value === null) return "None";
+     if (value === true) return "True";
+     if (value === false) return "False";
+-    if (value === "...") return "...";
++    if (node.literal_kind === "ellipsis") return "...";
+     if (typeof value === "string") {
+       return this.formatString(value, node);
+     }
+@@ -7358,6 +7617,13 @@ class Unparser extends NodeVisitor {
+       if (Number.isNaN(value)) return "(1e309-1e309)";
+       if (value === Infinity) return "1e309";
+       if (value === -Infinity) return "-1e309";
++      if (node.literal_kind === "float") {
++        if (Object.is(value, -0)) return "-0.0";
++        const magnitude = Math.abs(value);
++        if (magnitude !== 0 && (magnitude < 1e-4 || magnitude >= 1e16))
++          return value.toExponential().replace(/e([+-])([0-9])$/u, "e$10$2");
++        return value.toString() + (Number.isInteger(value) ? ".0" : "");
++      }
+       const text = value.toString();
+       if (!Number.isSafeInteger(value) && !text.includes(".") && !text.includes("e") && !text.includes("E")) {
+         return `${text}.0`;
+@@ -7365,7 +7631,7 @@ class Unparser extends NodeVisitor {
+       return text;
+     }
+     if (value instanceof PyComplex) {
+-      return value.toString();
++      return value.toString().replace(/inf/g, "1e309");
+     }
+     return String(value);
+   }
+@@ -7383,6 +7649,11 @@ class Unparser extends NodeVisitor {
+    * @returns The quoted, escaped Python string literal.
+    */
+   formatString(value, node) {
++    if (this.context.canonical) {
++      const bytes = /^[a-z]*b/iu.test(node.quote_style ?? "");
++      const prefix = bytes ? "b" : node.kind === "u" ? "u" : "";
++      return prefix + this.canonicalString(value, bytes);
++    }
+     const recordedStyle = node.quote_style;
+     if (recordedStyle !== void 0) {
+       const prefixMatch = recordedStyle.match(/^([fFrRbBuU]*)(.*)/);
+@@ -7403,6 +7674,25 @@ class Unparser extends NodeVisitor {
+     }
+     return `"${this.escapeString(value, '"')}"`;
+   }
++  /** Render a canonical Python string or byte literal using Unicode 15.0 printability. */
++  canonicalString(value, bytes = false) {
++    const quote = value.includes("'") && !value.includes('"') ? '"' : "'";
++    return quote + this.canonicalStringBody(value, bytes, quote) + quote;
++  }
++  canonicalStringBody(value, bytes = false, quote = "") {
++    return Array.from(value, (character) => {
++      if (character === quote || character === "\\") return `\\${character}`;
++      if (character === "\n") return "\\n";
++      if (character === "\r") return "\\r";
++      if (character === "	") return "\\t";
++      const point = character.codePointAt(0);
++      if (bytes ? point < 32 || point > 126 : !isPrintable(character)) {
++        const width = point <= 255 ? 2 : point <= 65535 ? 4 : 8;
++        return `\\${width === 2 ? "x" : width === 4 ? "u" : "U"}${point.toString(16).padStart(width, "0")}`;
++      }
++      return character;
++    }).join("");
++  }
+   /**
+    * Escapes backslashes, newlines, carriage returns, tabs, and the given
+    * quote character in `value` so it can be embedded in a single-quoted
+@@ -7471,7 +7761,7 @@ class Unparser extends NodeVisitor {
+    * binary literal) — see {@link visit_Attribute}.
+    */
+   isBareIntegerLiteral(node) {
+-    return node.nodeType === "Constant" && (typeof node.value === "number" || typeof node.value === "bigint") && /^\d+$/.test(node.value.toString());
++    return node.nodeType === "Constant" && node.literal_kind !== "float" && (typeof node.value === "number" || typeof node.value === "bigint") && /^\d+$/.test(node.value.toString());
+   }
+   /**
+    * Renders a subscript expression (`value[slice]`). A `Tuple` slice (as in
+@@ -7600,7 +7890,10 @@ class Unparser extends NodeVisitor {
+     } else {
+       this.write(" for ");
+     }
+-    this.visit(node.target);
++    if (this.context.canonical && node.target.nodeType === "Tuple" && node.target.elts.length) {
++      this.interleave(", ", (element) => this.visit(element), node.target.elts);
++      if (node.target.elts.length === 1) this.write(",");
++    } else this.visit(node.target);
+     this.write(" in ");
+     this.visitParenthesizedIfNeeded(3 /* OR */, node.iter);
+     for (const if_ of node.ifs) {
+@@ -8262,4 +8555,3 @@ exports.parsePython = parsePython;
  exports.toSource = toSource;
  exports.unparse = unparse;
  exports.walk = walk;
 -//# sourceMappingURL=index.cjs.map
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 82befec36511a71a077ee003e4351cdff7a1fead..327542c36aae5449af70dcee0025b51086984159 100644
+index 82befec36511a71a077ee003e4351cdff7a1fead..1b32601f07808c7fadb66df21b3d0ef279d70c07 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -147,6 +147,7 @@ declare class Lexer {
@@ -551,7 +1117,19 @@ index 82befec36511a71a077ee003e4351cdff7a1fead..327542c36aae5449af70dcee0025b510
      /** Whether the lexer is positioned at the start of a logical line and still needs to process leading indentation. */
      private atLineStart;
      /** Nesting depth of `(`/`)`; while > 0, newlines and indentation are not significant (implicit line joining). */
-@@ -1215,7 +1216,7 @@ interface ParseOptions {
+@@ -864,8 +865,10 @@ declare class PyComplex {
+ /** A literal constant: string, number, boolean, `None`, bytes, complex, tuple of constants, or `Ellipsis`. */
+ interface Constant extends Located {
+     nodeType: "Constant";
++    /** Literal distinctions that JavaScript values cannot represent on their own. */
++    literal_kind?: "int" | "float" | "complex" | "ellipsis";
+     value: any;
+-    /** `"u"` for a `u"..."`/`U"..."` string literal, matching CPython's `ast.Constant.kind`; absent for every other literal (including plain, raw, byte, and f/t-string constants — CPython's `kind` never holds anything but `"u"` or `None`). */
++    /** `"u"` for a lowercase `u"..."` string literal, matching CPython's `ast.Constant.kind`; absent for every other literal (including plain, raw, byte, and f/t-string constants — CPython's `kind` never holds anything but `"u"` or `None`). */
+     kind?: string;
+     /**
+      * Original prefix+quote text of a string literal, e.g. `"`, `'''`, `rb"`.
+@@ -1215,7 +1218,7 @@ interface ParseOptions {
      filename?: string;
      /** When true, comments are lexed and attached to the AST (as `Comment` nodes / `inlineComment`) instead of being discarded. */
      comments?: boolean;
@@ -560,16 +1138,31 @@ index 82befec36511a71a077ee003e4351cdff7a1fead..327542c36aae5449af70dcee0025b510
      feature_version?: number;
  }
  /**
+@@ -1285,12 +1288,14 @@ declare function incrementLineno(node: ASTNode, n?: number): ASTNode;
+  * @param node - The AST node to unparse (typically a `Module`, but any node
+  *   reachable from the visitor is supported).
+  * @param options - Unparsing options.
++ * @param options.canonical - Normalize expression/literal spelling as CPython 3.12 does.
+  * @param options.indent - Indentation unit to use for nested blocks. If
+  *   omitted, it is auto-detected from `node` via {@link detectIndentStyle}.
+  * @returns The generated Python source text.
+  */
+ declare function unparse(node: ASTNodeUnion, options?: {
+     indent?: string;
++    canonical?: boolean;
+ }): string;
+ 
+ /**
 diff --git a/dist/index.esm.js b/dist/index.esm.js
-index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8cb4cd471 100644
+index 34fcf97000d143e86fa7d6c381173d981f38fe2b..fe8016cf6d2edd324e84e5ac2573dd92329c7d2a 100644
 --- a/dist/index.esm.js
 +++ b/dist/index.esm.js
 @@ -1,3 +1,18 @@
 +import xidStart from '@unicode/unicode-15.0.0/Binary_Property/XID_Start/regex.js';
 +import xidContinue from '@unicode/unicode-15.0.0/Binary_Property/XID_Continue/regex.js';
 +import loadNameData from './unicode-data.cjs';
-+import '@unicode/unicode-15.0.0/General_Category/Other/regex.js';
-+import '@unicode/unicode-15.0.0/General_Category/Separator/regex.js';
++import other from '@unicode/unicode-15.0.0/General_Category/Other/regex.js';
++import separator from '@unicode/unicode-15.0.0/General_Category/Separator/regex.js';
 +
 +const digits = "[0-9](?:_?[0-9])*";
 +const exponent = `[eE][+-]?${digits}`;
@@ -758,7 +1351,22 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
    }
  }
  
-@@ -1122,6 +1156,119 @@ class PyComplex {
+@@ -1113,7 +1147,13 @@ class PyComplex {
+    * imaginary part of `-0.0` (e.g. from `3-0j`) needs to round-trip.
+    */
+   toString() {
+-    const formatPart = (n) => Object.is(n, -0) ? "-0" : `${n}`;
++    const formatPart = (n) => {
++      if (Object.is(n, -0)) return "-0";
++      if (Number.isNaN(n)) return "nan";
++      if (!Number.isFinite(n)) return n < 0 ? "-inf" : "inf";
++      const magnitude = Math.abs(n);
++      return magnitude !== 0 && (magnitude < 1e-4 || magnitude >= 1e16) ? n.toExponential().replace(/e([+-])([0-9])$/u, "e$10$2") : `${n}`;
++    };
+     if (Object.is(this.real, 0)) {
+       return `${formatPart(this.imag)}j`;
+     }
+@@ -1122,6 +1162,122 @@ class PyComplex {
    }
  }
  
@@ -874,11 +1482,14 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
 +  }
 +  return point === void 0 ? void 0 : String.fromCodePoint(point);
 +}
++function isPrintable(character) {
++  return character === " " || !(other.test(character) || separator.test(character));
++}
 +
  const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
  const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
  class Parser {
-@@ -1139,6 +1286,7 @@ class Parser {
+@@ -1139,6 +1295,7 @@ class Parser {
      const lexer = new Lexer(source);
      this.tokens = lexer.tokenize();
      this.includeComments = options.comments ?? false;
@@ -886,7 +1497,31 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
      if (!this.includeComments) {
        this.tokens = this.tokens.filter(
          (token) => token.type !== TokenType.COMMENT
-@@ -3601,6 +3749,7 @@ class Parser {
+@@ -2603,6 +2760,7 @@ class Parser {
+       let value = {
+         nodeType: "Constant",
+         value: this.parseNumber(numToken.value),
++        literal_kind: this.numberKind(numToken.value),
+         lineno: numToken.lineno,
+         col_offset: numToken.col_offset,
+         end_lineno: this.previous().end_lineno,
+@@ -3349,6 +3507,7 @@ class Parser {
+       return {
+         nodeType: "Constant",
+         value: this.parseNumber(token.value),
++        literal_kind: this.numberKind(token.value),
+         lineno: token.lineno,
+         col_offset: token.col_offset,
+         end_lineno: this.previous().end_lineno,
+@@ -3397,6 +3556,7 @@ class Parser {
+         nodeType: "Constant",
+         value: "...",
+         // Ellipsis representation
++        literal_kind: "ellipsis",
+         lineno: token.lineno,
+         col_offset: token.col_offset,
+         end_lineno: this.previous().end_lineno,
+@@ -3601,6 +3761,7 @@ class Parser {
            throw this.error("arguments cannot follow var-keyword argument");
          }
          if (this.match(TokenType.SLASH)) {
@@ -894,7 +1529,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
            if (seenStar) {
              throw this.error("/ must be ahead of *");
            }
-@@ -3736,6 +3885,7 @@ class Parser {
+@@ -3736,6 +3897,7 @@ class Parser {
          throw this.error("arguments cannot follow var-keyword argument");
        }
        if (this.match(TokenType.SLASH)) {
@@ -902,7 +1537,20 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
          if (seenStar) {
            throw this.error("/ must be ahead of *");
          }
-@@ -4422,6 +4572,8 @@ class Parser {
+@@ -4374,6 +4536,12 @@ class Parser {
+         break;
+     }
+   }
++  /** Preserve the numeric literal kind independently of its JavaScript value. */
++  numberKind(value) {
++    if (/[jJ]$/u.test(value)) return "complex";
++    if (/^0[xob]/iu.test(value)) return "int";
++    return /[.eE]/u.test(value) ? "float" : "int";
++  }
+   /**
+    * Converts a raw numeric literal token value to a JS `number`, handling
+    * hex (`0x`), octal (`0o`), binary (`0b`), float, and decimal-int forms.
+@@ -4422,6 +4590,8 @@ class Parser {
      if (actualValue.startsWith('"""') || actualValue.startsWith("'''")) {
        content = actualValue.slice(3, -3);
      }
@@ -911,7 +1559,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
      if (prefix.includes("r")) {
        return content;
      }
-@@ -4436,9 +4588,8 @@ class Parser {
+@@ -4436,9 +4606,8 @@ class Parser {
     * additionally decode `\uxxxx` (4 hex digits) and `\Uxxxxxxxx` (8 hex
     * digits); those two, along with `\N{...}` named escapes, aren't
     * recognized in bytes literals and are left as literal text there,
@@ -923,7 +1571,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
     * kept as-is (backslash plus the following character), matching
     * CPython's handling of unrecognized escapes.
     * @param content The literal's content, quotes and prefix already stripped.
-@@ -4501,8 +4652,7 @@ class Parser {
+@@ -4501,8 +4670,7 @@ class Parser {
              result += String.fromCharCode(parseInt(hex, 16));
              i += 4;
            } else {
@@ -933,7 +1581,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
            }
            continue;
          }
-@@ -4512,7 +4662,8 @@ class Parser {
+@@ -4512,7 +4680,8 @@ class Parser {
          while (digits.length < 3 && content[i + 1 + digits.length] >= "0" && content[i + 1 + digits.length] <= "7") {
            digits += content[i + 1 + digits.length];
          }
@@ -943,7 +1591,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
          i += 1 + digits.length;
          continue;
        }
-@@ -4523,6 +4674,7 @@ class Parser {
+@@ -4523,6 +4692,7 @@ class Parser {
            i += 6;
            continue;
          }
@@ -951,7 +1599,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
        }
        if (!isBytes && next === "U") {
          const hex = content.slice(i + 2, i + 10);
-@@ -4531,14 +4683,16 @@ class Parser {
+@@ -4531,14 +4701,16 @@ class Parser {
            i += 10;
            continue;
          }
@@ -976,7 +1624,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
        }
        result += ch + next;
        i += 2;
-@@ -4570,7 +4724,7 @@ class Parser {
+@@ -4570,7 +4742,7 @@ class Parser {
    }
    /**
     * Computes a plain string `Constant`'s real CPython `kind`: `"u"` for a
@@ -985,7 +1633,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
     * `ast.Constant.kind` never holds anything else (no `r`/`b`/quote-style
     * info) — that richer info is round-tripping-only and lives in the
     * node's `quote_style` field instead (a py-ast extension, not part of
-@@ -4579,7 +4733,7 @@ class Parser {
+@@ -4579,7 +4751,7 @@ class Parser {
     * @returns `"u"` or `undefined`.
     */
    cpythonStringKind(quoteStyle) {
@@ -994,7 +1642,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
    }
    /**
     * Determines whether a string token's prefix marks it as an f-string or
-@@ -4649,13 +4803,19 @@ class Parser {
+@@ -4649,13 +4821,19 @@ class Parser {
      const parts = [];
      let anyFString = false;
      let anyTemplateStr = false;
@@ -1014,7 +1662,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
          anyTemplateStr = true;
          parts.push(this.parseTemplateStr(token));
        } else {
-@@ -5397,7 +5557,7 @@ class Parser {
+@@ -5397,7 +5575,7 @@ class Parser {
      let tempParser;
      let expr;
      try {
@@ -1023,7 +1671,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
        expr = tempParser.parseTestListWithStar();
      } catch (_error) {
        throw this.errorAt(
-@@ -5797,6 +5957,7 @@ class Parser {
+@@ -5797,6 +5975,7 @@ class Parser {
          ).value;
          let default_value;
          if (this.match(TokenType.EQUAL)) {
@@ -1031,7 +1679,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
            default_value = this.parseTestOrStarred();
          }
          params.push({
-@@ -5815,6 +5976,7 @@ class Parser {
+@@ -5815,6 +5994,7 @@ class Parser {
          ).value;
          let default_value;
          if (this.match(TokenType.EQUAL)) {
@@ -1039,7 +1687,7 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
            default_value = this.parseTestOrStarred();
          }
          params.push({
-@@ -5837,6 +5999,7 @@ class Parser {
+@@ -5837,6 +6017,7 @@ class Parser {
            bound = this.parseTest();
          }
          if (this.match(TokenType.EQUAL)) {
@@ -1047,7 +1695,233 @@ index 34fcf97000d143e86fa7d6c381173d981f38fe2b..06d2a4e1f48369fea004062a18c5efb8
            default_value = this.parseTestOrStarred();
          }
          params.push({
-@@ -8238,4 +8401,3 @@ ${parentIndent})`;
+@@ -6147,6 +6328,7 @@ function detectIndentStyle(node) {
+ function unparse(node, options = {}) {
+   const detectedIndent = options.indent || detectIndentStyle(node);
+   const context = {
++    canonical: options.canonical ?? false,
+     precedence: 0 /* TUPLE */,
+     source: [],
+     indent: 0,
+@@ -6281,9 +6463,10 @@ class Unparser extends NodeVisitor {
+       case "YieldFrom":
+         return 1 /* YIELD */;
+       case "IfExp":
+-      case "NamedExpr":
+       case "Lambda":
+         return 2 /* TEST */;
++      case "NamedExpr":
++        return this.context.canonical ? 16 /* ATOM */ : 2 /* TEST */;
+       case "BoolOp":
+         return node.op.nodeType === "Or" ? 3 /* OR */ : 4 /* AND */;
+       case "UnaryOp":
+@@ -6661,7 +6844,7 @@ class Unparser extends NodeVisitor {
+   /** Renders an expression-statement (an expression evaluated for its side effects). */
+   visit_Expr(node) {
+     this.fill();
+-    if (node.value.nodeType === "NamedExpr") {
++    if (node.value.nodeType === "NamedExpr" && !this.context.canonical) {
+       this.write("(");
+       this.visit(node.value);
+       this.write(")");
+@@ -7052,6 +7235,14 @@ class Unparser extends NodeVisitor {
+   }
+   /** Renders a walrus/named expression (`target := value`). */
+   visit_NamedExpr(node) {
++    if (this.context.canonical) {
++      this.write("(");
++      this.visitParenthesizedIfNeeded(16 /* ATOM */, node.target);
++      this.write(" := ");
++      this.visitParenthesizedIfNeeded(16 /* ATOM */, node.value);
++      this.write(")");
++      return;
++    }
+     this.visit(node.target);
+     this.write(" := ");
+     this.visit(node.value);
+@@ -7066,7 +7257,7 @@ class Unparser extends NodeVisitor {
+    */
+   visit_Lambda(node) {
+     this.write("lambda");
+-    if (node.args.args.length > 0 || node.args.vararg || node.args.kwarg || node.args.kwonlyargs.length > 0) {
++    if (node.args.posonlyargs.length > 0 || node.args.args.length > 0 || node.args.vararg || node.args.kwarg || node.args.kwonlyargs.length > 0) {
+       this.write(" ");
+       this.visit_arguments(node.args);
+     }
+@@ -7137,6 +7328,10 @@ class Unparser extends NodeVisitor {
+   }
+   /** Renders an f-string (`JoinedStr`), preserving its original quote style. */
+   visit_JoinedStr(node) {
++    if (this.context.canonical) {
++      this.write(this.canonicalFString(node));
++      return;
++    }
+     const [openQuote, closeQuote] = this.chooseInterpolatedStringQuotes(
+       node,
+       'f"'
+@@ -7175,6 +7370,70 @@ class Unparser extends NodeVisitor {
+       quoteChar: closeQuote[0]
+     };
+   }
++  /** Render normalized f-string contents while selecting a compatible quote style. */
++  canonicalFString(node) {
++    const originalParts = node.values.map((value) => ({
++      literal: value.nodeType === "Constant",
++      text: this.canonicalFStringInner(value)
++    }));
++    let quotes = ["'", '"', '"""', "'''"];
++    const parts = [];
++    let fallback = false;
++    for (const part of originalParts) {
++      let text = part.text;
++      if (part.literal) {
++        text = this.canonicalStringBody(text);
++        let available = quotes.filter((quote) => !text.includes(quote));
++        if (!available.length) {
++          const representation = this.canonicalString(part.text);
++          const quote = quotes.find((candidate) => candidate.includes(representation[0])) ?? representation[0];
++          text = representation.slice(1, -1);
++          available = [quote];
++        } else if (text) {
++          const last = text[text.length - 1];
++          available.sort((left, right) => Number(left[0] === last) - Number(right[0] === last));
++          if (available[0][0] === last) text = text.slice(0, -1) + "\\" + last;
++        }
++        if (!available.some((quote) => quotes.includes(quote))) {
++          fallback = true;
++          break;
++        }
++        quotes = available;
++      } else {
++        if (text.includes("\n")) quotes = quotes.filter((quote) => quote.length === 3);
++        const available = quotes.filter((quote) => !text.includes(quote));
++        if (available.length) quotes = available;
++      }
++      parts.push(text);
++    }
++    if (fallback) {
++      quotes = ["'''"];
++      parts.length = 0;
++      for (const part of originalParts)
++        parts.push(part.literal ? this.canonicalString('"' + part.text).slice(2, -1) : part.text);
++    }
++    return `f${quotes[0]}${parts.join("")}${quotes[0]}`;
++  }
++  canonicalFStringInner(node, formatSpec = false) {
++    if (node.nodeType === "JoinedStr")
++      return node.values.map((value) => this.canonicalFStringInner(value, formatSpec)).join("");
++    if (node.nodeType === "Constant") {
++      let text = String(node.value).replace(/\{/gu, "{{").replace(/\}/gu, "}}");
++      if (formatSpec)
++        text = text.replace(/\\/gu, "\\\\").replace(/'/gu, "\\'").replace(/"/gu, '\\"').replace(/\n/gu, "\\n");
++      return text;
++    }
++    if (node.nodeType !== "FormattedValue") throw new Error("Invalid f-string field");
++    const saved = this.context.source;
++    this.context.source = [];
++    this.visitParenthesizedIfNeeded(3 /* OR */, node.value);
++    let expression = this.context.source.join("");
++    this.context.source = saved;
++    if (expression.startsWith("{")) expression = " " + expression;
++    const conversion = node.conversion === -1 ? "" : "!" + String.fromCodePoint(node.conversion);
++    const spec = node.format_spec ? ":" + this.canonicalFStringInner(node.format_spec, true) : "";
++    return `{${expression}${conversion}${spec}}`;
++  }
+   /**
+    * Writes the interior parts of an f-string/t-string (between the
+    * quotes), handling literal text segments and
+@@ -7348,7 +7607,7 @@ class Unparser extends NodeVisitor {
+     if (value === null) return "None";
+     if (value === true) return "True";
+     if (value === false) return "False";
+-    if (value === "...") return "...";
++    if (node.literal_kind === "ellipsis") return "...";
+     if (typeof value === "string") {
+       return this.formatString(value, node);
+     }
+@@ -7356,6 +7615,13 @@ class Unparser extends NodeVisitor {
+       if (Number.isNaN(value)) return "(1e309-1e309)";
+       if (value === Infinity) return "1e309";
+       if (value === -Infinity) return "-1e309";
++      if (node.literal_kind === "float") {
++        if (Object.is(value, -0)) return "-0.0";
++        const magnitude = Math.abs(value);
++        if (magnitude !== 0 && (magnitude < 1e-4 || magnitude >= 1e16))
++          return value.toExponential().replace(/e([+-])([0-9])$/u, "e$10$2");
++        return value.toString() + (Number.isInteger(value) ? ".0" : "");
++      }
+       const text = value.toString();
+       if (!Number.isSafeInteger(value) && !text.includes(".") && !text.includes("e") && !text.includes("E")) {
+         return `${text}.0`;
+@@ -7363,7 +7629,7 @@ class Unparser extends NodeVisitor {
+       return text;
+     }
+     if (value instanceof PyComplex) {
+-      return value.toString();
++      return value.toString().replace(/inf/g, "1e309");
+     }
+     return String(value);
+   }
+@@ -7381,6 +7647,11 @@ class Unparser extends NodeVisitor {
+    * @returns The quoted, escaped Python string literal.
+    */
+   formatString(value, node) {
++    if (this.context.canonical) {
++      const bytes = /^[a-z]*b/iu.test(node.quote_style ?? "");
++      const prefix = bytes ? "b" : node.kind === "u" ? "u" : "";
++      return prefix + this.canonicalString(value, bytes);
++    }
+     const recordedStyle = node.quote_style;
+     if (recordedStyle !== void 0) {
+       const prefixMatch = recordedStyle.match(/^([fFrRbBuU]*)(.*)/);
+@@ -7401,6 +7672,25 @@ class Unparser extends NodeVisitor {
+     }
+     return `"${this.escapeString(value, '"')}"`;
+   }
++  /** Render a canonical Python string or byte literal using Unicode 15.0 printability. */
++  canonicalString(value, bytes = false) {
++    const quote = value.includes("'") && !value.includes('"') ? '"' : "'";
++    return quote + this.canonicalStringBody(value, bytes, quote) + quote;
++  }
++  canonicalStringBody(value, bytes = false, quote = "") {
++    return Array.from(value, (character) => {
++      if (character === quote || character === "\\") return `\\${character}`;
++      if (character === "\n") return "\\n";
++      if (character === "\r") return "\\r";
++      if (character === "	") return "\\t";
++      const point = character.codePointAt(0);
++      if (bytes ? point < 32 || point > 126 : !isPrintable(character)) {
++        const width = point <= 255 ? 2 : point <= 65535 ? 4 : 8;
++        return `\\${width === 2 ? "x" : width === 4 ? "u" : "U"}${point.toString(16).padStart(width, "0")}`;
++      }
++      return character;
++    }).join("");
++  }
+   /**
+    * Escapes backslashes, newlines, carriage returns, tabs, and the given
+    * quote character in `value` so it can be embedded in a single-quoted
+@@ -7469,7 +7759,7 @@ class Unparser extends NodeVisitor {
+    * binary literal) — see {@link visit_Attribute}.
+    */
+   isBareIntegerLiteral(node) {
+-    return node.nodeType === "Constant" && (typeof node.value === "number" || typeof node.value === "bigint") && /^\d+$/.test(node.value.toString());
++    return node.nodeType === "Constant" && node.literal_kind !== "float" && (typeof node.value === "number" || typeof node.value === "bigint") && /^\d+$/.test(node.value.toString());
+   }
+   /**
+    * Renders a subscript expression (`value[slice]`). A `Tuple` slice (as in
+@@ -7598,7 +7888,10 @@ class Unparser extends NodeVisitor {
+     } else {
+       this.write(" for ");
+     }
+-    this.visit(node.target);
++    if (this.context.canonical && node.target.nodeType === "Tuple" && node.target.elts.length) {
++      this.interleave(", ", (element) => this.visit(element), node.target.elts);
++      if (node.target.elts.length === 1) this.write(",");
++    } else this.visit(node.target);
+     this.write(" in ");
+     this.visitParenthesizedIfNeeded(3 /* OR */, node.iter);
+     for (const if_ of node.ifs) {
+@@ -8238,4 +8531,3 @@ ${parentIndent})`;
  }
  
  export { Lexer, NodeTransformer, NodeVisitor, PyComplex, TokenType, ast, copyLocation, dump, fixMissingLocations, getDocstring, getSourceSegment, incrementLineno, isASTNode, iterChildNodes, iterFields, literalEval, parse, parseFile, parseModule, parsePython, toSource, unparse, walk };

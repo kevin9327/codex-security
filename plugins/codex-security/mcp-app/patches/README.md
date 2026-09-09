@@ -9,3 +9,5 @@ Copy `dist/index.esm.js`, `dist/index.cjs`, `dist/index.d.ts`, `dist/unicode-dat
 The Jamo name components are generated from Unicode 15.0 `DerivedName.txt` (SHA-256 `f76288153e20de185a40f7ee6e0e365f3c6c80e9e3019b5aa0afc8ac2c1b15f2`) and verified against all 11,172 Hangul names. Name tables load only when a named escape is parsed.
 
 Tests exercise the installed package through its public API. Select the Python 3.12 baseline with `feature_version: 12`; this currently gates the measured newer syntax rather than claiming complete emulation of every older Python release. Preview selection and byte budgeting remain outside this dependency.
+
+Canonical expression rendering is enabled with `unparse(node, { canonical: true })`; default quote-style round trips remain available. The canonical formatter preserves literal kinds, bytes, lone surrogates and CPython precedence/quote choices. Its CPython-derived quoting behavior carries the included Python license.
