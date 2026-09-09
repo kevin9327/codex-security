@@ -89,6 +89,14 @@ export function jsonItem(value: unknown, key: string): unknown {
     throw new TypeError("string indices must be integers, not 'str'");
   throw new TypeError(`'${jsonTypeName(value)}' object is not subscriptable`);
 }
+export function jsonContains(value: unknown, key: string): boolean {
+  if (object(value)) return Object.hasOwn(value, key);
+  if (Array.isArray(value)) return value.includes(key);
+  if (typeof value === "string") return value.includes(key);
+  throw new TypeError(
+    `argument of type '${jsonTypeName(value)}' is not iterable`,
+  );
+}
 // json.dumps(..., ensure_ascii=True, indent=2), with compact persistence support.
 export function stringifyJson(
   value: unknown,

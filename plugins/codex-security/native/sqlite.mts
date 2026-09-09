@@ -79,6 +79,18 @@ function parameter(value: Parameter): SqlValue {
   if (typeof value === "boolean") return value ? 1n : 0n;
   return value;
 }
+function boundParameter(value: Parameter, index: number): SqlValue {
+  if (
+    typeof value === "bigint" &&
+    (value < -9223372036854775808n || value > 9223372036854775807n)
+  )
+    throw new RangeError("Python int too large to convert to SQLite INTEGER");
+  if (value !== null && typeof value === "object" && !Buffer.isBuffer(value))
+    throw new TypeError(
+      `Error binding parameter ${index + 1}: type '${Array.isArray(value) ? "list" : "dict"}' is not supported`,
+    );
+  return parameter(value);
+}
 const asciiLower = (value: string) =>
   value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 export class Row {
@@ -138,7 +150,7 @@ export class Statement {
               throw new TypeError(`Missing SQLite parameter ${key}`);
             return (parameters as Readonly<Record<string, Parameter>>)[key]!;
           });
-      statement.bind(values.map(parameter));
+      statement.bind(values.map(boundParameter));
       return statement;
     } catch (error) {
       statement.finalize();

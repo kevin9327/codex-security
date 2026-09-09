@@ -16,6 +16,7 @@ import {
 } from "./workbench-schema-repairs";
 import {
   JsonFloat,
+  jsonContains as contains,
   jsonGet as get,
   jsonItem as item,
   jsonTypeName as typeName,
@@ -27,12 +28,6 @@ import {
   stringifyJson,
 } from "./helpers/python-json";
 
-function contains(value: unknown, key: string): boolean {
-  if (object(value)) return Object.hasOwn(value, key);
-  if (Array.isArray(value)) return value.includes(key);
-  if (typeof value === "string") return value.includes(key);
-  throw new TypeError(`argument of type '${typeName(value)}' is not iterable`);
-}
 function storedJson(value: SqlValue): unknown {
   if (typeof value === "string") return parseJson(value);
   if (Buffer.isBuffer(value)) return parseJsonBytes(value);
