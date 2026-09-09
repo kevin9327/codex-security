@@ -1549,6 +1549,8 @@ export async function runWorkbench(
       "find-potential-duplicates",
       "store-dedupe-groups",
       "list-dedupe-groups",
+      "list-global-findings",
+      "list-repositories",
     ].includes(args[0] ?? "");
     const command = node
       ? process.execPath

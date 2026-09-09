@@ -1,0 +1,246 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, expect, test } from "bun:test";
+import { PLUGIN_ROOT } from "./plugin-root.js";
+
+const directory = mkdtempSync(join(tmpdir(), "navigation-mcp-"));
+afterAll(() => rmSync(directory, { recursive: true, force: true }));
+const node = Bun.which("node")!;
+interface Response {
+  error?: { message: string };
+  result?: {
+    isError?: boolean;
+    content?: { text?: string }[];
+    structuredContent?: Record<string, unknown>;
+  };
+}
+async function start(environment: Record<string, string | undefined>) {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...environment,
+    PATH: "",
+    PYTHON: "missing-navigation-python",
+  };
+  for (const key of Object.keys(env))
+    if (env[key] === undefined) delete env[key];
+  const child = spawn(node, [join(PLUGIN_ROOT, "mcp/server.mjs"), "--stdio"], {
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const pending = new Map<
+    number,
+    { resolve: (response: Response) => void; reject: (error: Error) => void }
+  >();
+  let sequence = 0,
+    stdout = "",
+    stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+    let newline: number;
+    while ((newline = stdout.indexOf("\n")) !== -1) {
+      const line = stdout.slice(0, newline);
+      stdout = stdout.slice(newline + 1);
+      if (!line.trim()) continue;
+      const response = JSON.parse(line) as Response & { id?: number };
+      if (response.id !== undefined) {
+        pending.get(response.id)?.resolve(response);
+        pending.delete(response.id);
+      }
+    }
+  });
+  child.once("exit", () => {
+    for (const value of pending.values())
+      value.reject(new Error(`MCP exited: ${stderr}`));
+    pending.clear();
+  });
+  const request = (
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Response> => {
+    const id = ++sequence;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`MCP request timed out: ${stderr}`));
+      }, 15_000);
+      pending.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      child.stdin.write(
+        JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n",
+      );
+    });
+  };
+  const initialized = await request("initialize", {
+    protocolVersion: "2025-11-25",
+    capabilities: {},
+    clientInfo: { name: "navigation-test", version: "1" },
+  });
+  expect(initialized.error, stderr).toBeUndefined();
+  return {
+    call: (name: string) => request("tools/call", { name, arguments: {} }),
+    events: () =>
+      stderr.split(/\r?\n/).flatMap((line) => {
+        try {
+          const value = JSON.parse(line) as {
+            event?: string;
+            [key: string]: unknown;
+          };
+          return value.event === "state_fallback_pinned" ? [value] : [];
+        } catch {
+          return [];
+        }
+      }),
+    async stop() {
+      if (child.exitCode !== null) return;
+      const exited = once(child, "exit");
+      const timer = setTimeout(() => child.kill("SIGKILL"), 2000);
+      child.stdin.end();
+      try {
+        await exited;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+const findings = "list_codex_security_global_findings";
+const repositories = "list_codex_security_repositories";
+function successful(response: Response) {
+  expect(response.error).toBeUndefined();
+  expect(response.result?.isError, JSON.stringify(response)).toBeUndefined();
+  return response.result?.structuredContent;
+}
+function failed(response: Response, message: RegExp) {
+  expect(response.error).toBeUndefined();
+  expect(response.result?.isError).toBe(true);
+  expect(response.result?.content?.map((item) => item.text).join("\n")).toMatch(
+    message,
+  );
+}
+
+test("native MCP tools share their first persistent selection and keep proven failures visible", async () => {
+  const home = join(directory, "persistent"),
+    scanRoot = join(directory, "persistent-scans");
+  const database = join(home, "state/plugins/codex-security/workbench.sqlite3");
+  const server = await start({
+    CODEX_HOME: home,
+    CODEX_SECURITY_STATE_DIR: undefined,
+    CODEX_SECURITY_SCAN_ROOT: scanRoot,
+  });
+  try {
+    const responses = await Promise.all([
+      server.call(findings),
+      server.call(repositories),
+    ]);
+    expect(successful(responses[0]!)).toEqual({
+      findings: [],
+      limit: 20,
+      nextOffset: null,
+      offset: 0,
+    });
+    expect(successful(responses[1]!)).toEqual({ repositories: [] });
+    expect(statSync(database).isFile()).toBe(true);
+    expect(server.events()).toEqual([]);
+    rmSync(database);
+    mkdirSync(database);
+    failed(await server.call(repositories), /unable to open database file/);
+    expect(server.events()).toEqual([]);
+    expect(existsSync(join(scanRoot, "workbench-state"))).toBe(false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test.each(["0", "1"])(
+  "native MCP open failure pins one fallback without Python with FORCE_COLOR=%s",
+  async (color) => {
+    const home = join(directory, `fallback-${color}`),
+      scanRoot = join(directory, `fallback-scans-${color}`);
+    mkdirSync(join(home, "state/plugins/codex-security/workbench.sqlite3"), {
+      recursive: true,
+    });
+    const server = await start({
+      CODEX_HOME: home,
+      CODEX_SECURITY_STATE_DIR: undefined,
+      CODEX_SECURITY_SCAN_ROOT: scanRoot,
+      FORCE_COLOR: color,
+    });
+    try {
+      const responses = await Promise.all([
+        server.call(repositories),
+        server.call(findings),
+      ]);
+      expect(successful(responses[0]!)).toEqual({ repositories: [] });
+      expect(successful(responses[1]!)).toEqual({
+        findings: [],
+        limit: 20,
+        nextOffset: null,
+        offset: 0,
+      });
+      successful(await server.call(repositories));
+      expect(
+        statSync(join(scanRoot, "workbench-state/workbench.sqlite3")).isFile(),
+      ).toBe(true);
+      expect(server.events()).toEqual([
+        {
+          component: "codex_security_workbench",
+          event: "state_fallback_pinned",
+          reason: "persistent_sqlite_unwritable",
+        },
+      ]);
+    } finally {
+      await server.stop();
+    }
+  },
+);
+
+test("configured state and malformed databases retain the existing no-fallback boundary", async () => {
+  for (const configured of [true, false]) {
+    const home = join(directory, `failure-${configured}`),
+      scanRoot = join(directory, `failure-scans-${configured}`);
+    const state = configured
+      ? join(home, "explicit-state")
+      : join(home, "state/plugins/codex-security");
+    mkdirSync(state, { recursive: true });
+    if (configured) mkdirSync(join(state, "workbench.sqlite3"));
+    else writeFileSync(join(state, "workbench.sqlite3"), "not a database");
+    const server = await start({
+      CODEX_HOME: home,
+      CODEX_SECURITY_STATE_DIR: configured ? state : undefined,
+      CODEX_SECURITY_SCAN_ROOT: scanRoot,
+    });
+    try {
+      failed(
+        await server.call(findings),
+        configured ? /unable to open database file/ : /file is not a database/,
+      );
+      expect(server.events()).toEqual([]);
+      expect(existsSync(join(scanRoot, "workbench-state"))).toBe(false);
+    } finally {
+      await server.stop();
+    }
+  }
+});

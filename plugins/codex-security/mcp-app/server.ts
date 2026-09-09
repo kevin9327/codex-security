@@ -1624,7 +1624,9 @@ async function runWorkbench(
 ): Promise<JsonObject> {
   let pythonCommand: string | undefined;
   try {
-    pythonCommand = await resolvePythonCommand();
+    if (args[0] !== "list-global-findings" && args[0] !== "list-repositories") {
+      pythonCommand = await resolvePythonCommand();
+    }
     return await executeWorkbenchWithStateSelection(pythonCommand, args, input);
   } catch (error) {
     const launchError = pythonCommand
@@ -1641,7 +1643,7 @@ async function runWorkbench(
 }
 
 async function executeWorkbenchWithStateSelection(
-  pythonCommand: string,
+  pythonCommand: string | undefined,
   args: string[],
   input?: string
 ): Promise<JsonObject> {
@@ -1692,7 +1694,7 @@ async function withWorkbenchStateSelectionLock<T>(operation: () => Promise<T>): 
 }
 
 async function executeWorkbench(
-  pythonCommand: string,
+  pythonCommand: string | undefined,
   args: string[],
   stateDir?: string,
   input?: string
@@ -1704,7 +1706,10 @@ async function executeWorkbench(
     workbenchArgs.splice(userContextIndex, 2, "--user-context-stdin");
   }
   const workbenchInput = input ?? userContext;
-  const execution = execFileAsync(pythonCommand, [workbenchScriptPath(), ...workbenchArgs], {
+  const execution = execFileAsync(pythonCommand ?? process.execPath, [
+    pythonCommand ? workbenchScriptPath() : join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+    ...workbenchArgs
+  ], {
     cwd: PLUGIN_ROOT,
     env: stateDir
       ? { ...process.env, CODEX_SECURITY_STATE_DIR: stateDir }
@@ -1897,5 +1902,8 @@ function isUnwritableSqliteOpenError(error: unknown): boolean {
     : error instanceof Error
       ? error.message
       : "";
-  return /sqlite3\.OperationalError:\s*unable to open database file/i.test(diagnostic);
+  // Node colors inspected numeric properties when FORCE_COLOR is enabled.
+  return /sqlite3\.OperationalError:\s*unable to open database file/i.test(diagnostic) ||
+    (/^Error: unable to open database file\r?$/m.test(diagnostic) &&
+      /\bsqliteErrorCode: (?:\u001b\[[0-9;]*m)*14\b/.test(diagnostic));
 }

@@ -100,27 +100,6 @@ def indexed_collections(workbench_db, tmp_path):
     return workbench_db, targets
 
 
-def test_global_finding_filters_apply_before_pagination(workbench_api, indexed_collections):
-    connection, targets = indexed_collections
-    query = workbench_api["native_indexes"].list_global_findings
-    filters = {"query": "NeEdLe", "severity": "high", "status": "open"}
-    first = query(connection, query_args(**filters, limit=1))
-    second = query(connection, query_args(**filters, limit=1, offset=1))
-    assert first["nextOffset"] == 1
-    assert second["nextOffset"] is None
-    assert {first["findings"][0]["scanId"], second["findings"][0]["scanId"]} == {
-        SCAN_IDS[0],
-        SCAN_IDS[1],
-    }
-
-    targeted = query(connection, query_args(**filters, target_id=stable_target_id(targets[0])))
-    assert [finding["scanId"] for finding in targeted["findings"]] == [SCAN_IDS[0]]
-    assert query(connection, query_args(query="needle", severity="low"))["findings"] == []
-    unfiltered = query(connection, query_args())
-    assert set(unfiltered) == {"findings", "limit", "nextOffset", "offset"}
-    assert len(unfiltered["findings"]) == 3
-
-
 def test_scan_findings_support_search_severity_and_triage_filters(
     workbench_api, indexed_collections
 ):
@@ -156,40 +135,25 @@ def test_scan_findings_support_search_severity_and_triage_filters(
     )
 
 
-@pytest.mark.parametrize(
-    ("command", "collection", "status"),
-    [("list-scans", "scans", "complete"), ("list-repositories", "repositories", "scanned")],
-)
-def test_collection_filters_apply_before_pagination(
-    workbench_api, indexed_collections, command, collection, status
-):
+def test_scan_collection_filters_apply_before_pagination(workbench_api, indexed_collections):
     connection, targets = indexed_collections
-    query = (
-        workbench_api["scan_history"].list_scans
-        if command == "list-scans"
-        else workbench_api["native_indexes"].list_repositories
-    )
-    filters = {"query": "NeEdLe", "status": status}
-    if command == "list-scans":
-        filters["mode"] = "standard"
+    query = workbench_api["scan_history"].list_scans
+    filters = {"query": "NeEdLe", "status": "complete", "mode": "standard"}
     first = query(connection, query_args(**filters, limit=1))
     second = query(connection, query_args(**filters, limit=1, offset=1))
     assert first["nextOffset"] == 1
     assert second["nextOffset"] is None
-    assert {first[collection][0]["targetId"], second[collection][0]["targetId"]} == {
+    assert {first["scans"][0]["targetId"], second["scans"][0]["targetId"]} == {
         stable_target_id(targets[0]),
         stable_target_id(targets[1]),
     }
     targeted = query(
         connection, query_args(**filters, target_id=stable_target_id(targets[0]), limit=None)
     )
-    assert [item["targetId"] for item in targeted[collection]] == [stable_target_id(targets[0])]
+    assert [item["targetId"] for item in targeted["scans"]] == [stable_target_id(targets[0])]
     unfiltered = query(connection, query_args(limit=None))
-    assert set(unfiltered) == {collection}
-    assert len(unfiltered[collection]) == 3
-    if command == "list-repositories":
-        assert query(connection, query_args(status="not_scanned"))[collection] == []
-        assert query(connection, query_args(status="open_findings"))[collection]
+    assert set(unfiltered) == {"scans"}
+    assert len(unfiltered["scans"]) == 3
 
 
 def test_scan_list_returns_lightweight_running_first_summaries(workbench_api, indexed_collections):

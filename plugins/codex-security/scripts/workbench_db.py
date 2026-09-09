@@ -33,7 +33,6 @@ except ModuleNotFoundError:  # pragma: no cover
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import deep_scan_workbench as deep_scan
-import workbench_native_indexes as native_indexes
 import workbench_progress as progress
 import workbench_publication as publication
 import workbench_remediation as remediation
@@ -3529,10 +3528,6 @@ def main() -> None:
                 require_scan=require_scan,
                 read_coverage=coverage_for_comparison,
             )
-        elif args.command == "list-global-findings":
-            result = native_indexes.list_global_findings(connection, args)
-        elif args.command == "list-repositories":
-            result = native_indexes.list_repositories(connection, args)
         elif args.command == "list-findings":
             result = list_findings(connection, args)
         elif args.command in {"update-progress", "update-scan-context"}:

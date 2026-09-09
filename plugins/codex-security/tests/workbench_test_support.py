@@ -86,8 +86,16 @@ def run_workbench(
     environment: dict[str, str] | None = None,
     input_text: str | None = None,
 ) -> dict[str, object]:
+    command = (
+        [
+            "node",
+            str(SCRIPT.parents[3] / "sdk/typescript/_bundled_plugin/mcp/helpers.mjs"),
+        ]
+        if args and args[0] in {"list-global-findings", "list-repositories"}
+        else [sys.executable, str(SCRIPT)]
+    )
     completed = subprocess.run(
-        [sys.executable, str(SCRIPT), *args],
+        [*command, *args],
         check=check,
         capture_output=True,
         env={

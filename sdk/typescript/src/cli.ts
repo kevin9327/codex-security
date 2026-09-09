@@ -1343,10 +1343,8 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
       ...exportEnvironment(),
       CODEX_SECURITY_STATE_DIR: codexSecurityStateDirectory(),
     };
-    const python = await resolvePluginPython({ environment, signal });
     return await runWorkbench(
       {
-        python,
         pluginRoot: await bundledPluginRoot(),
         environment,
         signal,

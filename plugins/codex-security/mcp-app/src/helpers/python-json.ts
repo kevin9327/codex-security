@@ -172,6 +172,8 @@ export function parseJson(
   source: string,
   rejectDuplicates = false,
   parseInteger: (source: string) => bigint = BigInt,
+  parseConstant: (source: string) => unknown = (source) =>
+    new JsonFloat(source),
 ): unknown {
   const tokens = [
     ...source.matchAll(
@@ -270,6 +272,8 @@ export function parseJson(
     if (token === "null") return null;
     if (token !== undefined && /^-?[0-9]+$/u.test(token))
       return parseInteger(token);
+    if (token === "NaN" || token === "Infinity" || token === "-Infinity")
+      return parseConstant(token);
     if (
       token !== undefined &&
       (/^-?(?:[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|Infinity)$/u.test(

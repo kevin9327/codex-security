@@ -13,6 +13,11 @@ import {
 import { parseJson, stringifyJson } from "./python-json";
 import { decodePosixBytes } from "./posix-path";
 import { ArgumentError, argumentsFor, print } from "./rank-worklists";
+import {
+  listGlobalFindings,
+  listRepositories,
+  type NavigationQuery,
+} from "../workbench-navigation";
 
 type Command =
   | "dashboard"
@@ -21,7 +26,9 @@ type Command =
   | "list-stored-findings"
   | "find-potential-duplicates"
   | "store-dedupe-groups"
-  | "list-dedupe-groups";
+  | "list-dedupe-groups"
+  | "list-global-findings"
+  | "list-repositories";
 
 export function timestamp(microseconds: bigint): string {
   const fraction = ((microseconds % 1_000_000n) + 1_000_000n) % 1_000_000n;
@@ -38,7 +45,32 @@ export async function workbenchCommand(
   const paging = command === "list-stored-findings";
   const duplicates = command === "find-potential-duplicates";
   const finding = duplicates || command === "list-dedupe-groups";
-  const usage = `usage: launch_codex_security_mcp[.cmd] --helper ${command} [-h]${paging ? " --limit LIMIT --offset OFFSET" : finding ? " --finding-id FINDING_ID" : ""}${duplicates ? " (--repository-id REPOSITORY_ID | --all-repositories)" : ""}`;
+  const navigation =
+    command === "list-global-findings" || command === "list-repositories";
+  const navigationOptions =
+    command === "list-global-findings"
+      ? {
+          query: undefined,
+          severity: ["critical", "high", "medium", "low", "informational"],
+          status: ["open", "closed"],
+          "target-id": undefined,
+          offset: undefined,
+          limit: undefined,
+        }
+      : {
+          query: undefined,
+          "target-id": undefined,
+          status: ["scanned", "not_scanned", "open_findings"],
+          offset: undefined,
+          limit: undefined,
+        };
+  const navigationUsage = Object.entries(navigationOptions)
+    .map(
+      ([name, choices]) =>
+        ` [--${name} ${choices ? `{${choices.join(",")}}` : name.toUpperCase().replaceAll("-", "_")}]`,
+    )
+    .join("");
+  const usage = `usage: launch_codex_security_mcp[.cmd] --helper ${command} [-h]${navigation ? navigationUsage : paging ? " --limit LIMIT --offset OFFSET" : finding ? " --finding-id FINDING_ID" : ""}${duplicates ? " (--repository-id REPOSITORY_ID | --all-repositories)" : ""}`;
   let options: ReturnType<typeof argumentsFor> = {};
   if (command !== "dashboard" && command !== "database-info") {
     let scope: string | undefined;
@@ -46,8 +78,12 @@ export async function workbenchCommand(
       options = argumentsFor(
         args,
         paging ? ["limit", "offset"] : finding ? ["finding-id"] : [],
-        paging ? ["limit", "offset"] : [],
-        duplicates ? { "repository-id": undefined } : {},
+        paging || navigation ? ["limit", "offset"] : [],
+        navigation
+          ? navigationOptions
+          : duplicates
+            ? { "repository-id": undefined }
+            : {},
         (name, value) => {
           if (name === "limit" && (value as bigint) < 1n)
             throw new ArgumentError(
@@ -70,7 +106,7 @@ export async function workbenchCommand(
       );
       if (options["help"]) {
         print(
-          `${usage}\n\noptions:\n  -h, --help  show this help message and exit${paging ? "\n  --limit LIMIT\n  --offset OFFSET" : finding ? "\n  --finding-id FINDING_ID" : ""}${duplicates ? "\n  --repository-id REPOSITORY_ID\n  --all-repositories" : ""}`,
+          `${usage}\n\noptions:\n  -h, --help  show this help message and exit${navigation ? navigationUsage.replaceAll(" [", "\n  ").replaceAll("]", "") : paging ? "\n  --limit LIMIT\n  --offset OFFSET" : finding ? "\n  --finding-id FINDING_ID" : ""}${duplicates ? "\n  --repository-id REPOSITORY_ID\n  --all-repositories" : ""}`,
         );
         return 0;
       }
@@ -151,6 +187,22 @@ export async function workbenchCommand(
       case "list-dedupe-groups":
         result = listDedupeGroups(connection, options["finding-id"] as string);
         break;
+      case "list-global-findings":
+      case "list-repositories": {
+        const query: NavigationQuery = {
+          query: options["query"] as string | undefined,
+          targetId: options["target-id"] as string | undefined,
+          severity: options["severity"] as string | undefined,
+          status: options["status"] as string | undefined,
+          offset: (options["offset"] as bigint | undefined) ?? 0n,
+          limit: options["limit"] as bigint | undefined,
+        };
+        result =
+          command === "list-global-findings"
+            ? listGlobalFindings(connection, query)
+            : listRepositories(connection, query);
+        break;
+      }
     }
     print(
       stringifyJson(result, { compact: true, allowNan: false, sortKeys: true }),
