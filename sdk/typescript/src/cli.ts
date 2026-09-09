@@ -99,7 +99,7 @@ import {
   type JsonValue,
 } from "./config.js";
 import { formatUsd, type ScanCost } from "./cost.js";
-import { formatTokenUsage, scanCostUsage } from "./cost-model.js";
+import { formatScanCostTokens, formatTokenUsage } from "./cost-model.js";
 import {
   CodexSecurityError,
   ConfigurationError,
@@ -6843,8 +6843,7 @@ async function executeScan(
         );
       }
       if (runningCost !== null) {
-        const tokens = formatTokenUsage(scanCostUsage(runningCost));
-        if (tokens !== null) details.push(`Tokens: ${tokens}`);
+        details.push(`Tokens: ${formatScanCostTokens(runningCost)}`);
         details.push(`Cost: ${formatUsd(runningCost.estimatedUsd)}`);
       }
       return details.length === 0 ? stage : `${stage} | ${details.join(" | ")}`;
@@ -6911,9 +6910,8 @@ async function executeScan(
         }
         progress?.stopTimer();
         if (maxCostUsd === undefined) {
-          const tokens = formatTokenUsage(scanCostUsage(cost));
           progress?.stage(
-            `${tokens === null ? "" : `Tokens: ${tokens}. `}Estimated cost: ${formatUsd(cost.estimatedUsd)} USD.`,
+            `Tokens: ${formatScanCostTokens(cost)}. Estimated cost: ${formatUsd(cost.estimatedUsd)} USD.`,
           );
         } else {
           progress?.stage(
@@ -7663,9 +7661,11 @@ function printScanSummary(
   if (tokenSummary !== null) {
     errorOutput.write(`  ${paint("TOKENS", 1)}    ${tokenSummary}\n`);
   }
-  errorOutput.write(
-    `  ${paint("COST", 1)}      ${result.cost === null ? "unavailable (model pricing or usage missing)" : `${formatUsd(result.cost.estimatedUsd)} (standard, short context)`}\n`,
-  );
+  const costSummary =
+    result.cost === null
+      ? "unavailable (model pricing or usage missing)"
+      : `${formatUsd(result.cost.estimatedUsd)} (standard, short context)`;
+  errorOutput.write(`  ${paint("COST", 1)}      ${costSummary}\n`);
   errorOutput.write(
     `  ${paint("RESULTS", 1)}   ${errorMessage(result.scanDir)}\n`,
   );
@@ -7684,8 +7684,7 @@ function componentScanEventLine(
   }
   if (event.type !== "cost") return null;
   const cost = event.value;
-  const tokens = formatTokenUsage(scanCostUsage(cost));
-  return `codex-security: ${componentName} | ${tokens === null ? "" : `Tokens: ${tokens} | `}Cost: ${formatUsd(cost.estimatedUsd)}\n`;
+  return `codex-security: ${componentName} | Tokens: ${formatScanCostTokens(cost)} | Cost: ${formatUsd(cost.estimatedUsd)}\n`;
 }
 
 function protectedRootErrorMessage(

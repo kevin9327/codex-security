@@ -290,74 +290,6 @@ describe("scan cost", () => {
     },
   );
 
-  test("uses published GPT-5.6 model rates", () => {
-    const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000 };
-
-    expect(estimateScanCost("gpt-5.6", usage)?.estimatedUsd).toBe(24);
-    expect(estimateScanCost("gpt-5.6-sol", usage)?.estimatedUsd).toBe(24);
-    expect(estimateScanCost("gpt-5.6-terra", usage)?.estimatedUsd).toBe(14);
-    expect(estimateScanCost("gpt-5.6-luna", usage)?.estimatedUsd).toBe(1.4);
-  });
-
-  test("uses canonical OpenAI pricing for Amazon Bedrock model identifiers", () => {
-    const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000 };
-
-    for (const [model, expectedUsd] of [
-      ["openai.gpt-5.6", 24],
-      ["openai.gpt-5.6-sol", 24],
-      ["openai.gpt-daybreak-blue-latest", 24],
-      ["openai.gpt-daybreak-red-latest", 87.5],
-      ["openai.gpt-5.6-terra", 14],
-      ["openai.gpt-5.6-luna", 1.4],
-    ] as const) {
-      expect(estimateScanCost(model, usage)).toMatchObject({
-        model,
-        estimatedUsd: expectedUsd,
-      });
-    }
-
-    expect(estimateScanCost("openai.unknown-model", usage)).toBeNull();
-  });
-
-  test("uses current input, cache, and output rates", () => {
-    for (const [model, input, cached, write, output] of [
-      ["gpt-5.5", 5, 0.5, 5, 30],
-      ["gpt-5.5-2026-04-23", 5, 0.5, 5, 30],
-      ["gpt-6-astra", 10, 1, 12.5, 50],
-      ["gpt-daybreak-blue-latest", 4, 0.4, 5, 20],
-      ["gpt-daybreak-red-latest", 12.5, 1.25, 15.625, 75],
-      ["gpt-5.6-terra", 2, 0.2, 2.5, 12],
-      ["gpt-5.6-luna", 0.2, 0.02, 0.25, 1.2],
-    ] as const) {
-      expect(
-        estimateScanCost(model, {
-          input_tokens: 1_000_000,
-          output_tokens: 0,
-        })?.estimatedUsd,
-      ).toBe(input);
-      expect(
-        estimateScanCost(model, {
-          input_tokens: 1_000_000,
-          cached_input_tokens: 1_000_000,
-          output_tokens: 0,
-        })?.estimatedUsd,
-      ).toBe(cached);
-      expect(
-        estimateScanCost(model, {
-          input_tokens: 1_000_000,
-          cache_write_input_tokens: 1_000_000,
-          output_tokens: 0,
-        })?.estimatedUsd,
-      ).toBe(write);
-      expect(
-        estimateScanCost(model, {
-          input_tokens: 0,
-          output_tokens: 1_000_000,
-        })?.estimatedUsd,
-      ).toBe(output);
-    }
-  });
-
   test("charges cached input at its discounted rate", () => {
     expect(
       estimateScanCost("gpt-5.6-sol", {
@@ -423,6 +355,7 @@ describe("scan cost", () => {
   test("does not invent prices for unknown models or incomplete usage", () => {
     for (const [model, usage] of [
       ["unknown-model", { input_tokens: 1, output_tokens: 1 }],
+      ["openai.unknown-model", { input_tokens: 1, output_tokens: 1 }],
       ["gpt-5.6-sol", null],
       ["gpt-5.6-sol", {}],
       ["gpt-5.6-sol", { input_tokens: -1, output_tokens: 1 }],

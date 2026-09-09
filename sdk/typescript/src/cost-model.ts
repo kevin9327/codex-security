@@ -38,11 +38,9 @@ export interface ScanTokenUsage {
 }
 
 const MODEL_PRICING_NANODOLLARS: Readonly<Record<string, ModelPricing>> = {
-  // https://developers.openai.com/api/docs/models/gpt-5.5
   // GPT-5.5 has no additional cache-write charge.
   "gpt-5.5": [5_000, 500, 5_000, 30_000],
   "gpt-5.5-2026-04-23": [5_000, 500, 5_000, 30_000],
-  // https://developers.openai.com/api/docs/pricing
   "gpt-6-astra": [10_000, 1_000, 12_500, 50_000],
   "gpt-5.6": [4_000, 400, 5_000, 20_000],
   "gpt-5.6-sol": [4_000, 400, 5_000, 20_000],
@@ -148,10 +146,7 @@ export function estimateScanCost(
   };
 }
 
-export function formatTokenUsage(
-  value: unknown,
-  formatCount = (count: number) => count.toLocaleString("en-US"),
-): string | null {
+export function formatTokenUsage(value: unknown): string | null {
   const usage = tokenUsage(value);
   if (usage === null) return null;
   const writes =
@@ -173,23 +168,19 @@ export function formatTokenUsage(
   )
     .map(
       ([count, label]) =>
-        `${count === null ? "unavailable" : formatCount(count)} ${label}`,
+        `${count === null ? "unavailable" : count.toLocaleString("en-US")} ${label}`,
     )
     .join(", ");
 }
 
-export function scanCostUsage(cost: Readonly<ScanCost>): ScanTokenUsage {
-  return {
+export function formatScanCostTokens(cost: Readonly<ScanCost>): string {
+  return formatTokenUsage({
     input_tokens: cost.inputTokens,
     cached_input_tokens: cost.cachedInputTokens,
     cache_write_input_tokens: cost.cacheWriteInputTokens,
-    ...(cost.cacheWriteInputTokensReported === false
-      ? { cache_write_input_tokens_reported: false }
-      : {}),
+    cache_write_input_tokens_reported: cost.cacheWriteInputTokensReported,
     output_tokens: cost.outputTokens,
-    reasoning_output_tokens: 0,
-    total_tokens: cost.inputTokens + cost.outputTokens,
-  };
+  })!;
 }
 
 export function formatUsd(value: number): string {

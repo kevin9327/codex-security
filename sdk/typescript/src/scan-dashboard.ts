@@ -9,11 +9,7 @@ import type {
   ComponentScanResult,
 } from "./component-scan.js";
 import { formatUsd, type ScanCost, type ScanSessionEvent } from "./cost.js";
-import {
-  estimateScanCost,
-  formatTokenUsage,
-  scanCostUsage,
-} from "./cost-model.js";
+import { estimateScanCost, formatScanCostTokens } from "./cost-model.js";
 import type { ScanActivity } from "./scan-activity.js";
 import type { ScanMode } from "./targets.js";
 import { scanPhaseLabel, type ScanProgress } from "./worker-progress.js";
@@ -826,7 +822,7 @@ export class ScanDashboard {
     const tokens =
       this.#cost === null
         ? "waiting for usage"
-        : formatTokenUsage(scanCostUsage(this.#cost), formatCount)!;
+        : formatScanCostTokens(this.#cost);
     return wrapActivity("  TOKENS   ", tokens, this.#width());
   }
 
