@@ -402,7 +402,10 @@ for (const {
         expect(request.params.config.mcp_servers.sourcegraph).toMatchObject({
           required: true,
           enabled: true,
+          default_tools_approval_mode: "prompt",
         });
+        expect(request.params.approvalPolicy).toBe("on-request");
+        expect(request.params.approvalsReviewer).toBe("auto_review");
         expect(
           request.params.config.shell_environment_policy.exclude,
         ).toContain("SOURCE_AUTH");

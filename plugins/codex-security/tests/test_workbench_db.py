@@ -66,6 +66,9 @@ def test_source_mcp_registers_committed_sparse_scope(tmp_path, paths, expected):
         "sourceMcp": "sourcegraph",
         "target": {"kind": "paths" if paths else "repository", "paths": paths},
     }
+    source_files = ["src/SECURITY.md", "src/app.ts"]
+    if not paths:
+        source_files.insert(0, "README.md")
     registered = run_workbench(
         tmp_path / "state",
         "register-cli-scan",
@@ -73,8 +76,8 @@ def test_source_mcp_registers_committed_sparse_scope(tmp_path, paths, expected):
         str(scan_dir),
         "--repository",
         str(target),
-        "--recipe-json",
-        json.dumps(recipe),
+        "--registration-json-stdin",
+        input_text=json.dumps({"recipe": recipe, "sourceFiles": source_files}),
     )
     assert registered["scopeFileCount"] == expected
     assert (
@@ -87,6 +90,11 @@ def test_source_mcp_registers_committed_sparse_scope(tmp_path, paths, expected):
     )
     saved = run_workbench(tmp_path / "state", "get-scan-recipe", "--scan-id", registered["scanId"])
     assert saved["recipe"]["sourceMcp"] == "sourcegraph"
+    assert "sourceFiles" not in saved["recipe"]
+    assert [
+        json.loads(line)["path"]
+        for line in (scan_dir / "scoped-source-input.jsonl").read_text().splitlines()
+    ] == source_files
     assert not (target / "src").exists()
 
 
@@ -103,6 +111,21 @@ def test_source_mcp_recipe_rejects_local_changes(tmp_path, workbench_api):
     (target / "README.md").write_text("local change\n")
     with pytest.raises(SystemExit, match="clean Git checkout"):
         workbench_api["parse_scan_recipe"](json.dumps(recipe), target)
+
+
+@pytest.mark.parametrize("source_files", [None, ["../outside.ts"], ["other/app.ts"], []])
+def test_source_mcp_inventory_preserves_requested_scope(tmp_path, workbench_api, source_files):
+    target = tmp_path / "target"
+    initialize_git_repository(target)
+    recipe = {
+        "config": {},
+        "mode": "standard",
+        "repository": str(target),
+        "sourceMcp": "sourcegraph",
+        "target": {"kind": "paths", "paths": ["src"]},
+    }
+    with pytest.raises(SystemExit, match="inventory|scope|committed source"):
+        workbench_api["parse_scan_recipe"](json.dumps(recipe), target, source_files)
 
 
 BUDGET_COST = {

@@ -246,7 +246,9 @@ export class CodexReviewRunner {
             cwd: workingDirectory,
             ephemeral: true,
             approvalPolicy:
-              review.model === "gpt-5.6-luna" ? "never" : "on-request",
+              source === undefined && review.model === "gpt-5.6-luna"
+                ? "never"
+                : "on-request",
             approvalsReviewer: "auto_review",
             permissions: "codex_security_review",
             threadSource: CODEX_SECURITY_THREAD_SOURCES.scanComparison,

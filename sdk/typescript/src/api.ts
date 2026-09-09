@@ -1617,6 +1617,7 @@ export class CodexSecurity {
         ],
         JSON.stringify({
           recipe,
+          ...(source === undefined ? {} : { sourceFiles: source.files }),
           userContext: options.scanPrompt,
           ...(options.workflowId === undefined
             ? {}
@@ -1703,6 +1704,7 @@ export class CodexSecurity {
           repo,
           scanId,
           source.files,
+          approvalPolicy,
         );
       }
       if (mode === "deep" && options.onDeepProgress !== undefined) {
@@ -1754,6 +1756,7 @@ export class CodexSecurity {
         options.scanPrompt,
         options.maxCostUsd !== undefined,
         discoveryPrompt,
+        source?.instructions,
       );
       checkOpen();
       const feedback = await workbench(
@@ -1786,14 +1789,6 @@ export class CodexSecurity {
         scopeFileCount === null
           ? basePrompt
           : `${basePrompt}\nThe SDK's current in-scope file-count estimate is ${scopeFileCount}; use it for scan progress unless exact scoped-source enumeration establishes a different total before review begins.`;
-      if (source !== undefined) {
-        await writeFile(
-          join(scanDir, "scoped-source-input.jsonl"),
-          source.files.map((path) => JSON.stringify({ path }) + "\n").join(""),
-          { flag: "wx", mode: 0o600, signal },
-        );
-        prompt += `\n${source.instructions}\nThe complete committed scope inventory is already prepared at scoped-source-input.jsonl. Do not regenerate it with local filesystem helpers. For a path scan, still use bind-repo-scopes to preserve all requested scope entries in the manifest and coverage.`;
-      }
       if (falsePositiveExamples.length > 0) {
         const feedbackPath = join(
           scanDir,
@@ -3158,6 +3153,9 @@ export class CodexSecurity {
               : { sourceMcp: local.source.mcp.name }),
             mock: true,
           },
+          ...(local.source === undefined
+            ? {}
+            : { sourceFiles: local.source.files }),
           userContext: options.scanPrompt,
           ...(options.workflowId === undefined
             ? {}
@@ -4034,6 +4032,7 @@ function scanPrompt(
   additionalPrompt?: string,
   enforceCostLimit = false,
   discoveryPrompt?: string,
+  sourceInstructions?: string,
 ): string {
   const python = pluginPythonCommand();
   const customValidation = discoveryPrompt !== undefined;
@@ -4096,7 +4095,13 @@ function scanPrompt(
         ]
       : []),
     "Runtime paths are environment-backed; keep them quoted in POSIX shells and use the corresponding $env: names in PowerShell. Do not copy or reparse their values.",
-    targetInstruction(target, python),
+    ...(sourceInstructions === undefined
+      ? []
+      : [
+          sourceInstructions,
+          "Use the complete committed scope inventory at scoped-source-input.jsonl.",
+        ]),
+    targetInstruction(target, python, sourceInstructions !== undefined),
     ...(skillName === "security-scan" || enforceCostLimit || customValidation
       ? [
           "Write the complete canonical scan-manifest.json, findings.json, and coverage.json, but do not finalize or seal them; the SDK workbench owns authoritative metadata, finalization, report generation, and sealing.",
@@ -4120,7 +4125,11 @@ function skillNameFor(target: NormalizedTarget, mode: ScanMode): string {
   return mode === "deep" ? "deep-security-scan" : "security-scan";
 }
 
-function targetInstruction(target: NormalizedTarget, python: string): string {
+function targetInstruction(
+  target: NormalizedTarget,
+  python: string,
+  sourceMcp = false,
+): string {
   if (target.kind === "repository")
     return "Scan target: the entire repository.";
   if (target.kind === "paths") {
@@ -4131,7 +4140,10 @@ function targetInstruction(target: NormalizedTarget, python: string): string {
     const scopes = shellEnvironmentReference(
       "CODEX_SECURITY_TARGET_PATHS_FILE",
     );
-    return `Scan target paths: resolve every requested file and all non-ignored descendants of requested directories using ${python} ${helper} make-repo-scope-input --repo ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")} --scopes-file ${scopes} --out ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scoped-source-input.jsonl")}. Before finalization, preserve every requested scope with ${python} ${helper} bind-repo-scopes --scopes-file ${scopes} --manifest ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scan-manifest.json")} --coverage ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/coverage.json")}. Do not print, evaluate, or modify the target-paths file.`;
+    const enumeration = sourceMcp
+      ? "use the prepared committed-file inventory."
+      : `resolve every requested file and all non-ignored descendants of requested directories using ${python} ${helper} make-repo-scope-input --repo ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")} --scopes-file ${scopes} --out ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scoped-source-input.jsonl")}.`;
+    return `Scan target paths: ${enumeration} Before finalization, preserve every requested scope with ${python} ${helper} bind-repo-scopes --scopes-file ${scopes} --manifest ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/scan-manifest.json")} --coverage ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR", "/coverage.json")}. Do not print, evaluate, or modify the target-paths file.`;
   }
   if (target.kind === "refs") {
     return `Scan target: Git diff from ${target.base} to ${target.head}.`;

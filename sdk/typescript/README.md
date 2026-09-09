@@ -489,7 +489,14 @@ patch workflow. This is source browsing through MCP, not a checkoutless Git or
 patch backend.
 
 The selected server is required in Standard scans, Deep workers, and dedupe
-reviews. Credentials are supplied to the native MCP host and excluded from the
+reviews. Source tool calls require Codex's automatic approval review, including
+read-only tools; per-tool approval exemptions are overridden for the selected
+server. An explicit `approval_policy="never"` denies source calls that need
+approval. This review applies to tool calls; native MCP resource reads bypass
+tool approval. Servers that expose source as resources must enforce repository
+access through scoped credentials or server-side authorization.
+
+Credentials are supplied to the native MCP host and excluded from the
 model's shell environment. Use environment-backed HTTP authentication for this
 workflow: OAuth credentials stored in a different Codex home are not imported.
 Neither Sourcegraph's CLI nor a custom MCP transport is needed.

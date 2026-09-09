@@ -113,7 +113,6 @@ from workbench_schema import (
 from workbench_source_excerpt import finding_source_excerpt, safe_source_path
 from workbench_target import (
     clean_worktree_content_digest,
-    committed_source_paths,
     copy_directory_excluding,
     copy_git_worktree_files,
     directory_content_digest,
@@ -1668,14 +1667,16 @@ def register_cli_scan(connection: sqlite3.Connection, args: argparse.Namespace) 
 
     user_context = None
     workflow_id = None
+    source_files = None
     if args.registration_json_stdin:
         registration = json.load(sys.stdin)
         recipe_json = json.dumps(registration["recipe"], ensure_ascii=False, separators=(",", ":"))
         user_context = registration.get("userContext")
         workflow_id = registration.get("workflowId")
+        source_files = registration.get("sourceFiles")
     else:
         recipe_json = sys.stdin.read() if args.recipe_json_stdin else args.recipe_json
-    recipe = parse_scan_recipe(recipe_json, repository)
+    recipe = parse_scan_recipe(recipe_json, repository, source_files)
     requested_target = recipe["target"]
     paths = requested_target["paths"]
     scope = paths[0] if len(paths) == 1 else "."
@@ -1696,14 +1697,7 @@ def register_cli_scan(connection: sqlite3.Connection, args: argparse.Namespace) 
     mode = "diff" if diff_target is not None else recipe["mode"]
     target_identity = scan_target_identity(repository, diff_target)
     if recipe.get("sourceMcp"):
-        scope_file_count = len(
-            committed_source_paths(
-                repository,
-                paths,
-                diff_target["baseRevision"] if diff_target else None,
-                head=target_identity[0],
-            )
-        )
+        scope_file_count = len(source_files)
     else:
         scope_file_count = (
             directory_snapshot_regular_file_count(repository)
@@ -1780,6 +1774,12 @@ def register_cli_scan(connection: sqlite3.Connection, args: argparse.Namespace) 
         )
         if workflow_id is not None:
             register_workflow_scan(connection, workflow_id, scan_id, str(scan_dir), timestamp)
+        if recipe.get("sourceMcp"):
+            write_scan_local_bytes(
+                scan_dir,
+                "scoped-source-input.jsonl",
+                "".join(json.dumps({"path": path}) + "\n" for path in source_files).encode("utf-8"),
+            )
         connection.commit()
     except BaseException:
         connection.rollback()
@@ -1830,7 +1830,9 @@ def set_scan_cost_limit(connection: sqlite3.Connection, args: argparse.Namespace
     return {"scanId": scan["id"], "maxCostUsd": limit}
 
 
-def parse_scan_recipe(value: str, repository: Path) -> dict[str, Any]:
+def parse_scan_recipe(
+    value: str, repository: Path, source_files: list[str] | None = None
+) -> dict[str, Any]:
     if len(value.encode("utf-8")) > SCAN_RECIPE_MAX_BYTES:
         raise SystemExit("Scan launch recipe must be no larger than 256 KiB.")
     try:
@@ -1864,7 +1866,7 @@ def parse_scan_recipe(value: str, repository: Path) -> dict[str, Any]:
         raise SystemExit("A scoped scan launch recipe must include at least one target path.")
     if target["kind"] != "paths" and paths:
         raise SystemExit("Only scoped scan launch recipes can include target paths.")
-    validate_scan_recipe_source(repository, recipe)
+    validate_scan_recipe_source(repository, recipe, source_files)
     if target["kind"] in {"refs", "working_tree"}:
         if not isinstance(target.get("base"), str) or not isinstance(target.get("head"), str):
             raise SystemExit("Diff scan launch recipes require resolved base and head revisions.")

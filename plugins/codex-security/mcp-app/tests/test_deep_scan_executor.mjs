@@ -80,7 +80,8 @@ try {
     await testPreflightBindsExecutableAndHomeBeforeChangingCwd();
     await testSdkInvocationAndThreadCapture();
     await testBedrockCredentialsReachWorker();
-    await testSourceMcpReachesWorker();
+    await testSourceMcpReachesWorker("on-request");
+    await testSourceMcpReachesWorker("never");
     await testArtifactServerUsesExtendedStartupTimeout();
     await testZeroSubagentsPreservesHostRestrictions();
     await testSdkResumesExistingThread();
@@ -672,7 +673,7 @@ async function testSdkInvocationAndThreadCapture() {
   }
 }
 
-async function testSourceMcpReachesWorker() {
+async function testSourceMcpReachesWorker(approvalPolicy) {
   const privateRoot = await mkdtemp(path.join(tmpdir(), "codex-security-source-host-"));
   temporaryRoots.push(privateRoot);
   const profile = { ...emptyWorkerPermissionProfile, filesystem: { ":root": "read", [privateRoot]: "deny" } };
@@ -687,10 +688,10 @@ async function testSourceMcpReachesWorker() {
       repository: fixture.root,
       scanId: "synthetic-scan",
       instructions: "Source access: synthetic code.host at immutable revision.",
-      files: ["absent/source.ts"],
       environment: { SYNTHETIC_SOURCE_AUTH: "token synthetic-source-auth" },
       config: {
-        mcp_servers: { "code.host": { url: "https://source.example.com/.api/mcp", enabled: true, required: true, env_http_headers: { Authorization: "SYNTHETIC_SOURCE_AUTH" } } },
+        approval_policy: approvalPolicy,
+        mcp_servers: { "code.host": { url: "https://source.example.com/.api/mcp", enabled: true, required: true, default_tools_approval_mode: "prompt", env_http_headers: { Authorization: "SYNTHETIC_SOURCE_AUTH" } } },
         shell_environment_policy: { exclude: ["SYNTHETIC_SOURCE_AUTH"] }
       }
     }));
@@ -701,8 +702,10 @@ async function testSourceMcpReachesWorker() {
     assert.equal(result.threadId, "fixture-thread-id");
     const invocation = JSON.parse(await readFile(fixture.markerPath, "utf8"));
     assert.equal(invocation.sourceAuthentication, "token synthetic-source-auth");
+    assert.ok(invocation.argv.includes(`approval_policy=${JSON.stringify(approvalPolicy)}`));
+    assert.ok(invocation.argv.includes('approvals_reviewer="auto_review"'));
     assert.match(invocation.stdin, /code.host at immutable revision/);
-    assert.ok(invocation.argv.some((value) => value.startsWith("mcp_servers=") && value.includes('"code.host"') && value.includes("required=true")));
+    assert.ok(invocation.argv.some((value) => value.startsWith("mcp_servers=") && value.includes('"code.host"') && value.includes("required=true") && value.includes('default_tools_approval_mode="prompt"')));
     assert.ok(invocation.argv.includes('shell_environment_policy.exclude=["SYNTHETIC_SOURCE_AUTH"]'));
     assert.ok(!invocation.argv.join(" ").includes("token synthetic-source-auth"));
     assert.match(workerPermissionProfileOverride(invocation.argv), /network=\{enabled=false\}/);

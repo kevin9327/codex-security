@@ -18,6 +18,7 @@ from typing import Any, BinaryIO
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from filesystem_identity import stored_filesystem_identity_matches
 from workbench_constants import GIT_REPOSITORY_ENVIRONMENT
+from workbench_validation import path_within_scope
 
 
 def git_output(
@@ -776,43 +777,9 @@ def scan_target_warning(scan: sqlite3.Row) -> str | None:
     return None
 
 
-def committed_source_paths(
-    target: Path, scopes: list[str], base: str | None = None, head: str = "HEAD"
-) -> list[str]:
-    """Enumerate committed regular files without materializing sparse source blobs."""
-    paths: set[str] = set()
-    for revision in [head] if base is None else [head, base]:
-        tree = git_bytes(target, "ls-tree", "-r", "-z", "--full-tree", revision)
-        if tree is None:
-            raise SystemExit("Source MCP requires the selected Git commit and tree metadata.")
-        for entry in tree.split(b"\0"):
-            metadata, separator, name = entry.partition(b"\t")
-            if separator and metadata.startswith((b"100644 blob ", b"100755 blob ")):
-                paths.add(os.fsdecode(name))
-    if base is not None:
-        changed = git_bytes(
-            target,
-            "diff-tree",
-            "--no-commit-id",
-            "--name-only",
-            "--no-renames",
-            "-r",
-            "-z",
-            base,
-            head,
-        )
-        if changed is None:
-            raise SystemExit("Source MCP could not enumerate the committed diff.")
-        paths.intersection_update(os.fsdecode(path) for path in changed.split(b"\0"))
-    return sorted(
-        path
-        for path in paths
-        if not scopes
-        or any(scope == "." or path == scope or path.startswith(scope + "/") for scope in scopes)
-    )
-
-
-def validate_scan_recipe_source(repository: Path, recipe: dict[str, Any]) -> None:
+def validate_scan_recipe_source(
+    repository: Path, recipe: dict[str, Any], source_files: list[str] | None = None
+) -> None:
     source_mcp = recipe.get("sourceMcp")
     target = recipe["target"]
     for path in target["paths"]:
@@ -839,11 +806,19 @@ def validate_scan_recipe_source(repository: Path, recipe: dict[str, Any]) -> Non
         target["kind"] == "refs" and target.get("head") != current_revision
     ):
         raise SystemExit("Repository HEAD changed before the source MCP scan started.")
-    committed_paths = committed_source_paths(repository, [], head=current_revision)
+    # The SDK owns committed-file enumeration. This registration payload is
+    # separate from the saved recipe and must stay inside its approved scope.
+    if not isinstance(source_files, list) or not all(
+        isinstance(path, str) and path and "\\" not in path for path in source_files
+    ):
+        raise SystemExit("Source MCP registration requires the SDK's committed-source inventory.")
+    if any(
+        not any(path_within_scope(path, scope) for scope in target["paths"] or ["."])
+        for path in source_files
+    ):
+        raise SystemExit("Source MCP inventory paths must stay inside the requested scope.")
     for path in target["paths"]:
-        if not any(
-            path == "." or item == path or item.startswith(path + "/") for item in committed_paths
-        ):
+        if not any(path_within_scope(item, path) for item in source_files):
             raise SystemExit("Scan launch recipe target path must contain committed source files.")
 
 

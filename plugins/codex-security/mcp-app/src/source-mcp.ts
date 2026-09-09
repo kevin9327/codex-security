@@ -8,7 +8,7 @@ interface SourceMcpRuntime {
   instructions: string;
   repository: string;
   scanId: string;
-  files: string[];
+  inventoryDigest: string;
 }
 
 export async function readSourceMcpRuntime(repository: string | undefined, scanId: string | undefined): Promise<SourceMcpRuntime | undefined> {

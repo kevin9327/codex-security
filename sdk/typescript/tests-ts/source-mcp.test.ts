@@ -102,6 +102,177 @@ test("native Codex stops before model generation when the required source MCP ca
   }
 });
 
+test("native read-only source tools cannot bypass deny-all approval", async () => {
+  const home = await temporaryDirectory();
+  let sourceCalls = 0;
+  const modelInputs: string[] = [];
+  let advertisedSourceTool = false;
+  const server = createServer(async (request, response) => {
+    if (request.method !== "POST") {
+      response.writeHead(405).end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    if (request.url === "/mcp") {
+      if (body.id === undefined) {
+        response.writeHead(202).end();
+        return;
+      }
+      const result =
+        body.method === "initialize"
+          ? {
+              protocolVersion: "2024-11-05",
+              capabilities: { tools: {} },
+              serverInfo: { name: "source", version: "1" },
+            }
+          : body.method === "tools/list"
+            ? {
+                tools: [
+                  {
+                    name: "read_source",
+                    description: "Read source in a repository",
+                    inputSchema: {
+                      type: "object",
+                      properties: { repository: { type: "string" } },
+                      required: ["repository"],
+                    },
+                    annotations: { readOnlyHint: true },
+                  },
+                ],
+              }
+            : { content: [{ type: "text", text: "Synthetic source" }] };
+      if (body.method === "tools/call") sourceCalls++;
+      response
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }));
+      return;
+    }
+    if (!request.url?.includes("responses")) {
+      response
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end('{"data":[]}');
+      return;
+    }
+    modelInputs.push(
+      JSON.stringify(
+        body.input.filter((item: { type: string }) =>
+          item.type.endsWith("call_output"),
+        ),
+      ),
+    );
+    const toolDefinitions =
+      body.tools ??
+      body.input.flatMap((item: { tools?: unknown[] }) => item.tools ?? []);
+    const catalog = toolDefinitions.flatMap(
+      (tool: { type: string; name: string; tools?: { name: string }[] }) =>
+        tool.type === "namespace"
+          ? tool.tools!.map((entry) => ({ ...entry, namespace: tool.name }))
+          : [tool],
+    );
+    const sourceTool = catalog.find((tool: { name: string }) =>
+      tool.name.endsWith("read_source"),
+    );
+    const execTool = catalog.find(
+      (tool: { name: string }) => tool.name === "exec",
+    );
+    advertisedSourceTool ||= sourceTool !== undefined || execTool !== undefined;
+    const item =
+      modelInputs.length === 1 && execTool
+        ? {
+            type: "custom_tool_call",
+            id: "ctc_source",
+            call_id: "call_source",
+            name: execTool.name,
+            namespace: execTool.namespace,
+            input:
+              'text(await tools.mcp__source__read_source({repository:"other/repository"}));',
+          }
+        : modelInputs.length === 1 && sourceTool
+          ? {
+              type: "function_call",
+              id: "fc_source",
+              call_id: "call_source",
+              name: sourceTool.name,
+              ...(sourceTool.namespace
+                ? { namespace: sourceTool.namespace }
+                : {}),
+              arguments: '{"repository":"other/repository"}',
+            }
+          : {
+              type: "message",
+              id: "msg_done",
+              role: "assistant",
+              content: [{ type: "output_text", text: "Source access denied." }],
+            };
+    response.writeHead(200, { "Content-Type": "text/event-stream" }).end(
+      [
+        { type: "response.output_item.done", item },
+        {
+          type: "response.completed",
+          response: {
+            id: `resp_${modelInputs.length}`,
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          },
+        },
+      ]
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+        .join(""),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  try {
+    const source = await resolveSourceMcp(
+      "source",
+      { mcp_servers: { source: { url: `${url}/mcp` } } },
+      { CODEX_HOME: home },
+    );
+    const codex = new Codex({
+      codexPathOverride: resolveCodexCommand({}).command,
+      env: { PATH: process.env["PATH"] ?? "", CODEX_HOME: home },
+      config: {
+        ...sourceMcpConfig(source, {}),
+        features: {
+          plugins: false,
+          code_mode: { enabled: false },
+          tool_search: false,
+        },
+        model_provider: "fixture",
+        model_providers: {
+          fixture: {
+            name: "Fixture",
+            wire_api: "responses",
+            base_url: `${url}/v1`,
+            request_max_retries: 0,
+          },
+        },
+      },
+    });
+    await codex
+      .startThread({
+        workingDirectory: home,
+        skipGitRepoCheck: true,
+        sandboxMode: "read-only",
+        approvalPolicy: "never",
+      })
+      .run("Read only approved/repository using the source MCP.", {
+        signal: AbortSignal.timeout(15_000),
+      });
+    expect(advertisedSourceTool).toBe(true);
+    expect(modelInputs.length).toBe(2);
+    expect(modelInputs[1]).toContain("approval");
+    expect(sourceCalls).toBe(0);
+  } finally {
+    const closed = new Promise<void>((resolve) =>
+      server.close(() => resolve()),
+    );
+    server.closeAllConnections();
+    await closed;
+  }
+});
+
 async function sparseRepository() {
   const root = await temporaryDirectory();
   const repo = join(root, "repo");
@@ -129,7 +300,14 @@ test("source MCP resolves only the selected server and keeps credentials out of 
   );
   const source = await resolveSourceMcp(
     "sourcegraph",
-    {},
+    {
+      mcp_servers: {
+        sourcegraph: {
+          default_tools_approval_mode: "approve",
+          tools: { read_source: { approval_mode: "approve" } },
+        },
+      },
+    },
     { CODEX_HOME: home },
   );
   const config = sourceMcpConfig(source, {
@@ -143,6 +321,8 @@ test("source MCP resolves only the selected server and keeps credentials out of 
       env_http_headers: { Authorization: "CODEX_SECURITY_SOURCE_HEADER_0" },
       enabled: true,
       required: true,
+      default_tools_approval_mode: "prompt",
+      tools: { read_source: { approval_mode: "prompt" } },
     },
   });
   expect(JSON.stringify(config)).not.toContain("synthetic-source-credential");
@@ -270,7 +450,16 @@ test.each([false, true])(
         runWorkbench: async (_options, args, input) => {
           const result = mockWorkbench(args, input);
           if (args[0] === "register-cli-scan") {
-            recipe = JSON.parse(input!).recipe;
+            const registration = JSON.parse(input!);
+            recipe = registration.recipe;
+            expect(registration.sourceFiles).toEqual(["src/app.ts"]);
+            await writeFile(
+              join(root, "scan", "scoped-source-input.jsonl"),
+              registration.sourceFiles
+                .map((path: string) => JSON.stringify({ path }) + "\n")
+                .join(""),
+            );
+            result["scopeFileCount"] = registration.sourceFiles.length;
             result["targetRevision"] = git(repo, "rev-parse", "HEAD");
           }
           return result;
@@ -285,6 +474,7 @@ test.each([false, true])(
               env_http_headers: { Authorization: "SOURCE_AUTH" },
               required: true,
               enabled: true,
+              default_tools_approval_mode: "prompt",
             },
           });
           expect(JSON.stringify(overrides)).toContain(
@@ -303,10 +493,15 @@ test.each([false, true])(
                   expect(prompt).toContain("source.graph");
                   expect(prompt).toContain(git(repo, "rev-parse", "HEAD"));
                   expect(prompt).not.toContain(environment.SOURCE_AUTH);
+                  expect(prompt).not.toContain("make-repo-scope-input");
+                  expect(prompt).toContain("bind-repo-scopes");
+                  expect(prompt).toContain("scoped-source-input.jsonl");
                   const runtime = JSON.parse(
                     await readFile(privatePath!, "utf8"),
                   );
-                  expect(runtime.files).toEqual(["src/app.ts"]);
+                  expect(runtime).not.toHaveProperty("files");
+                  expect(runtime.config.approval_policy).toBe("on-request");
+                  expect(runtime.config.approvals_reviewer).toBe("auto_review");
                   expect(runtime.environment.SOURCE_AUTH).toBe(
                     environment.SOURCE_AUTH,
                   );

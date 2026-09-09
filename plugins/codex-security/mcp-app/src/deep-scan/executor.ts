@@ -87,7 +87,10 @@ export class CodexSdkWorkerExecutor implements CodexWorkerExecutor {
           ...(this.modelSettings.reasoningEffort
             ? { model_reasoning_effort: this.modelSettings.reasoningEffort }
             : {}),
-          ...(source === undefined ? { mcp_servers: servers } : { shell_environment_policy: source.config.shell_environment_policy }),
+          ...(source === undefined ? { mcp_servers: servers } : {
+            shell_environment_policy: source.config.shell_environment_policy,
+            approvals_reviewer: "auto_review"
+          }),
           ...workerSubagentConfig(request.subagents)
         },
         // Structured SDK config cannot preserve literal filesystem keys such as
@@ -97,7 +100,7 @@ export class CodexSdkWorkerExecutor implements CodexWorkerExecutor {
       const threadOptions = {
         ...(this.modelSettings.model ? { model: this.modelSettings.model } : {}),
         threadSource: "security_scan",
-        approvalPolicy: "never",
+        approvalPolicy: source?.config.approval_policy === "on-request" ? "on-request" : "never",
         skipGitRepoCheck: true,
         workingDirectory: request.workingDirectory
       } as const;

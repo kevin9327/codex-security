@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { environmentEntry, readCodexHomeConfig } from "./auth.js";
@@ -63,7 +64,17 @@ export async function resolveSourceMcp(
     ...structuredClone(selected),
     enabled: true,
     required: true,
+    // Read-only source tools still need authorization for their repository and revision.
+    default_tools_approval_mode: "prompt",
   };
+  if (server["tools"] !== undefined) {
+    server["tools"] = Object.fromEntries(
+      Object.keys(server["tools"] as JsonObject).map((tool) => [
+        tool,
+        { approval_mode: "prompt" },
+      ]),
+    );
+  }
   const credentials: Record<string, string> = {};
   const capture = (key: string): void => {
     const value = environmentEntry(environment, key);
@@ -205,6 +216,7 @@ export async function writeSourceMcpRuntime(
   repository: string,
   scanId: string,
   files: readonly string[],
+  approvalPolicy: "never" | "on-request",
 ): Promise<string> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await requirePrivateCredentialHome(await stat(directory), directory);
@@ -212,12 +224,18 @@ export async function writeSourceMcpRuntime(
   await writeFile(
     path,
     JSON.stringify({
-      config: sourceMcpConfig(source, {}),
+      config: {
+        ...sourceMcpConfig(source, {}),
+        approval_policy: approvalPolicy,
+        approvals_reviewer: "auto_review",
+      },
       environment: source.environment,
       instructions,
       repository,
       scanId,
-      files,
+      inventoryDigest: createHash("sha256")
+        .update(JSON.stringify(files))
+        .digest("hex"),
     }),
     { mode: 0o600, flag: "wx" },
   );
