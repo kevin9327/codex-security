@@ -12,7 +12,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from workbench_test_support import run_workbench, write_checkpoint, write_completed_contract
+from workbench_test_support import (
+    BUNDLED_HELPERS,
+    run_workbench,
+    write_checkpoint,
+    write_completed_contract,
+)
 
 
 @pytest.mark.parametrize("termination", ["failed", "interrupted", "canceled"])
@@ -378,8 +383,9 @@ def test_explicit_recovery_preserves_sealed_parent_with_empty_source_map(
     )
     subprocess.run(
         [
-            sys.executable,
-            str(scripts_dir / "finalize_scan_contract.py"),
+            "node",
+            str(BUNDLED_HELPERS),
+            "finalize-scan-contract",
             "--scan-dir",
             str(contract_dir),
         ],
@@ -528,8 +534,9 @@ def test_explicit_recovery_retries_frozen_parent_after_write_failure(
     )
     subprocess.run(
         [
-            sys.executable,
-            str(scripts_dir / "finalize_scan_contract.py"),
+            "node",
+            str(BUNDLED_HELPERS),
+            "finalize-scan-contract",
             "--scan-dir",
             str(contract_dir),
         ],

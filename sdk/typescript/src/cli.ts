@@ -148,7 +148,6 @@ import {
   prepareCodexSecurityCredentialHome,
   pythonUtf8Environment,
   resolveCodexCommand,
-  resolvePluginPython,
   runWorkbench,
   setCodexSecurityCredentialLogout,
   type CodexCommand,
@@ -1276,18 +1275,12 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
   },
   exportFindings: async (arguments_, output) => {
     const environment = exportEnvironment();
-    const python = await resolvePluginPython({
-      configuredPath: arguments_.pythonPath,
-      environment,
-    });
     const plugin = await bundledPluginRoot();
     const invocation = spawn(
-      python,
+      process.execPath,
       [
-        "-I",
-        "-X",
-        "utf8",
-        join(plugin, "scripts", "finalize_scan_contract.py"),
+        join(plugin, "mcp", "helpers.mjs"),
+        "finalize-scan-contract",
         "--scan-dir",
         arguments_.scanDir,
         "--export-format",

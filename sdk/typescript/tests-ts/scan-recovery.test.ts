@@ -724,11 +724,10 @@ describe("malformed scan artifact recovery", () => {
       const original = await readFile(path, "utf8");
 
       const strict = spawnSync(
-        fixture.python,
+        process.execPath,
         [
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "finalize_scan_contract.py"),
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "finalize-scan-contract",
           "--scan-dir",
           fixture.scanDir,
         ],
@@ -1295,11 +1294,10 @@ describe("malformed scan artifact recovery", () => {
     await writeJson(path, document);
 
     const strict = spawnSync(
-      fixture.python,
+      process.execPath,
       [
-        "-I",
-        "-B",
-        join(PLUGIN_ROOT, "scripts", "finalize_scan_contract.py"),
+        join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+        "finalize-scan-contract",
         "--scan-dir",
         fixture.scanDir,
       ],

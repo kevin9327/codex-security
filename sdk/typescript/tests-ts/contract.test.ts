@@ -785,16 +785,11 @@ describe("canonical scan contract", () => {
       loadContract(scanDir, { pluginRoot: PLUGIN_ROOT }),
     ).rejects.toThrow("duplicate artifact path");
 
-    const python =
-      process.env["PYTHON"] ?? Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
-    if (python === null) return;
     const result = Bun.spawnSync(
       [
-        python,
-        "-I",
-        "-B",
-        join(PLUGIN_ROOT, "scripts", "finalize_scan_contract.py"),
+        process.execPath,
+        join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+        "finalize-scan-contract",
         "--scan-dir",
         await realpath(scanDir),
       ],

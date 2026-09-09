@@ -5,13 +5,13 @@ import json
 import shutil
 import sqlite3
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
 from test_workbench_db import HEAD_CHANGED_WARNING
 from workbench_test_support import (
+    BUNDLED_HELPERS,
     initialize_git_repository,
     mark_deep_coordinator_succeeded,
     run_workbench,
@@ -20,7 +20,6 @@ from workbench_test_support import (
 )
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "workbench_db.py"
-FINALIZER = SCRIPT.with_name("finalize_scan_contract.py")
 
 
 def compare_scan_pair(
@@ -164,7 +163,10 @@ def create_cli_scan(
             {"id": "unreviewed-path", "reason": "Review incomplete", "paths": ["src/extract.py"]}
         ]
         coverage_path.write_text(json.dumps(coverage))
-    subprocess.run([sys.executable, str(FINALIZER), "--scan-dir", str(scan_dir)], check=True)
+    subprocess.run(
+        ["node", str(BUNDLED_HELPERS), "finalize-scan-contract", "--scan-dir", str(scan_dir)],
+        check=True,
+    )
     completion = ["complete-scan", "--scan-id", launched["scanId"]]
     if cost is not None:
         completion.extend(("--cost-json", json.dumps(cost)))
@@ -308,7 +310,10 @@ def test_cli_scan_preserves_original_revision_when_head_moves(tmp_path: Path) ->
         target_kind="git_revision",
         target_revision=revision,
     )
-    subprocess.run([sys.executable, str(FINALIZER), "--scan-dir", str(scan_dir)], check=True)
+    subprocess.run(
+        ["node", str(BUNDLED_HELPERS), "finalize-scan-contract", "--scan-dir", str(scan_dir)],
+        check=True,
+    )
 
     readme.write_text("replacement source\n")
     subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)

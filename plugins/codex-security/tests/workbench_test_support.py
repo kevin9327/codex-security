@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "workbench_db.py"
+BUNDLED_HELPERS = SCRIPT.parents[3] / "sdk/typescript/_bundled_plugin/mcp/helpers.mjs"
 PLUGIN_MANIFEST = Path(__file__).resolve().parents[1] / ".codex-plugin" / "plugin.json"
 
 
@@ -89,7 +90,7 @@ def run_workbench(
     command = (
         [
             "node",
-            str(SCRIPT.parents[3] / "sdk/typescript/_bundled_plugin/mcp/helpers.mjs"),
+            str(BUNDLED_HELPERS),
         ]
         if args and args[0] in {"list-global-findings", "list-repositories", "list-scans"}
         else [sys.executable, str(SCRIPT)]

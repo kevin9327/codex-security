@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from workbench_test_support import BUNDLED_HELPERS
+
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = PLUGIN_ROOT / "scripts"
 
@@ -37,12 +39,19 @@ def test_finalizer_cli_completes_checked_in_scan_bundle(tmp_path: Path) -> None:
     scan_dir = tmp_path / "completed-scan"
     shutil.copytree(PLUGIN_ROOT / "examples" / "completed-scan", scan_dir)
 
-    result = run_script(
-        "finalize_scan_contract.py",
-        "--scan-dir",
-        str(scan_dir),
-        "--schema-dir",
-        str(PLUGIN_ROOT / "schemas"),
+    result = subprocess.run(
+        [
+            "node",
+            str(BUNDLED_HELPERS),
+            "finalize-scan-contract",
+            "--scan-dir",
+            str(scan_dir),
+            "--schema-dir",
+            str(PLUGIN_ROOT / "schemas"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
     )
 
     assert result.returncode == 0, result.stderr

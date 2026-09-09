@@ -4,12 +4,12 @@ import copy
 import json
 import sqlite3
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
 from workbench_test_support import (
+    BUNDLED_HELPERS,
     create_saved_workspace,
     initialize_git_repository,
     mark_deep_coordinator_succeeded,
@@ -207,8 +207,9 @@ def test_cli_completion_accepts_sealed_clean_git_revision_without_snapshot_diges
     manifest_path.write_text(json.dumps(manifest))
     subprocess.run(
         [
-            sys.executable,
-            str(Path(__file__).resolve().parent.parent / "scripts" / "finalize_scan_contract.py"),
+            "node",
+            str(BUNDLED_HELPERS),
+            "finalize-scan-contract",
             "--scan-dir",
             str(scan_dir),
             "--source-root",

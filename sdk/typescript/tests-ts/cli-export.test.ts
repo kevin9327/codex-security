@@ -38,6 +38,26 @@ async function copyCompletedScan(root: string): Promise<string> {
   return scan;
 }
 
+async function copyLargeExportScan(root: string, payloadBytes: number) {
+  const scan = await copyCompletedScan(root);
+  const findingsPath = join(scan, "findings.json");
+  const findings = JSON.parse(await readFile(findingsPath, "utf8"));
+  findings.findings[0].extensions = {
+    syntheticPayload: "a".repeat(payloadBytes),
+  };
+  const contents = JSON.stringify(findings);
+  await writeFile(findingsPath, contents);
+  const manifestPath = join(scan, "scan-manifest.json");
+  const manifest = JSON.parse(
+    await readFile(manifestPath, "utf8"),
+  ) as ScanManifest;
+  manifest.scan.artifacts.find(
+    (artifact) => artifact.path === "findings.json",
+  )!.sha256 = createHash("sha256").update(contents).digest("hex");
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  return { scan, expectedBytes: Buffer.byteLength(contents) };
+}
+
 describe("CLI", () => {
   test("does not pass credentials or Python startup paths to the exporter", () => {
     expect(
@@ -138,17 +158,9 @@ describe("CLI", () => {
       const root = await mkdtemp(
         join(tmpdir(), "codex-security-export-stream-"),
       );
-      const fakePython = join(root, "fake-python");
-      const expectedBytes = 2 * 1024 * 1024;
-      await writeFile(
-        fakePython,
-        [
-          "#!/bin/sh",
-          'if test "$1" = "-I" && test "$2" = "-c"; then printf "codex-security-python-ok\\n"; exit 0; fi',
-          `exec ${JSON.stringify(process.execPath)} -e 'const chunk=Buffer.alloc(64*1024,97);let left=${expectedBytes};const write=()=>{while(left>0){const size=Math.min(left,chunk.length);left-=size;if(!process.stdout.write(chunk.subarray(0,size))){process.stdout.once("drain",write);return;}}};write();'`,
-          "",
-        ].join("\n"),
-        { mode: 0o700 },
+      const { scan, expectedBytes } = await copyLargeExportScan(
+        root,
+        2 * 1024 * 1024,
       );
       let bytes = 0;
       let writes = 0;
@@ -173,13 +185,13 @@ describe("CLI", () => {
           await main(
             [
               "export",
-              "scan",
+              scan,
               "--export-format",
               "json",
               "--output",
               "-",
               "--python",
-              fakePython,
+              join(root, "unavailable-python"),
             ],
             stdout,
             stderr.stream,
@@ -196,13 +208,13 @@ describe("CLI", () => {
           await main(
             [
               "export",
-              "scan",
+              scan,
               "--export-format",
               "json",
               "--output",
               "-",
               "--python",
-              fakePython,
+              join(root, "unavailable-python"),
             ],
             lightweight.stream,
             capture().stream,
@@ -230,17 +242,7 @@ describe("CLI", () => {
         const root = await mkdtemp(
           join(tmpdir(), "codex-security-export-fail-"),
         );
-        const fakePython = join(root, "fake-python");
-        await writeFile(
-          fakePython,
-          [
-            "#!/bin/sh",
-            'if test "$1" = "-I" && test "$2" = "-c"; then printf "codex-security-python-ok\\n"; exit 0; fi',
-            'printf "small export\\n"; sleep 8',
-            "",
-          ].join("\n"),
-          { mode: 0o700 },
-        );
+        const { scan } = await copyLargeExportScan(root, 4 * 1024 * 1024);
         let writes = 0;
         const stdout =
           failure === "an asynchronous write fails"
@@ -259,13 +261,13 @@ describe("CLI", () => {
             main(
               [
                 "export",
-                "scan",
+                scan,
                 "--export-format",
                 "json",
                 "--output",
                 "-",
                 "--python",
-                fakePython,
+                join(root, "unavailable-python"),
               ],
               stdout,
               stderr.stream,
@@ -291,17 +293,7 @@ describe("CLI", () => {
     "terminates a stdout exporter promptly when the destination fails under backpressure",
     async () => {
       const root = await mkdtemp(join(tmpdir(), "codex-security-export-fail-"));
-      const fakePython = join(root, "fake-python");
-      await writeFile(
-        fakePython,
-        [
-          "#!/bin/sh",
-          'if test "$1" = "-I" && test "$2" = "-c"; then printf "codex-security-python-ok\\n"; exit 0; fi',
-          `exec ${JSON.stringify(process.execPath)} -e 'const chunk=Buffer.alloc(64*1024,97);let left=4*1024*1024;const write=()=>{while(left>0){left-=chunk.length;if(!process.stdout.write(chunk)){process.stdout.once("drain",write);return;}}};write();'`,
-          "",
-        ].join("\n"),
-        { mode: 0o700 },
-      );
+      const { scan } = await copyLargeExportScan(root, 4 * 1024 * 1024);
       let writes = 0;
       const stdout = new Writable({
         highWaterMark: 32 * 1024,
@@ -317,13 +309,13 @@ describe("CLI", () => {
           main(
             [
               "export",
-              "scan",
+              scan,
               "--export-format",
               "json",
               "--output",
               "-",
               "--python",
-              fakePython,
+              join(root, "unavailable-python"),
             ],
             stdout,
             stderr.stream,
@@ -730,6 +722,32 @@ describe("CLI", () => {
       ).toBe(2);
       expect(stderr.text()).toBe(
         "codex-security: The export output path cannot traverse a repository symlink.\n",
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("retains the exporter diagnostic for non-contract failures", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "codex-security-export-"));
+    try {
+      const scan = await copyCompletedScan(directory);
+      const manifestPath = join(scan, "scan-manifest.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      manifest.scan.status = [];
+      await writeFile(manifestPath, JSON.stringify(manifest));
+      const stdout = capture();
+      const stderr = capture();
+      expect(
+        await main(
+          ["export", scan, "--export-format", "json", "--output", "-"],
+          stdout.stream,
+          stderr.stream,
+        ),
+      ).toBe(2);
+      expect(stdout.text()).toBe("");
+      expect(stderr.text()).toBe(
+        "codex-security: TypeError: unhashable type: 'list'\n",
       );
     } finally {
       await rm(directory, { recursive: true, force: true });

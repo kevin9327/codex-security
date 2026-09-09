@@ -13,7 +13,7 @@ npx @openai/codex-security --version
 ```
 
 Use Node.js 22.13.0+ (22.x), 24.x, or 26.x on macOS, Linux, or Windows.
-Scans, exports, scan history, and saved findings also need Python 3.10+
+Scans, scan history, and saved findings also need Python 3.10+
 (plus `tomli` on Python 3.10).
 
 ## Run a scan from TypeScript
@@ -570,9 +570,10 @@ Custom Codex executables need thread source attribution for `exec` and
 `app-server` (Codex 0.149.1+). On Windows, use a native `.exe` or `.com`;
 command shims such as `codex.cmd` fall back to the bundled executable.
 
-Python lookup order: `--python` (on `scan`, `bulk-scan`, or `export`) or SDK
+Python lookup order: `--python` (on `scan` or `bulk-scan`) or SDK
 `pythonPath`, then `PYTHON`, the managed Codex runtime, and `python3` or `python`
-on `PATH` (`py` also works on Windows). `CODEX_SECURITY_STATE_DIR` overrides
+on `PATH` (`py` also works on Windows). `export` uses the bundled Node.js helper;
+its `--python` option remains accepted for compatibility. `CODEX_SECURITY_STATE_DIR` overrides
 `CODEX_HOME` for state storage. Keep state and results outside the repository.
 
 ### Progress and cost

@@ -910,12 +910,17 @@ describe("compact diff scan", () => {
       ] as const) {
         writeFileSync(join(terminalDir, name), JSON.stringify(document));
       }
-      const finalized = python(
-        "finalize_scan_contract.py",
-        "--scan-dir",
-        terminalDir,
-        "--source-root",
-        repository,
+      const finalized = spawnSync(
+        process.execPath,
+        [
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "finalize-scan-contract",
+          "--scan-dir",
+          terminalDir,
+          "--source-root",
+          repository,
+        ],
+        { encoding: "utf8" },
       );
       expect(finalized.status, finalized.stderr).toBe(0);
       const validated = python(
