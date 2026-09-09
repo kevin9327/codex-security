@@ -6,6 +6,7 @@ import {
 } from "../../../../plugins/codex-security/native/sqlite.mjs";
 import { sqliteBinding } from "../../../../plugins/codex-security/mcp-app/src/native";
 import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workbench-migrations";
+import * as budget from "../../../../plugins/codex-security/mcp-app/src/workbench-scan-budget";
 import * as completion from "../../../../plugins/codex-security/mcp-app/src/workbench-scan-completion";
 import { WorkbenchValidationError } from "../../../../plugins/codex-security/mcp-app/src/workbench-validation";
 import { filesystemErrorMessage } from "../../../../plugins/codex-security/mcp-app/src/helpers/file-errors";
@@ -18,8 +19,17 @@ import {
 export const scanId = "11111111-1111-4111-8111-111111111111";
 export const workspaceId = "22222222-2222-4222-8222-222222222222";
 export interface Action {
-  operation: "complete" | "completeLocked" | "sql" | "commit" | "rollback";
+  operation:
+    | "complete"
+    | "completeLocked"
+    | "completeBudget"
+    | "setLimit"
+    | "sql"
+    | "commit"
+    | "rollback";
   prepareOnly?: boolean;
+  maxCostUsd?: number;
+  message?: string | null;
   id?: string;
   costJson?: string | null;
   claimToken?: string | null;
@@ -189,6 +199,19 @@ function execute(request: Request): Response {
         let result: unknown = null;
         const id = action.id ?? scanId;
         switch (action.operation) {
+          case "completeBudget":
+            result = budget.completeBudgetExhaustedScan(db, connection, {
+              scanId: id,
+              costJson: action.costJson ?? null,
+              message: action.message ?? null,
+            });
+            break;
+          case "setLimit":
+            result = budget.setScanCostLimit(db, connection, {
+              scanId: id,
+              maxCostUsd: Number(action.maxCostUsd),
+            });
+            break;
           case "complete":
             result = completion.completeScan(
               db,
