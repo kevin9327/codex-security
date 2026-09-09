@@ -7,6 +7,8 @@ import {
 import {
   processBinding,
   sqliteBinding,
+  unixBinding,
+  windowsBinding,
 } from "../../../../plugins/codex-security/mcp-app/src/native";
 import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workbench-migrations";
 import * as results from "../../../../plugins/codex-security/mcp-app/src/workbench-results";
@@ -14,6 +16,7 @@ import * as findingResults from "../../../../plugins/codex-security/mcp-app/src/
 import * as mergedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-merge-saved-results";
 import * as savedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-saved-result-sources";
 import * as preservedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-preserve-saved-results";
+import * as savedActions from "../../../../plugins/codex-security/mcp-app/src/workbench-saved-result-actions";
 import {
   backfillLegacyFindingDetails,
   legacyFindingMatches,
@@ -84,6 +87,10 @@ export interface Action {
     | "savedMerge"
     | "savedFindingHelpers"
     | "preserve"
+    | "recoverResults"
+    | "preserveResults"
+    | "writeDraft"
+    | "draftDigest"
     | "compareCoverage"
     | "snapshotOutputs"
     | "restoreOutputs"
@@ -134,8 +141,18 @@ export interface Action {
   nowSql?: string;
   failNow?: boolean;
   snapshots?: Record<string, string | null>;
+  savedArgs?: {
+    threadId?: string | null;
+    claimToken?: string | null;
+    coordinatorGeneration?: bigint | null;
+    draftPath?: string;
+    checkpointPath?: string | null;
+    expectedDraftDigest?: string | null;
+  };
 }
 export interface Request {
+  stateDirectory?: string;
+  traceLocks?: boolean;
   targetIdentityPath?: string;
   workspace?: Record<string, Parameter>;
   scan?: Record<string, Parameter>;
@@ -195,6 +212,9 @@ const tables = [
   "scan_comparison_matches",
 ];
 function execute(request: Request): Response {
+  const previousState = globalThis.process.env["CODEX_SECURITY_STATE_DIR"];
+  if (request.stateDirectory !== undefined)
+    globalThis.process.env["CODEX_SECURITY_STATE_DIR"] = request.stateDirectory;
   const connection = new Connection(sqliteBinding(), ":memory:");
   const insert = (table: string, values: Record<string, Parameter>) =>
     connection
@@ -335,6 +355,46 @@ function execute(request: Request): Response {
           return action.recovery ?? false;
         },
       };
+      let restoreLock = () => {};
+      if (request.traceLocks) {
+        if (globalThis.process.platform === "win32") {
+          const binding = windowsBinding(),
+            open = binding.openWindowsCompletionFile;
+          binding.openWindowsCompletionFile = (path) => {
+            const opened = open.call(binding, path);
+            if (opened.file) {
+              const file = opened.file,
+                locking = file.locking;
+              file.locking = (unlock) => {
+                events.push(["lock", unlock, connection.inTransaction]);
+                return locking.call(file, unlock);
+              };
+            }
+            return opened;
+          };
+          restoreLock = () => {
+            binding.openWindowsCompletionFile = open;
+          };
+        } else {
+          const binding = unixBinding(),
+            locking = binding.fileLock;
+          binding.fileLock = (fd, unlock, nonblocking) => {
+            events.push(["lock", unlock, connection.inTransaction]);
+            return locking.call(binding, fd, unlock, nonblocking);
+          };
+          restoreLock = () => {
+            binding.fileLock = locking;
+          };
+        }
+      }
+      const savedContext = {
+        now: () => {
+          events.push(["now", connection.inTransaction]);
+          if (action.nowSql) connection.prepare(action.nowSql).run();
+          if (action.failNow) throw new Error("clock failed");
+          return action.now ?? "2026-01-02T00:00:00Z";
+        },
+      };
       const id = action.id ?? scanId;
       const scan = () =>
         action.row
@@ -346,16 +406,40 @@ function execute(request: Request): Response {
       try {
         let result: unknown = null;
         switch (action.operation) {
+          case "recoverResults":
+            result = savedActions.recoverScanResults(savedContext, connection, {
+              scanId: id,
+            });
+            break;
+          case "preserveResults":
+            result = savedActions.preserveScanResults(
+              savedContext,
+              connection,
+              {
+                scanId: id,
+                threadId: action.savedArgs?.threadId ?? null,
+                claimToken: action.savedArgs?.claimToken ?? null,
+                coordinatorGeneration:
+                  action.savedArgs?.coordinatorGeneration ?? null,
+              },
+            );
+            break;
+          case "writeDraft":
+            result = savedActions.writeScanDraft(savedContext, connection, {
+              scanId: id,
+              claimToken: action.savedArgs?.claimToken ?? null,
+              draftPath: action.savedArgs!.draftPath!,
+              checkpointPath: action.savedArgs?.checkpointPath ?? null,
+              expectedDraftDigest:
+                action.savedArgs?.expectedDraftDigest ?? null,
+            });
+            break;
+          case "draftDigest":
+            result = savedActions.scanDraftDigest(action.directory!);
+            break;
           case "preserve":
             result = preservedResults.preserveScanResultsLocked(
-              {
-                now: () => {
-                  events.push(["now", connection.inTransaction]);
-                  if (action.nowSql) connection.prepare(action.nowSql).run();
-                  if (action.failNow) throw new Error("clock failed");
-                  return action.now ?? "2026-01-02T00:00:00Z";
-                },
-              },
+              savedContext,
               connection,
               id,
               action.preserveOptions,
@@ -692,6 +776,7 @@ function execute(request: Request): Response {
         raw.prepare = prepare;
         raw.exec = exec;
         native.rawProcess = process;
+        restoreLock();
       }
     });
     return {
@@ -709,6 +794,9 @@ function execute(request: Request): Response {
     };
   } finally {
     connection.close();
+    if (previousState === undefined)
+      delete globalThis.process.env["CODEX_SECURITY_STATE_DIR"];
+    else globalThis.process.env["CODEX_SECURITY_STATE_DIR"] = previousState;
   }
 }
 process.stdout.write(
