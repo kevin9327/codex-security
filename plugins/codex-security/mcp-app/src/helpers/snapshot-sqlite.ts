@@ -32,7 +32,7 @@ function absolutePath(path: string): string {
   return parsedPath(`${cwd}/${path}`);
 }
 
-function fileUri(path: string): string {
+export function fileUri(path: string): string {
   const drive = process.platform === "win32" ? windowsParts(path)[0] : "";
   const localDrive = drive.length === 2 && drive[1] === ":";
   const prefix = localDrive ? `file:///${drive}` : drive ? "file:" : "file://";
@@ -93,7 +93,7 @@ function positionalArguments(args: string[]): string[] | undefined {
 
 export async function snapshotSqliteCommand(
   args: string[],
-  posixHome = process.env.HOME,
+  posixHome = process.env["HOME"],
 ): Promise<number> {
   const usage =
     "usage: launch_codex_security_mcp[.cmd] --helper snapshot-sqlite [-h] source destination";
