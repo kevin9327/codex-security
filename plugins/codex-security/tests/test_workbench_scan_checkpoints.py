@@ -151,6 +151,46 @@ def test_rejected_coverage_batch_does_not_commit_other_paths(tmp_path: Path) -> 
         ).fetchone() == (0,)
 
 
+def test_first_deep_coordinator_after_migration_requires_original_inventory(
+    tmp_path: Path,
+) -> None:
+    state, repository, scan_dir, scan_id = scan_fixture(tmp_path, "deep")
+    codex_home = tmp_path / "codex-home"
+    config = codex_home / "codex-security" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[deep_scan]\nworkers = 1\nmax_discovery_runs = 1\n")
+    # An older registered scan has neither the new inventory nor a coordinator yet.
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.execute("DELETE FROM scan_review_files WHERE scan_id = ?", (scan_id,))
+    source = repository / "clean.ts"
+    original = source.read_bytes()
+    source.write_text("changed before the first coordinator started\n")
+    arguments = ("begin-deep-scan", "--scan-id", scan_id, "--thread-id", "migrated-worker-thread")
+    rejected = run_workbench(
+        state, *arguments, environment={"CODEX_HOME": str(codex_home)}, check=False
+    )
+    assert rejected["returncode"] != 0
+    assert "original source changed" in rejected["stderr"]
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        for table in ("scan_review_files", "deep_scan_runs", "scan_checkpoints"):
+            assert connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE scan_id = ?", (scan_id,)
+            ).fetchone() == (0,)
+
+    source.write_bytes(original)
+    run_workbench(state, *arguments, environment={"CODEX_HOME": str(codex_home)})
+    save(
+        state, scan_id, write_checkpoint(scan_dir / "checkpoints", semantic(scan_id, ["clean.ts"]))
+    )
+    resumed = run_workbench(state, "get-cli-scan-resume", "--scan-id", scan_id)
+    assert resumed["checkpoint"]["reviewedFiles"] == ["clean.ts"]
+    assert resumed["checkpoint"]["remainingFiles"] == ["pending.ts"]
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM deep_scan_runs WHERE scan_id = ?", (scan_id,)
+        ).fetchone() == (1,)
+
+
 def test_resume_reconciles_checkpoint_written_before_projection(tmp_path: Path) -> None:
     state, _, scan_dir, scan_id = scan_fixture(tmp_path, "deep")
     run_workbench(state, "set-scan-thread", "--scan-id", scan_id, "--thread-id", str(uuid.uuid4()))

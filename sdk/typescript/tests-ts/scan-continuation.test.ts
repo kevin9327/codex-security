@@ -181,7 +181,10 @@ async function resume(
   createCodex: NonNullable<
     ConstructorParameters<typeof TestClient>[1]["createCodex"]
   >,
-  failExport = false,
+  options: {
+    failExport?: boolean;
+    beforeWorkbench?: (args: readonly string[]) => Promise<void>;
+  } = {},
 ) {
   await mkdir(f.codexHome, { recursive: true });
   const stdout = capture();
@@ -207,10 +210,11 @@ async function resume(
             return runtime;
           },
           resolvePluginPython: async () => f.python,
-          runWorkbench: (options, args, input) => {
-            if (failExport && args[0] === "prepare-scan-completion")
+          runWorkbench: async (workbenchOptions, args, input) => {
+            await options.beforeWorkbench?.(args);
+            if (options.failExport && args[0] === "prepare-scan-completion")
               throw new Error("Synthetic local export failure");
-            return runWorkbench(options, args, input);
+            return runWorkbench(workbenchOptions, args, input);
           },
           createCodex,
         }),
@@ -551,8 +555,7 @@ test("a hard-killed continuation recovers native spend on top of its durable inh
   expect(result.cost.outputTokens).toBe(2053);
 });
 
-test("a complete Standard checkpoint retries final export without another model call or cost", async () => {
-  const f = await savedScan({ running: true, maxCostUsd: 10 });
+async function saveCompleteCheckpoint(f: Fixture) {
   const current = (
     await f.command(["get-cli-scan-resume", "--scan-id", f.scanId])
   )["checkpoint"] as {
@@ -569,6 +572,11 @@ test("a complete Standard checkpoint retries final export without another model 
       reviewedFiles: ["pending.ts", "reviewed.ts"],
     },
   });
+}
+
+test("a complete Standard checkpoint retries final export without another model call or cost", async () => {
+  const f = await savedScan({ running: true, maxCostUsd: 10 });
+  await saveCompleteCheckpoint(f);
   await f.command([
     "fail-scan",
     "--scan-id",
@@ -590,7 +598,7 @@ test("a complete Standard checkpoint retries final export without another model 
     modelCalls++;
     throw new Error("No Codex client is needed to finish saved results");
   };
-  const failedExport = await resume(f, noModel, true);
+  const failedExport = await resume(f, noModel, { failExport: true });
   expect(failedExport.code).not.toBe(0);
   expect(failedExport.stderr).toContain("Synthetic local export failure");
   const scans = (await f.command(["list-scans", "--repository", f.repository]))[
@@ -610,3 +618,44 @@ test("a complete Standard checkpoint retries final export without another model 
   expect(result.coverage.completeness).toBe("complete");
   expect(result.findings.findings).toHaveLength(1);
 });
+
+test.each(["prepare-scan-completion", "complete-scan"])(
+  "checkpoint-only resume reports source changes before %s",
+  async (command) => {
+    const f = await savedScan({ running: true });
+    await saveCompleteCheckpoint(f);
+    await f.command([
+      "fail-scan",
+      "--scan-id",
+      f.scanId,
+      "--message",
+      "Synthetic interruption after completed source review",
+      "--cost-json",
+      JSON.stringify(previousCost),
+    ]);
+    let modelCalls = 0;
+    const outcome = await resume(
+      f,
+      () => {
+        modelCalls++;
+        throw new Error("Saved source work needs no model call");
+      },
+      {
+        beforeWorkbench: async (args) => {
+          if (args[0] === command)
+            await writeFile(
+              join(f.repository, "pending.ts"),
+              "export const pending = false;\n",
+            );
+        },
+      },
+    );
+    expect(outcome.code, outcome.stderr).toBe(2);
+    expect(outcome.stderr).toContain("Scan target changed during execution");
+    expect(modelCalls).toBe(0);
+    const result = JSON.parse(outcome.stdout);
+    expect(result.cost).toEqual(previousCost);
+    expect(result.findings.findings).toHaveLength(1);
+    expect(result.coverage.completeness).toBe("complete");
+  },
+);

@@ -25,7 +25,7 @@ from finalize_scan_contract import (
     write_scan_local_bytes,
 )
 from workbench.handoff import require_current_continuation
-from workbench_scan_checkpoints import freeze_review_files
+from workbench_scan_checkpoints import ensure_review_files
 from workbench_target import (
     directory_content_digest,
     directory_snapshot_regular_file_count,
@@ -880,18 +880,7 @@ def ensure_deep_scan_run(
         raise SystemExit("Deep Scan orchestration requires a scan in deep mode.")
     if scan["status"] != "running":
         raise SystemExit("Only a running Deep Scan can start orchestration.")
-    if (
-        connection.execute(
-            "SELECT 1 FROM scan_review_files WHERE scan_id = ? LIMIT 1", (scan["id"],)
-        ).fetchone()
-        is None
-    ):
-        paths = (
-            json.loads(scan["recipe_json"])["target"]["paths"]
-            if scan["recipe_json"]
-            else [scan["scope"]]
-        )
-        freeze_review_files(connection, scan["id"], Path(scan["target_path"]), paths)
+    ensure_review_files(connection, scan)
     connection.execute(
         """
         INSERT INTO deep_scan_runs (

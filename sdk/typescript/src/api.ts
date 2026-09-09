@@ -1492,12 +1492,12 @@ export class CodexSecurity {
             options.onObserverError,
             "All source work is saved; finishing local validation and export without another model call.",
           );
-          await workbench(workbenchOptions, [
+          const preparation = await workbench(workbenchOptions, [
             "prepare-scan-completion",
             "--scan-id",
             scanId,
           ]);
-          await workbench(workbenchOptions, [
+          const completion = await workbench(workbenchOptions, [
             "complete-scan",
             "--scan-id",
             scanId,
@@ -1506,6 +1506,13 @@ export class CodexSecurity {
               : ["--cost-json", JSON.stringify(previousCost)]),
           ]);
           activeScan = null;
+          reportCompletionWarnings(
+            completion,
+            options,
+            Array.isArray(preparation["targetWarnings"])
+              ? preparation["targetWarnings"]
+              : [],
+          );
           const completed = await collectResult(
             { status: "completed", model, usage: null },
             completionSourceThreadId!,
@@ -1957,30 +1964,7 @@ export class CodexSecurity {
           : ["--cost-json", JSON.stringify(completionCost)]),
       ]);
       activeScan = null;
-      const completedScan = completion["scan"];
-      if (isRecord(completedScan) && Array.isArray(completedScan["warnings"])) {
-        const targetWarnings = new Set([
-          ...preparedTargetWarnings,
-          ...(Array.isArray(completion["targetWarnings"])
-            ? completion["targetWarnings"].filter(
-                (warning): warning is string => typeof warning === "string",
-              )
-            : []),
-        ]);
-        for (const warning of completedScan["warnings"]) {
-          if (typeof warning === "string") {
-            notifyObserver(
-              "onWarning",
-              options.onWarning,
-              options.onObserverError,
-              warning,
-              targetWarnings.has(warning)
-                ? { kind: "target_changed" }
-                : undefined,
-            );
-          }
-        }
-      }
+      reportCompletionWarnings(completion, options, preparedTargetWarnings);
       if (runPostScan !== null) {
         const followUp = runPostScan;
         runPostScan = null;
@@ -4205,6 +4189,33 @@ function withoutOpenAiApiKeys(
         !["OPENAI_API_KEY", "CODEX_API_KEY"].includes(name.toUpperCase()),
     ),
   );
+}
+
+function reportCompletionWarnings(
+  completion: JsonObject,
+  options: Pick<ScanOptions, "onWarning" | "onObserverError">,
+  preparedTargetWarnings: readonly unknown[] = [],
+): void {
+  const completedScan = completion["scan"];
+  if (isRecord(completedScan) && Array.isArray(completedScan["warnings"])) {
+    const targetWarnings = new Set([
+      ...preparedTargetWarnings,
+      ...(Array.isArray(completion["targetWarnings"])
+        ? completion["targetWarnings"]
+        : []),
+    ]);
+    for (const warning of completedScan["warnings"]) {
+      if (typeof warning === "string") {
+        notifyObserver(
+          "onWarning",
+          options.onWarning,
+          options.onObserverError,
+          warning,
+          targetWarnings.has(warning) ? { kind: "target_changed" } : undefined,
+        );
+      }
+    }
+  }
 }
 
 function notifyObserver<Arguments extends unknown[]>(
