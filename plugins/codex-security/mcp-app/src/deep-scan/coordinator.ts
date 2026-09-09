@@ -954,6 +954,20 @@ export class DeepScanCoordinator {
       }
     }
 
+    for (const worker of queued) {
+      await this.options.store.updateWorker({
+        id: worker.id,
+        scanId: this.state.scanId,
+        kind: "discovery",
+        status: "canceled",
+        promptPath: worker.promptPath,
+        artifactDir: worker.artifactDir,
+        attempt: worker.attempt,
+        error: "deep_scan_discovery_deadline_reached"
+      });
+      canceledWorkerIds.push(worker.id);
+    }
+
     // Convergence cancels active workers, but their promises must settle before
     // the manifest records which results completed and which were canceled.
     const lateFailure = await reconcileRemainingDiscoveries("omitted");

@@ -156,6 +156,7 @@ class DeepScanDependencies:
     require_remediation_target: Callable[[str], Path]
     require_scannable_target: Callable[[Path], None]
     require_scope: Callable[[str, str, Path], str]
+    requested_scan_paths: Callable[[sqlite3.Row], list[str]]
     ensure_security_target: Callable[[sqlite3.Connection, str], str]
     require_canonical_scan_directory: Callable[[Path], Path]
     safe_segment: Callable[[str], str]
@@ -463,6 +464,7 @@ def deep_scan_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, A
         "scanId": run["scan_id"],
         "targetPath": scan["target_path"],
         "scope": scan["scope"],
+        "scopePaths": dependencies().requested_scan_paths(scan),
         "userContext": scan["user_context"],
         "scanDir": scan["scan_dir"],
         "schemaVersion": run["schema_version"],

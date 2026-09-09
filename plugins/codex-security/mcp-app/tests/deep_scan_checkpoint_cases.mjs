@@ -230,3 +230,121 @@ export async function testCheckpointResume({
     }
   }
 }
+
+export async function testResumedDiscoveryDeadlines({
+  DeepScanCoordinator, FakeStore, FakeExecutor, fixtureRun, immediateClock, eventually
+}) {
+  for (const args of [[], [true], [false, 2.5], [true, 96], [true, 2.5, true]]) {
+    await testResumedDiscoveryDeadlineUsesPersistedCreationTime(...args);
+  }
+
+  async function testResumedDiscoveryDeadlineUsesPersistedCreationTime(
+    alreadyExpired = false,
+    maxTimeHours,
+    restoreQueued = false
+  ) {
+    const fixture = await fixtureRun({
+      workers: 1,
+      subagents: 0,
+      stopAfterNoNew: 99,
+      maxDiscoveryRuns: 8,
+      ...(maxTimeHours === undefined ? {} : { maxTimeHours })
+    });
+    const discoveryTimeoutMs = (maxTimeHours ?? 96) * 60 * 60 * 1_000;
+    let currentTime = immediateClock.now();
+    const clock = {
+      now: () => currentTime,
+      sleep: immediateClock.sleep
+    };
+    const createdAt = new Date(currentTime - discoveryTimeoutMs + 30_000).toISOString();
+    const store = new FakeStore({
+      ...fixture.run,
+      createdAt,
+      phase: "setup",
+      coordinatorGeneration: 2
+    });
+    const originalExecutor = new FakeExecutor({
+      blockDiscoveryAfterCalls: 1,
+      discoveryCandidateId: "candidate-1"
+    });
+    const original = new DeepScanCoordinator({
+      run: store.run,
+      store,
+      executor: originalExecutor,
+      pluginRoot: fixture.pluginRoot,
+      clock
+    });
+    original.start();
+    await eventually(() => (
+      originalExecutor.discoveryCalls === 2
+      && originalExecutor.runningDiscovery === 1
+      && [...store.workers.values()].some((worker) => (
+        worker.kind === "discovery" && worker.status === "succeeded"
+      ))
+    ));
+
+    original.cancel("mcp server process restarted");
+    await eventually(() => originalExecutor.runningDiscovery === 0);
+    assert.equal(store.run.status, "running");
+    assert.equal(store.run.createdAt, createdAt);
+    const savedCheckpoints = new Map();
+    if (restoreQueued) {
+      for (const worker of store.workers.values()) {
+        if (worker.kind !== "discovery" || worker.status !== "canceled") continue;
+        worker.status = "queued";
+        const checkpoint = path.join(worker.artifactDir, "checkpoints", "accepted.json");
+        const contents = JSON.stringify({ scanId: store.run.scanId, complete: false, findings: [] });
+        await mkdir(path.dirname(checkpoint), { recursive: true });
+        await writeFile(checkpoint, contents);
+        savedCheckpoints.set(checkpoint, contents);
+      }
+      assert.ok(savedCheckpoints.size > 0);
+      const finish = store.finish.bind(store);
+      store.finish = async (input) => {
+        assert.equal(
+          [...store.workers.values()].some((worker) => ["queued", "running"].includes(worker.status)),
+          false,
+          "The workbench requires restored workers to settle before finishing Deep Scan."
+        );
+        return await finish(input);
+      };
+    }
+    currentTime = Date.parse(createdAt) + discoveryTimeoutMs + (alreadyExpired ? 1_000 : -1_000);
+    store.run = {
+      ...store.run,
+      persistedWorkers: [...store.workers.values()].map((worker) => structuredClone(worker))
+    };
+
+    const resumedExecutor = new FakeExecutor({
+      blockDiscovery: true,
+      canonicalCandidateId: "candidate-1",
+      dedupNewFindings: [1]
+    });
+    const resumed = new DeepScanCoordinator({
+      run: store.run,
+      store,
+      executor: resumedExecutor,
+      pluginRoot: fixture.pluginRoot,
+      clock
+    });
+    resumed.start();
+    if (!alreadyExpired) await resumedExecutor.discoveryStarted;
+
+    const terminal = await resumed.wait(undefined, 5_000);
+    assert.equal(terminal?.status, "succeeded");
+    assert.equal(terminal?.terminalReason, "capped");
+    assert.equal(store.failCalls, 0);
+    assert.equal(resumedExecutor.discoveryCalls, alreadyExpired ? 0 : 1);
+    assert.equal(resumedExecutor.dedupCalls, 1);
+    assert.equal(resumedExecutor.runningDiscovery, 0);
+
+    const manifest = JSON.parse(await readFile(terminal.manifestPath, "utf8"));
+    assert.equal(store.run.config.maxTimeHours, maxTimeHours);
+    assert.equal(store.dedupClaims[0].workerIds.length, 1);
+    assert.equal([...store.workers.values()].some((worker) => worker.status === "canceled"), true);
+    assert.deepEqual(manifest.findings.map((finding) => finding.provenance.candidateId), ["candidate-1"]);
+    for (const [checkpoint, contents] of savedCheckpoints) {
+      assert.equal(await readFile(checkpoint, "utf8"), contents);
+    }
+  }
+}

@@ -34,7 +34,11 @@ from finalize_scan_contract import (
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
-from workbench_scan_checkpoints import rebase_checkpoint_receipts, record_checkpoint
+from workbench_scan_checkpoints import (
+    copy_checkpoint_writeups,
+    rebase_checkpoint_receipts,
+    record_checkpoint,
+)
 from workbench_validation import path_within_scope
 
 _PUBLISHED_OUTPUTS = (
@@ -516,6 +520,7 @@ def merge_saved_results(
             parent_preserved_sources = recorded
             source_digests.update(parent_preserved_sources)
     paths: dict[str, str | None] = {}
+    worker_sources: dict[str, str] = {}
     reducer_paths: set[str] = set()
     accepted_checkpoints = set(current_checkpoint_paths or [])
     current_results: set[str] = accepted_checkpoints.copy()
@@ -570,6 +575,7 @@ def merge_saved_results(
             continue
         if worker["kind"] != "discovery":
             continue
+        worker_sources[worker["id"]] = output
         paths[f"{output}/result.json"] = worker["id"]
         current_results.add(f"{output}/result.json")
         checkpoints(f"{output}/checkpoints", worker["id"])
@@ -612,6 +618,15 @@ def merge_saved_results(
                 if source.name == "checkpoints":
                     source = source.parent
                 draft = rebase_checkpoint_receipts(draft, source.as_posix())
+                # Worker report paths are relative to their output. Give them a
+                # source-owned canonical path before scan-level validation reads them.
+                draft, _, _ = copy_checkpoint_writeups(
+                    scan_dir,
+                    scan_dir,
+                    draft,
+                    source.as_posix(),
+                    worker_sources=worker_sources if relative in reducer_paths else None,
+                )
             # Recovery expects coverage, but reducer results only contain findings
             # and context. Add an empty value after hashing the original result.
             sources.append((relative, {"coverage": {}, **draft}, worker_id))

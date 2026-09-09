@@ -46,6 +46,7 @@ export interface DeepScanRunState {
   updatedAt?: string;
   targetPath: string;
   scope: string;
+  scopePaths?: string[];
   userContext?: string;
   scanDir: string;
   config: DeepScanConfig;

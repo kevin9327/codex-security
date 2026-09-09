@@ -3409,6 +3409,7 @@ def main() -> None:
             require_remediation_target=require_remediation_target,
             require_scannable_target=require_scannable_target,
             require_scope=require_scope,
+            requested_scan_paths=requested_scan_paths,
             ensure_security_target=ensure_security_target,
             require_canonical_scan_directory=require_canonical_scan_directory,
             safe_segment=safe_segment,

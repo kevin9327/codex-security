@@ -18,6 +18,7 @@ from finalize_scan_contract import (
     _read_scan_local_json,
     _recover_unsealed_coverage,
     _recover_unsealed_findings,
+    _require_scan_directory,
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
@@ -461,9 +462,120 @@ def checkpoint_artifact_sources(
     return sources or [output]
 
 
+def copy_checkpoint_writeups(
+    parent_root: Path,
+    child_root: Path,
+    value: dict[str, Any],
+    source: str,
+    *,
+    locations: list[Path] | None = None,
+    report_paths: dict[str, str] | None = None,
+    sealed_artifacts: dict[str, str] | None = None,
+    worker_sources: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], dict[str, str], bool]:
+    """Copy a source's reports and PoCs while preserving valid scan-local report paths."""
+    result = json.loads(json.dumps(value))
+    paths: dict[tuple[str, str], str] = {}
+    locations = locations or [parent_root / source]
+    sealed_artifacts = sealed_artifacts or {}
+
+    def references(item: Any, owner: str) -> None:
+        if isinstance(item, list):
+            for child in item:
+                references(child, owner)
+        elif isinstance(item, dict):
+            # The reducer host retains exact discovery originals. Their report
+            # paths still belong to those discoveries, not the reducer output.
+            provenance = item.get("provenance")
+            originals = provenance.get("sourceFindings", []) if isinstance(provenance, dict) else []
+            writeup = item.get("writeup")
+            report = writeup.get("reportPath") if isinstance(writeup, dict) else None
+            if isinstance(report, str) and re.fullmatch(
+                r"findings/([a-z0-9][a-z0-9._-]*)/\1\.md", report
+            ):
+                matching = [
+                    original
+                    for original in (originals if isinstance(originals, list) else [])
+                    if isinstance(original, dict)
+                    and isinstance(original.get("id"), str)
+                    and original["id"].rsplit(":", 1)[0] in (worker_sources or {})
+                    and isinstance(original.get("finding"), dict)
+                    and isinstance(original["finding"].get("writeup"), dict)
+                    and original["finding"].get("writeup", {}).get("reportPath") == report
+                ]
+                identity_matches = [
+                    original
+                    for original in matching
+                    if original["finding"].get("identity") == item.get("identity")
+                ]
+                origin = owner
+                if matching:
+                    original = (identity_matches or matching)[0]
+                    origin = worker_sources[original["id"].rsplit(":", 1)[0]]
+                if report_paths is not None:
+                    destination = report_paths.get(report, report)
+                elif origin == ".":
+                    destination = report
+                else:
+                    slug = hashlib.sha256(f"{origin}\0{report}".encode()).hexdigest()
+                    destination = f"findings/{slug}/{slug}.md"
+                paths[(origin, report)] = destination
+                writeup["reportPath"] = destination
+            for key, child in item.items():
+                child_owner = owner
+                if key == "finding" and isinstance(item.get("id"), str) and worker_sources:
+                    child_owner = worker_sources.get(item["id"].rsplit(":", 1)[0], owner)
+                references(child, child_owner)
+
+    references(result, source)
+
+    def copy_file(path: Path, destination: str, *, optional: bool = False) -> bool:
+        relative = path.relative_to(parent_root).as_posix()
+        try:
+            descriptor = open_scan_local_file_descriptor(parent_root, relative, "Saved writeup")
+        except ContractError as exc:
+            if (
+                optional
+                and relative not in sealed_artifacts
+                and isinstance(exc.__cause__, FileNotFoundError)
+            ):
+                return False
+            raise
+        with os.fdopen(descriptor, "rb") as handle:
+            contents = handle.read()
+        if (
+            relative in sealed_artifacts
+            and hashlib.sha256(contents).hexdigest() != sealed_artifacts[relative]
+        ):
+            raise ContractError(f"{relative}: sealed artifact changed after completion")
+        if path != child_root / destination:
+            write_scan_local_bytes(child_root, destination, contents)
+        return True
+
+    missing = False
+    for (origin, report), destination in paths.items():
+        origins = locations if origin == source else [parent_root / origin]
+        if not any(
+            copy_file(location / report, destination, optional=True) for location in origins
+        ):
+            missing = True
+        for location in reversed(origins):
+            poc = location / Path(report).parent / "poc"
+            if not poc.exists() and not poc.is_symlink():
+                continue
+            for directory, directories, filenames in os.walk(poc, followlinks=False):
+                for path in (Path(directory), *(Path(directory) / name for name in directories)):
+                    _require_scan_directory(path)
+                for filename in filenames:
+                    path = Path(directory) / filename
+                    target = Path(destination).parent / "poc" / path.relative_to(poc)
+                    copy_file(path, target.as_posix())
+    return result, {destination: report for (_, report), destination in paths.items()}, missing
+
+
 def copy_checkpoint_artifacts(
     db: Any, parent: sqlite3.Row, child_root: Path, checkpoint: dict[str, Any]
-) -> tuple[dict[str, str] | None, bool, bool]:
+) -> tuple[dict[str, str] | None, bool, dict[str, str]]:
     """Keep referenced evidence and derived hardening files with their saved result."""
     parent_root = db.require_canonical_scan_directory(Path(parent["scan_dir"]))
     parent_manifest = (
@@ -478,7 +590,6 @@ def copy_checkpoint_artifacts(
     )
     files: set[str] = set()
     receipt_files: set[str] = set()
-    reports: set[str] = set()
     sources = {}
 
     def references(value: Any) -> None:
@@ -486,13 +597,6 @@ def copy_checkpoint_artifacts(
             for item in value:
                 references(item)
         elif isinstance(value, dict):
-            writeup = value.get("writeup")
-            report = writeup.get("reportPath") if isinstance(writeup, dict) else None
-            if isinstance(report, str) and re.fullmatch(
-                r"findings/([a-z0-9][a-z0-9._-]*)/\1\.md", report
-            ):
-                reports.add(report)
-                files.add(report)
             for receipt in (
                 value.get("receiptRefs", []) if isinstance(value.get("receiptRefs"), list) else []
             ):
@@ -518,9 +622,7 @@ def copy_checkpoint_artifacts(
     )
     if has_portfolio:
         files.add(portfolio)
-    directories_to_copy = [parent_root / Path(report).parent / "poc" for report in sorted(reports)]
-    directories_to_copy.append(parent_root / "hardening")
-    for evidence_dir in directories_to_copy:
+    for evidence_dir in [parent_root / "hardening"]:
         if not evidence_dir.exists() and not evidence_dir.is_symlink():
             continue
         db.deep_scan.deep_scan_path(
@@ -535,7 +637,6 @@ def copy_checkpoint_artifacts(
                 (Path(directory) / name).relative_to(parent_root).as_posix() for name in filenames
             )
     missing_receipts = False
-    missing_reports = False
     for relative in sorted(files):
         locations = [relative]
         for source, directories in sources.items():
@@ -561,9 +662,8 @@ def copy_checkpoint_artifacts(
                 ):
                     if index + 1 < len(locations):
                         continue
-                    if relative in receipt_files or relative in reports:
-                        missing_receipts |= relative in receipt_files
-                        missing_reports |= relative in reports
+                    if relative in receipt_files:
+                        missing_receipts = True
                         descriptor = None
                         break
                 raise
@@ -581,7 +681,7 @@ def copy_checkpoint_artifacts(
     return (
         {"portfolioPath": portfolio} if has_portfolio else None,
         missing_receipts,
-        missing_reports,
+        sealed_artifacts,
     )
 
 
@@ -632,9 +732,19 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         completion_ready = checkpoint_completion_ready(checkpoint, parent["mode"])
         worker_ids = db.deep_scan.restore_checkpoint_workers(connection, parent, child, db.now())
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
-        hardening, missing_receipts, missing_reports = copy_checkpoint_artifacts(
+        hardening, missing_receipts, sealed_artifacts = copy_checkpoint_artifacts(
             db, parent, root, checkpoint
         )
+        missing_reports = False
+        worker_report_paths = {}
+        workers = connection.execute(
+            "SELECT * FROM deep_scan_workers WHERE scan_id = ?", (child["id"],)
+        ).fetchall()
+        worker_sources = {
+            worker["id"]: Path(worker["artifact_dir"]).relative_to(root).as_posix()
+            for worker in workers
+            if worker["kind"] == "discovery"
+        }
         sequence = {
             row["acceptance_id"]: row["sequence"]
             for row in connection.execute(
@@ -667,14 +777,29 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 source_worker_id=worker["id"] if worker and worker["kind"] == "discovery" else None,
             )
             snapshot = rebase_checkpoint_receipts(snapshot, source["source"])
+            snapshot, report_paths, missing = copy_checkpoint_writeups(
+                Path(parent["scan_dir"]),
+                root,
+                snapshot,
+                source["source"],
+                locations=checkpoint_artifact_sources(
+                    Path(parent["scan_dir"]),
+                    source["source"],
+                    source["checkpointPath"],
+                    source["digest"],
+                    source["acceptanceId"],
+                ),
+                sealed_artifacts=sealed_artifacts,
+                worker_sources=worker_sources if worker and worker["kind"] == "dedup" else None,
+            )
+            missing_reports |= missing
+            if worker and worker["kind"] == "discovery" and worker["id"] in worker_ids:
+                worker_report_paths[worker_ids[worker["id"]]] = report_paths
             contents = (json.dumps(snapshot, indent=2) + "\n").encode()
             relative = f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json"
             write_scan_local_bytes(root, relative, contents)
             if source["acceptanceId"] != parent["continuation_checkpoint_acceptance_id"]:
                 current_checkpoints.append(relative)
-        workers = connection.execute(
-            "SELECT * FROM deep_scan_workers WHERE scan_id = ?", (child["id"],)
-        ).fetchall()
         warnings: list[str] = []
         merged = merge_saved_results(
             root,
@@ -732,6 +857,13 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                 ]
             worker_snapshot = rebase_checkpoint_receipts(
                 worker_snapshot, source_path, to_source=True
+            )
+            worker_snapshot, _, _ = copy_checkpoint_writeups(
+                root,
+                Path(worker["artifact_dir"]),
+                worker_snapshot,
+                ".",
+                report_paths=worker_report_paths.get(worker["id"], {}),
             )
             worker_contents = (json.dumps(worker_snapshot, indent=2) + "\n").encode()
             worker_path = (

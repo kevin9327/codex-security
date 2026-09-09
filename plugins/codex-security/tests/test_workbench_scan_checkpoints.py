@@ -423,7 +423,10 @@ os._exit(72)
         ).fetchone() == (head["acceptanceId"],)
 
 
-def test_scoped_checkpoint_inventory_matches_ignore_aware_review_input(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", ["standard", "deep"])
+def test_scoped_checkpoint_inventory_matches_ignore_aware_review_input(
+    tmp_path: Path, mode: str
+) -> None:
     repository = tmp_path / "repository"
     (repository / "src").mkdir(parents=True)
     for relative, contents in {
@@ -479,11 +482,34 @@ def test_scoped_checkpoint_inventory_matches_ignore_aware_review_input(tmp_path:
             {
                 "repository": str(repository),
                 "target": {"kind": "paths", "paths": scopes},
-                "mode": "standard",
+                "mode": mode,
                 "config": {},
             }
         ),
     )["scanId"]
+    if mode == "deep":
+        codex_home = tmp_path / "codex-home"
+        config = codex_home / "codex-security" / "config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text("[deep_scan]\nworkers = 1\nmax_discovery_runs = 1\n")
+        begun = run_workbench(
+            state,
+            "begin-deep-scan",
+            "--scan-id",
+            scan_id,
+            "--thread-id",
+            "scoped-worker-thread",
+            environment={"CODEX_HOME": str(codex_home)},
+        )
+        assert begun["deepScan"]["scopePaths"] == scopes
+    rejected = save(
+        state,
+        scan_id,
+        write_checkpoint(scan_dir / "checkpoints", semantic(scan_id, ["outside.ts"])),
+        check=False,
+    )
+    assert rejected["returncode"] != 0
+    assert "outside.ts" in rejected["stderr"]
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         assert [
             row[0]
