@@ -107,7 +107,6 @@ test.each(["completed", "receipt-lost", "scan-interrupted"])(
         {
           environment,
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           runWorkbench: async (options, args, input) => {
@@ -374,7 +373,6 @@ describe("CodexSecurity finding validation", () => {
           ...preparedRuntime(codexHome),
           environment,
         }),
-        resolvePluginPython: async () => "/managed/python",
         runWorkbench: workbench,
         createCodex: (options) => {
           captured.codex = options;
@@ -591,7 +589,6 @@ describe("CodexSecurity orchestration", () => {
               persistentCredentialHome: true,
               environment: runtimeEnvironment,
             }),
-            resolvePluginPython: async () => "/managed/python",
             createCodex: (options) => {
               received.push(options);
               throw new Error("captured scan");
@@ -695,7 +692,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           repositoryRevision: async () => null,
           runWorkbench: async (
             _options: unknown,
@@ -738,10 +734,8 @@ describe("CodexSecurity orchestration", () => {
     ).resolves.toBeDefined();
   });
 
-  test("validates local inputs before runtime or plugin Python discovery", async () => {
-    const client = new CodexSecurity({
-      pythonPath: "/definitely/missing/python",
-    });
+  test("validates local inputs before runtime initialization", async () => {
+    const client = new CodexSecurity({});
     let scanStarted = false;
     await expect(
       client.run("/definitely/missing/repository", {
@@ -763,7 +757,7 @@ describe("CodexSecurity orchestration", () => {
     await mkdir(source, { mode: 0o700 });
     let runtimeStarted = false;
     const client = new TestClient(
-      { pythonPath: "/definitely/missing/python" },
+      {},
       {
         environment: { OPENAI_API_KEY: "must-not-be-used" },
         prepareRuntime: async () => {
@@ -1342,7 +1336,6 @@ describe("CodexSecurity orchestration", () => {
             environment,
             credentialsAvailable: false,
           }),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           resolveCodexCommand: () => {
@@ -1433,7 +1426,6 @@ describe("CodexSecurity orchestration", () => {
             environment,
             credentialsAvailable: false,
           }),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           resolveCodexCommand: () => {
@@ -1544,7 +1536,6 @@ describe("CodexSecurity orchestration", () => {
           environment,
           credentialsAvailable: false,
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -1661,7 +1652,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         repositoryRevision: async () => null,
         createCodex: () => ({
           startThread: () => ({
@@ -1746,7 +1736,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           repositoryRevision: async () => null,
           createCodex: () => ({
             startThread: () => ({
@@ -1846,7 +1835,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         repositoryRevision: async () => null,
         runWorkbench: async (
           _options: unknown,
@@ -1916,7 +1904,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: { OPENAI_API_KEY: "test-key" },
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => ({
           startThread: () => ({
@@ -2237,7 +2224,6 @@ describe("CodexSecurity orchestration", () => {
           process.chdir(elsewhere);
           return preparedRuntime(codexHome);
         },
-        resolvePluginPython: async () => "/managed/python",
         repositoryRevision: async () => null,
         createCodex: () => {
           throw new Error("Codex reached");
@@ -2280,11 +2266,14 @@ describe("CodexSecurity orchestration", () => {
 
     const client = new TestClient(
       {
-        pythonPath: "/unavailable/python",
         codexOverrides: { model: "replay-model" },
       },
       {
-        environment: { PATH: "/usr/bin", OPENAI_API_KEY: "" },
+        environment: {
+          PATH: "/usr/bin",
+          PYTHON: "/unavailable/python",
+          OPENAI_API_KEY: "",
+        },
         prepareRuntime: async () => ({
           codexHome,
           plugin: {
@@ -2297,6 +2286,7 @@ describe("CodexSecurity orchestration", () => {
           },
           environment: {
             CODEX_HOME: codexHome,
+            PYTHON: "/unavailable/python",
             Codex_Home: "/credentials/case-variant-must-not-reach-shell",
             PATH: "/usr/bin",
             GITHUB_TOKEN: "must-not-reach-shell",
@@ -2304,9 +2294,6 @@ describe("CodexSecurity orchestration", () => {
           },
           credentialsAvailable: true,
         }),
-        resolvePluginPython: async () => {
-          throw new Error("Python must not be resolved");
-        },
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -2523,7 +2510,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -2607,7 +2593,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: { CODEX_HOME: ambientHome },
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -2687,7 +2672,6 @@ describe("CodexSecurity orchestration", () => {
           ...preparedRuntime(codexHome),
           environment,
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         resolveCodexCommand: () => ({ command: process.execPath }),
@@ -2758,7 +2742,6 @@ describe("CodexSecurity orchestration", () => {
             USERPROFILE: root,
           },
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           createCodex: () => ({
@@ -2819,7 +2802,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: { CODEX_HOME: ambientHome },
           prepareRuntime: async () => preparedRuntime(runtimeHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           createCodex: () => ({
@@ -2889,7 +2871,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: { CODEX_HOME: codexHome },
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: () => ({
@@ -2929,7 +2910,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: { CODEX_HOME: codexHome.toUpperCase() },
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           createCodex: () => ({
@@ -2965,7 +2945,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -3006,7 +2985,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -3070,7 +3048,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -3143,7 +3120,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           runWorkbench: async (
@@ -3199,7 +3175,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -3281,7 +3256,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -3423,7 +3397,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -3535,7 +3508,6 @@ describe("CodexSecurity orchestration", () => {
             installedRoot: pluginRoot,
           },
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -3580,7 +3552,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           runWorkbench: async (
@@ -3689,7 +3660,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           runWorkbench: async (
@@ -3872,7 +3842,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           runWorkbench: async (
@@ -3942,7 +3911,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -4017,7 +3985,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           ...(setupFails
@@ -4106,7 +4073,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           createCodex: () => ({
@@ -4198,7 +4164,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (_options, args, input) => {
@@ -4318,7 +4283,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           runWorkbench: async (_options, args, input) => {
@@ -4459,7 +4423,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -4592,7 +4555,6 @@ describe("CodexSecurity orchestration", () => {
         {
           environment: {},
           prepareRuntime: async () => preparedRuntime(codexHome),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           runWorkbench: async (
@@ -4728,7 +4690,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -4817,7 +4778,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -4893,7 +4853,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => ({
@@ -5082,7 +5041,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: { CODEX_SECURITY_STATE_DIR: stateDirectory },
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => ({
           startThread: () => ({
@@ -5134,7 +5092,6 @@ describe("CodexSecurity orchestration", () => {
           prepareRuntime: async () => {
             throw new Error("Runtime must not start");
           },
-          resolvePluginPython: async () => "/managed/python",
           createCodex: () => {
             throw new Error("Codex must not start");
           },
@@ -5216,7 +5173,6 @@ describe("CodexSecurity orchestration", () => {
             CODEX_SECURITY_STATE_DIR: configuredStateDirectory,
             [apiKey]: "synthetic-transient-key",
           },
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           createCodex: (options: CodexOptions) => ({
@@ -5317,7 +5273,6 @@ describe("CodexSecurity orchestration", () => {
               CODEX_SECURITY_STATE_DIR: stateDirectory,
               [apiKey!]: `synthetic-key-${index}`,
             },
-            resolvePluginPython: async () => "/managed/python",
             prepareOutputDir: async () => scanDir,
             repositoryRevision: async () => "deadbeef",
             createCodex: (options: CodexOptions) => {
@@ -5398,7 +5353,6 @@ describe("CodexSecurity orchestration", () => {
           CODEX_HOME: ambientHome,
           CODEX_SECURITY_STATE_DIR: stateDirectory,
         },
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => ({
@@ -5457,7 +5411,6 @@ describe("CodexSecurity orchestration", () => {
             installedRoot: pluginRoot,
           },
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: () => {
@@ -5872,7 +5825,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => ({
@@ -5933,7 +5885,6 @@ describe("CodexSecurity orchestration", () => {
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: () => ({
@@ -6148,7 +6099,6 @@ describe("CodexSecurity orchestration", () => {
               PATH: "custom search path",
             },
           }),
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           createCodex: (options: CodexOptions) => {
@@ -6251,7 +6201,6 @@ describe("CodexSecurity orchestration", () => {
           ...preparedRuntime(codexHome),
           environment: runtimeEnvironment,
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => {
@@ -6471,7 +6420,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
           credentialsAvailable: false,
         }),
         resolveCodexCommand: () => fakeCommand.command,
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: () => {
@@ -6570,7 +6518,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
           ...preparedRuntime(codexHome),
           credentialsAvailable: false,
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => {
@@ -6639,7 +6586,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
           ...preparedRuntime(codexHome),
           credentialsAvailable: false,
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => {
@@ -6777,7 +6723,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
           preparationStarted();
           return await prepared;
         },
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: () => ({
@@ -6848,7 +6793,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
           environment: {},
           credentialsAvailable: true,
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => {
           revisionStarted();
@@ -6885,7 +6829,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
       {
         environment: {},
         prepareRuntime: async () => preparedRuntime(codexHome),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: () => ({
@@ -6947,7 +6890,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
           ...preparedRuntime(codexHome),
           environment: { CODEX_HOME: codexHome },
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) =>
@@ -6994,7 +6936,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
           ...preparedRuntime(codexHome),
           bootstrapWorkspace,
         }),
-        resolvePluginPython: async () => "/managed/python",
         repositoryRevision: async () => null,
         createCodex: () => {
           throw new Error("scan reached");
@@ -7190,7 +7131,6 @@ if ([basename(process.argv[1]), ...process.argv.slice(2)].join(" ") !== "login s
           },
           credentialsAvailable: false,
         }),
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => {

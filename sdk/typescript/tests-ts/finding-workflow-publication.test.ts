@@ -125,11 +125,7 @@ test("deduplicates an external scan through its bound workflow without reading s
     await deduplicateScanDirectoryInternal(scanDir, options, {
       environment,
       runWorkbench: (args, input) =>
-        workbench.run(
-          { environment, pluginRoot: PLUGIN_ROOT, python: "unused" },
-          args,
-          input,
-        ),
+        workbench.run({ environment, pluginRoot: PLUGIN_ROOT }, args, input),
       fetch: async (url, init) => {
         requests.push(String(url));
         expect(init.method).toBeUndefined();
@@ -337,7 +333,7 @@ test.each(["before-post", "before-write", "lost-ack", "lost-completion"])(
         };
       }
       return await workbench.run(
-        { environment, pluginRoot: PLUGIN_ROOT, python: "unused" },
+        { environment, pluginRoot: PLUGIN_ROOT },
         args,
         input,
       );

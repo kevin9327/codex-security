@@ -29,7 +29,6 @@ import {
 import * as fsPromises from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import {
-  delimiter,
   dirname,
   isAbsolute,
   join,
@@ -64,13 +63,10 @@ import {
   createMarketplace,
   extractPluginZip,
   importAmbientAuth,
-  pluginExecutionEnvironment,
   PluginBootstrapError,
-  PluginPythonUnavailableError,
   prepareOutputDir,
   resolveCodexCommand,
   resolvePluginPath,
-  resolvePluginPython,
   validateOutputDir,
 } from "../src/index.js";
 import {
@@ -84,7 +80,6 @@ import {
   executablePathForSpawn,
   inspectWindowsCredentialAcl,
   inspectWindowsCredentialAclSnapshot,
-  isPythonPathCandidate,
   planOutputArchive,
   prepareCodexSecurityCredentialHome,
   preparePersistentOutputRoot,
@@ -259,7 +254,6 @@ describe("plugin runtime preparation", () => {
     await writeFile(path, "preserved");
     const controller = new AbortController();
     const options = {
-      python: "/unavailable/python",
       pluginRoot: "/unavailable/selected-plugin",
       environment: { PATH: "" },
       signal: controller.signal,
@@ -2119,7 +2113,6 @@ describe("plugin runtime preparation", () => {
       await writeFile(join(scanDir, artifact), expected);
       const restorer = await prepareScanArtifactRestorer(
         {
-          python: "/unavailable/python",
           pluginRoot: upgraded.installedRoot,
           environment,
         },
@@ -2292,11 +2285,6 @@ describe("plugin runtime preparation", () => {
       expect(resolveCodexCommand({ CODEX_CLI_PATH: configured })).toEqual(
         process.platform === "win32" ? fallback : { command: configured },
       );
-      expect(
-        pluginExecutionEnvironment("/managed/python", {
-          CODEX_CLI_PATH: configured,
-        })["CODEX_CLI_PATH"],
-      ).toBe(process.platform === "win32" ? fallback.command : configured);
     }
 
     if (process.platform === "win32") {
@@ -2315,12 +2303,13 @@ describe("plugin runtime preparation", () => {
     ) as {
       mcpServers: Record<string, { env_vars: string[] }>;
     };
-    const parentEnvironment = pluginExecutionEnvironment(process.execPath, {
+    const parentEnvironment = {
+      CODEX_CLI_PATH: resolveCodexCommand().command,
       PATH: "",
       ...(process.env["SystemRoot"] === undefined
         ? {}
         : { SystemRoot: process.env["SystemRoot"] }),
-    });
+    };
     const allowed = new Set(
       configuration.mcpServers["codex-security"]!.env_vars,
     );
@@ -2335,7 +2324,6 @@ describe("plugin runtime preparation", () => {
     expect(workerEnvironment["CODEX_CLI_PATH"]).toBe(
       resolveCodexCommand().command,
     );
-    expect(workerEnvironment["PYTHONUTF8"]).toBe("1");
     const globalCodex = spawnSync("codex", ["--version"], {
       encoding: "utf8",
       env: workerEnvironment,
@@ -2350,34 +2338,9 @@ describe("plugin runtime preparation", () => {
     expect(nestedCodex.status).toBe(0);
     expect(nestedCodex.stdout).toMatch(/^codex-cli\s+\d/u);
   });
-
-  test("preserves an explicit Codex executable override for nested workers", () => {
-    const configured = join(
-      tmpdir(),
-      "custom codex",
-      process.platform === "win32" ? "codex.exe" : "codex",
-    );
-
-    expect(
-      pluginExecutionEnvironment("/managed/python", {
-        CODEX_CLI_PATH: ` ${configured} `,
-        PATH: "",
-      }),
-    ).toEqual({
-      CODEX_CLI_PATH: configured,
-      PATH: "",
-      PYTHON: "/managed/python",
-      PYTHONUTF8: "1",
-    });
-    expect(
-      pluginExecutionEnvironment("/managed/python", {
-        CODEX_CLI_PATH: "   ",
-      })["CODEX_CLI_PATH"],
-    ).toBe(resolveCodexCommand().command);
-  });
 });
 
-describe("runtime directories and plugin Python boundary", () => {
+describe("runtime directories and helper boundary", () => {
   test("prepares one private, reusable managed-credential home", async () => {
     const root = await temporaryDirectory();
     const environment = { CODEX_SECURITY_STATE_DIR: join(root, "state") };
@@ -4679,7 +4642,6 @@ describe("runtime directories and plugin Python boundary", () => {
     );
     const result = await runWorkbench(
       {
-        python: "/unavailable/python",
         pluginRoot,
         environment: {
           PATH: "",
@@ -4750,7 +4712,6 @@ describe("runtime directories and plugin Python boundary", () => {
         ].join("\n"),
       );
       const options = {
-        python: "/unavailable/python",
         pluginRoot,
         environment: {
           PATH: "",
@@ -5200,7 +5161,6 @@ describe("runtime directories and plugin Python boundary", () => {
     try {
       await runWorkbench(
         {
-          python: "/unavailable/python",
           pluginRoot,
           environment: {
             CODEX_SECURITY_STATE_DIR: stateDirectory,
@@ -5497,28 +5457,10 @@ describe("runtime directories and plugin Python boundary", () => {
     }
   });
 
-  test("resolves inherited Python names case-insensitively", async () => {
-    const interpreter =
-      Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-    expect(interpreter).not.toBeNull();
-
-    expect(
-      await resolvePluginPython({
-        environment: {
-          PATH: "",
-          Python: interpreter!,
-          ...(process.env["SystemRoot"] === undefined
-            ? {}
-            : { SystemRoot: process.env["SystemRoot"] }),
-        },
-      }),
-    ).toBe(await realpath(interpreter!));
-  });
-
   test.skipIf(process.platform !== "win32")(
     "runs worklist helpers with UTF-8 standard streams without Python",
     async () => {
-      const root = await temporaryDirectory("codex-security-python-utf8-");
+      const root = await temporaryDirectory("codex-security-helper-utf8-");
       const repository = join(root, "repository");
       const output = join(root, "出力.jsonl");
       await mkdir(repository);
@@ -5539,7 +5481,6 @@ describe("runtime directories and plugin Python boundary", () => {
             ...process.env,
             PATH: "",
             PYTHON: join(root, "missing-python"),
-            pythonutf8: "0",
           },
         },
       );
@@ -5552,262 +5493,6 @@ describe("runtime directories and plugin Python boundary", () => {
           .split("\n")
           .map((row) => (JSON.parse(row) as { path: string }).path),
       ).toEqual(["source.py"]);
-    },
-  );
-
-  testPosix("uses configured, inherited, and managed Python", async () => {
-    const root = await temporaryDirectory();
-    const configured = join(root, "configured-python");
-    await writeFile(
-      configured,
-      '#!/bin/sh\n[ "$1" = "-I" ] || exit 1\n[ "$2" = "-c" ] || exit 1\ncase "$3" in *"raise SystemExit(1)"*) ;; *) exit 1 ;; esac\ncase "$3" in *assert*) exit 1 ;; esac\nprintf "codex-security-python-ok\\n"\n',
-    );
-    await chmod(configured, 0o700);
-    const canonicalConfigured = await realpath(configured);
-    expect(
-      await resolvePluginPython({
-        configuredPath: relative(process.cwd(), configured),
-        environment: { PATH: "", PYTHONOPTIMIZE: "1" },
-      }),
-    ).toBe(canonicalConfigured);
-    expect(
-      await resolvePluginPython({
-        environment: { PYTHON: configured, PATH: "" },
-      }),
-    ).toBe(canonicalConfigured);
-
-    const managedRoot = join(root, "codex-primary-runtime");
-    const managed = join(
-      managedRoot,
-      "dependencies",
-      "python",
-      "bin",
-      "python3",
-    );
-    await mkdir(join(managedRoot, "dependencies", "python", "bin"), {
-      recursive: true,
-    });
-    await writeFile(
-      managed,
-      '#!/bin/sh\n[ "$1" = "-I" ] || exit 1\n[ "$2" = "-c" ] || exit 1\ncase "$3" in *"raise SystemExit(1)"*) ;; *) exit 1 ;; esac\ncase "$3" in *assert*) exit 1 ;; esac\nprintf "codex-security-python-ok\\n"\n',
-    );
-    await chmod(managed, 0o700);
-    expect(
-      await resolvePluginPython({
-        environment: { PATH: "" },
-        managedRuntimeRoots: [managedRoot],
-      }),
-    ).toBe(managed);
-    expect(pluginExecutionEnvironment(managed, { TEST: "1" })).toEqual({
-      TEST: "1",
-      PYTHON: managed,
-      PYTHONUTF8: "1",
-      CODEX_CLI_PATH: resolveCodexCommand().command,
-    });
-    await expect(
-      resolvePluginPython({
-        configuredPath: "/bin/true",
-        environment: { PATH: "" },
-      }),
-    ).rejects.toThrow(PluginPythonUnavailableError);
-  });
-
-  test.skipIf(process.platform !== "win32")(
-    "uses a configured Windows Python path without the executable suffix",
-    async () => {
-      const discovered = Bun.which("python3") ?? Bun.which("python");
-      expect(discovered).not.toBeNull();
-      if (discovered === null) return;
-      const python = await realpath(discovered);
-      const extensionless = python.replace(/\.exe$/iu, "");
-      expect(extensionless).not.toBe(python);
-
-      await expect(
-        resolvePluginPython({
-          configuredPath: extensionless,
-          environment: {
-            PATH: "",
-            ...(process.env["SystemRoot"] === undefined
-              ? {}
-              : { SystemRoot: process.env["SystemRoot"] }),
-          },
-        }),
-      ).resolves.toBe(python);
-    },
-  );
-
-  test.skipIf(process.platform !== "win32")(
-    "discovers Python through the standard Windows py launcher",
-    async () => {
-      const root = await temporaryDirectory();
-      const repository = join(root, "repository");
-      const installedPython = process.env["PYTHON"] ?? Bun.which("python");
-      expect(installedPython).not.toBeNull();
-      if (installedPython === null) return;
-      await mkdir(repository);
-      const launcher = join(root, "py.exe");
-      await copyFile(installedPython, launcher);
-      const installation = dirname(installedPython);
-      for (const entry of await readdir(installation, {
-        withFileTypes: true,
-      })) {
-        if (entry.isFile() && entry.name.toLowerCase().endsWith(".dll")) {
-          await copyFile(
-            join(installation, entry.name),
-            join(root, entry.name),
-          );
-        }
-      }
-      await writeFile(
-        join(root, "pyvenv.cfg"),
-        `home = ${installation}\ninclude-system-site-packages = false\n`,
-      );
-
-      await expect(
-        resolvePluginPython({
-          environment: {
-            PATH: root,
-            PATHEXT: ".EXE",
-            ...(process.env["SystemRoot"] === undefined
-              ? {}
-              : { SystemRoot: process.env["SystemRoot"] }),
-            ...(process.env["WINDIR"] === undefined
-              ? {}
-              : { WINDIR: process.env["WINDIR"] }),
-          },
-          homeDirectory: root,
-          managedRuntimeRoots: [],
-          protectedRoot: repository,
-        }),
-      ).resolves.toBe(await realpath(launcher));
-    },
-  );
-
-  testPosix(
-    "does not load repository-controlled Python startup code",
-    async () => {
-      const root = await temporaryDirectory();
-      const repository = join(root, "repository");
-      const marker = join(root, "sitecustomize-executed");
-      const interpreter = Bun.which("python3");
-      expect(interpreter).not.toBeNull();
-      if (interpreter === null) return;
-
-      await mkdir(repository);
-      await writeFile(
-        join(repository, "sitecustomize.py"),
-        `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text("executed")\n`,
-      );
-      const environment = { ...process.env, PYTHONPATH: repository };
-      const control = Bun.spawnSync([interpreter, "-c", "pass"], {
-        env: environment,
-      });
-      expect(control.exitCode).toBe(0);
-      expect(existsSync(marker)).toBe(true);
-      await rm(marker);
-
-      expect(
-        await resolvePluginPython({
-          configuredPath: interpreter,
-          environment,
-          protectedRoot: repository,
-        }),
-      ).toBe(await realpath(interpreter));
-      expect(existsSync(marker)).toBe(false);
-    },
-  );
-
-  testPosix(
-    "does not execute repository-local Python shims from PATH",
-    async () => {
-      const root = await temporaryDirectory();
-      const repository = join(root, "repository");
-      const unsafeBin = join(repository, "node_modules", ".bin");
-      const linkedBin = join(root, "linked-bin");
-      const trustedBin = root;
-      const marker = join(root, "python-executed");
-      const observedPath = join(root, "python-path");
-      const unsafePython = join(unsafeBin, "python3");
-      const trustedPython = join(trustedBin, "python3");
-      await mkdir(unsafeBin, { recursive: true });
-      await mkdir(linkedBin);
-      await writeFile(
-        unsafePython,
-        `#!/bin/sh\nprintf 'executed\\n' > '${marker}'\nprintf 'codex-security-python-ok\\n'\n`,
-      );
-      await chmod(unsafePython, 0o700);
-      await symlink(unsafePython, join(linkedBin, "python3"));
-      await writeFile(
-        trustedPython,
-        `#!/bin/sh\nprintf '%s\\n' "$PATH" > '${observedPath}'\nprintf 'codex-security-python-ok\\n'\n`,
-      );
-      await chmod(trustedPython, 0o700);
-
-      expect(
-        await resolvePluginPython({
-          environment: {
-            PATH: [
-              unsafeBin,
-              linkedBin,
-              relative(process.cwd(), unsafeBin),
-              "",
-              trustedBin,
-            ].join(delimiter),
-          },
-          homeDirectory: root,
-          managedRuntimeRoots: [],
-          protectedRoot: repository,
-        }),
-      ).toBe(await realpath(trustedPython));
-      expect(existsSync(marker)).toBe(false);
-      expect((await readFile(observedPath, "utf8")).trim()).toBe(trustedBin);
-
-      await expect(
-        resolvePluginPython({
-          configuredPath: unsafePython,
-          environment: { PATH: trustedBin },
-          protectedRoot: repository,
-        }),
-      ).rejects.toThrow(PluginPythonUnavailableError);
-      expect(existsSync(marker)).toBe(false);
-    },
-  );
-
-  test("recognizes Python paths using either platform separator", () => {
-    expect(isPythonPathCandidate("runtime/python3")).toBe(true);
-    expect(isPythonPathCandidate("runtime\\python.exe")).toBe(true);
-    expect(isPythonPathCandidate("./python3")).toBe(true);
-    expect(isPythonPathCandidate("python3")).toBe(false);
-  });
-
-  test("returns a targeted plugin diagnostic when Python is unavailable", async () => {
-    const root = await temporaryDirectory();
-    const emptyPath = join(root, "empty-path");
-    await mkdir(emptyPath);
-    await expect(
-      resolvePluginPython({
-        environment: { PATH: emptyPath },
-        homeDirectory: root,
-        managedRuntimeRoots: [],
-      }),
-    ).rejects.toThrow(PluginPythonUnavailableError);
-  });
-
-  test.skipIf(process.platform === "win32")(
-    "preserves cancellation during Python interpreter probes",
-    async () => {
-      const root = await temporaryDirectory();
-      const interpreter = join(root, "python");
-      await writeFile(interpreter, "#!/bin/sh\nwhile :; do :; done\n");
-      await chmod(interpreter, 0o700);
-      const controller = new AbortController();
-      const resolving = resolvePluginPython({
-        configuredPath: interpreter,
-        environment: { PATH: "" },
-        signal: controller.signal,
-      });
-      controller.abort();
-      await expect(resolving).rejects.toMatchObject({ name: "AbortError" });
     },
   );
 

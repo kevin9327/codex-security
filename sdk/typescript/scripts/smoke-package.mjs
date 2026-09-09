@@ -168,6 +168,16 @@ async function smokeNestedDeepScanWorker(installedRoot, consumer) {
   const sdk = await import(
     pathToFileURL(join(installedRoot, "dist", "index.js")).href
   );
+  for (const removed of [
+    "resolvePluginPython",
+    "pluginExecutionEnvironment",
+    "PluginPythonUnavailableError",
+  ])
+    assert.equal(
+      removed in sdk,
+      false,
+      `Removed Python API remains exported: ${removed}`,
+    );
   const codexCommand = sdk.resolveCodexCommand();
   assert.equal(
     isAbsolute(codexCommand.command),
@@ -177,7 +187,8 @@ async function smokeNestedDeepScanWorker(installedRoot, consumer) {
 
   const workerHome = join(consumer, "nested-worker-home");
   await mkdir(workerHome, { recursive: true, mode: 0o700 });
-  const parentEnvironment = sdk.pluginExecutionEnvironment(process.execPath, {
+  const parentEnvironment = {
+    CODEX_CLI_PATH: codexCommand.command,
     PATH: "",
     HOME: workerHome,
     USERPROFILE: workerHome,
@@ -186,7 +197,7 @@ async function smokeNestedDeepScanWorker(installedRoot, consumer) {
       ? {}
       : { SystemRoot: process.env.SystemRoot }),
     ...(process.env.WINDIR === undefined ? {} : { WINDIR: process.env.WINDIR }),
-  });
+  };
   const mcpConfiguration = JSON.parse(
     await readFile(join(installedRoot, "_bundled_plugin", ".mcp.json"), "utf8"),
   );
@@ -555,7 +566,6 @@ try {
   await mkdir(restorationScan, { mode: 0o700 });
   const restorer = await prepareScanArtifactRestorer(
     {
-      python: "/unavailable/python",
       pluginRoot: join(consumer, "unused-selected-plugin"),
       environment: { PATH: "" },
     },

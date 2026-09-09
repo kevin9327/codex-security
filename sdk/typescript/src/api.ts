@@ -144,7 +144,6 @@ import {
   requireOutputOutsideRepository,
   resolveCodexCommand,
   resolvePluginPath,
-  resolvePluginPython,
   runWorkbench,
   setCodexSecurityCredentialLogout,
   type CodexCommand,
@@ -402,7 +401,6 @@ interface ClientDependencies {
     config: Readonly<CodexSecurityConfig>,
     signal?: AbortSignal,
   ) => Promise<PreparedRuntime>;
-  resolvePluginPython?: typeof resolvePluginPython;
   prepareOutputDir?: typeof prepareOutputDir;
   prepareScanArtifactRestorer?: typeof prepareScanArtifactRestorer;
   repositoryRevision?: typeof repositoryRevision;
@@ -804,7 +802,7 @@ export class CodexSecurity {
         throwIfAborted(signal, scanDir);
       };
 
-      // Validate all local inputs before runtime initialization or plugin-Python discovery.
+      // Validate all local inputs before runtime initialization.
       const {
         repository: repo,
         target: normalized,

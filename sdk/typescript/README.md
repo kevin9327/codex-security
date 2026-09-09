@@ -132,7 +132,6 @@ Constructor options:
 | Option           | Description                                                             |
 | ---------------- | ----------------------------------------------------------------------- |
 | `pluginPath`     | Plugin directory or ZIP; defaults to the bundled plugin.                |
-| `pythonPath`     | Deprecated and ignored; helpers use Node.js.                            |
 | `codexOverrides` | Supported settings to deep-merge into the isolated Codex configuration. |
 
 Options for `security.run(repository, options)` and
@@ -558,7 +557,6 @@ restrictions.
 | `CODEX_SECURITY_STATE_DIR`                                                  | Private scan-history, workbench, and default artifact directory.                     |
 | `CODEX_HOME`                                                                | Ambient Codex home for file-based sign-in and default state; defaults to `~/.codex`. |
 | `CODEX_CLI_PATH`                                                            | Codex executable for authentication, plugin setup, scans, and workers.               |
-| `PYTHON`                                                                    | Deprecated; helpers no longer use this variable.                                     |
 | `GH_HOST`                                                                   | GitHub Enterprise host for interactive `bulk-scan` discovery.                        |
 | `CODEX_SECURITY_NO_UPDATE_NOTICE`, `NO_UPDATE_NOTIFIER`                     | Either variable disables interactive update notices.                                 |
 | `CODEX_SECURITY_NPM_REGISTRY`, `npm_config_registry`, `NPM_CONFIG_REGISTRY` | Update-check registry, in precedence order.                                          |
@@ -569,10 +567,16 @@ Custom Codex executables need thread source attribution for `exec` and
 `app-server` (Codex 0.149.1+). On Windows, use a native `.exe` or `.com`;
 command shims such as `codex.cmd` fall back to the bundled executable.
 
-All bundled helpers use Node.js. The `--python` options and SDK `pythonPath`
-remain accepted for compatibility but are ignored. They and the legacy
-`resolvePluginPython`, `PluginPythonOptions`, and `pluginExecutionEnvironment`
-exports are deprecated and will be removed in the next breaking release.
+All bundled helpers use Node.js. This breaking release removes the ignored
+`--python` options, SDK `pythonPath`, and `WorkbenchCommandOptions.python`.
+Remove these from command lines and SDK configurations; no replacement is
+needed. The product no longer uses `PYTHON` or sets `PYTHONUTF8`.
+
+The deprecated `resolvePluginPython`, `PluginPythonOptions`,
+`pluginExecutionEnvironment`, and `PluginPythonUnavailableError` exports are
+removed. Continue using the standard scan and export APIs, which select the
+Node runtime automatically.
+
 `CODEX_SECURITY_STATE_DIR` overrides `CODEX_HOME` for state storage. Keep state
 and results outside the repository.
 

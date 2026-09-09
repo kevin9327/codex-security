@@ -60,7 +60,6 @@ export class DeduplicationReviewError extends CodexSecurityError {
 export class ConfigurationError extends CodexSecurityError {}
 export class AuthenticationRequiredError extends CodexSecurityError {}
 export class PluginBootstrapError extends CodexSecurityError {}
-export class PluginPythonUnavailableError extends PluginBootstrapError {}
 export class InvalidTargetError extends CodexSecurityError {}
 export class OutputDirectoryError extends CodexSecurityError {}
 export class OutputDirectoryNotEmptyError extends OutputDirectoryError {

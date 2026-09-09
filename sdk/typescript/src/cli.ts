@@ -105,7 +105,6 @@ import {
   InvalidTargetError,
   OutputDirectoryError,
   OutputInsideProtectedRootError,
-  PluginPythonUnavailableError,
   errorMessage,
   safeErrorMessage,
   ScanCostLimitExceededError,
@@ -146,7 +145,6 @@ import {
   executablePathForSpawn,
   expandHome,
   prepareCodexSecurityCredentialHome,
-  pythonUtf8Environment,
   resolveCodexCommand,
   runWorkbench,
   setCodexSecurityCredentialLogout,
@@ -247,8 +245,6 @@ const CODEX_OVERRIDE_DESCRIPTION =
   'Repeat TOML KEY=VALUE; e.g. model_reasoning_effort="high" or features.multi_agent_v2.max_concurrent_threads_per_session=4.';
 const PLUGIN_PATH_DESCRIPTION =
   "Codex Security plugin directory or ZIP (default: bundled plugin).";
-const PYTHON_PATH_DESCRIPTION =
-  "Deprecated and ignored; bundled helpers use Node.js.";
 const EXPORT_DEFAULT_OUTPUTS = {
   csv: "findings.csv",
   json: "findings.json",
@@ -277,7 +273,6 @@ const VALUE_OPTIONS = new Set([
   "--provider",
   "--output-dir",
   "--plugin-path",
-  "--python",
   "--codex",
   "--linear-issue",
   "--linear-project",
@@ -1013,7 +1008,6 @@ interface ScanArguments extends DeepScanOptions {
   outputDir?: string;
   archiveExisting: boolean;
   pluginPath?: string;
-  pythonPath?: string;
   codex: string[];
   codexOverrides?: JsonObject;
   failOnSeverity?: FailureSeverity;
@@ -1038,7 +1032,6 @@ interface ExportArguments {
   format: keyof typeof EXPORT_DEFAULT_OUTPUTS;
   output: string;
   sourceRoot?: string;
-  pythonPath?: string;
 }
 
 type MatchingPlan = JsonObject & {
@@ -1556,26 +1549,23 @@ async function writeCliOutput(
 export function exportEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  return pythonUtf8Environment(
-    Object.fromEntries(
-      [
-        "PATH",
-        "Path",
-        "PATHEXT",
-        "SystemRoot",
-        "SYSTEMROOT",
-        "WINDIR",
-        "TMP",
-        "TEMP",
-        "TMPDIR",
-        "PYTHON",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-      ]
-        .filter((key) => environment[key] !== undefined)
-        .map((key) => [key, environment[key]]),
-    ),
+  return Object.fromEntries(
+    [
+      "PATH",
+      "Path",
+      "PATHEXT",
+      "SystemRoot",
+      "SYSTEMROOT",
+      "WINDIR",
+      "TMP",
+      "TEMP",
+      "TMPDIR",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+    ]
+      .filter((key) => environment[key] !== undefined)
+      .map((key) => [key, environment[key]]),
   );
 }
 
@@ -2973,9 +2963,6 @@ export async function main(
           pluginPath: optionValue("--plugin-path")
             .optional()
             .describe(PLUGIN_PATH_DESCRIPTION),
-          python: optionValue("--python")
-            .optional()
-            .describe(PYTHON_PATH_DESCRIPTION),
           codex: z
             .array(optionValue("--codex"))
             .default([])
@@ -3126,7 +3113,6 @@ export async function main(
             outputDir: options.outputDir,
             archiveExisting: options.archiveExisting,
             pluginPath: options.pluginPath,
-            pythonPath: options.python,
             codex: options.codex,
             failOnSeverity: options.failOnSeverity,
             patch: options.patch,
@@ -3503,9 +3489,6 @@ export async function main(
           pluginPath: optionValue("--plugin-path")
             .optional()
             .describe(PLUGIN_PATH_DESCRIPTION),
-          python: optionValue("--python")
-            .optional()
-            .describe(PYTHON_PATH_DESCRIPTION),
           codex: z
             .array(optionValue("--codex"))
             .default([])
@@ -3547,7 +3530,6 @@ export async function main(
           const repository = resolveCliPath(directory, args.repository ?? ".");
           const config: CodexSecurityConfig = {
             pluginPath: options.pluginPath,
-            pythonPath: options.python,
             codexOverrides: parseCodexOverrides(
               options.codex,
               options.model,
@@ -3758,7 +3740,6 @@ export async function main(
           .min(1)
           .optional()
           .describe(PLUGIN_PATH_DESCRIPTION),
-        python: z.string().min(1).optional().describe(PYTHON_PATH_DESCRIPTION),
         codex: z
           .array(z.string().min(1))
           .default([])
@@ -3842,7 +3823,6 @@ export async function main(
             ...prompts,
             config: {
               pluginPath: options.pluginPath,
-              pythonPath: options.python,
               codexOverrides: parseCodexOverrides(
                 options.codex,
                 options.model,
@@ -3903,9 +3883,6 @@ export async function main(
             .describe(
               "Repository checkout used for SARIF source-line fingerprints.",
             ),
-          python: optionValue("--python")
-            .optional()
-            .describe(PYTHON_PATH_DESCRIPTION),
         })
         .refine(
           (options) =>
@@ -3936,7 +3913,6 @@ export async function main(
               options.sourceRoot === undefined
                 ? undefined
                 : resolveCliPath(currentDirectory, options.sourceRoot),
-            pythonPath: options.python,
           },
           output,
           errorOutput,
@@ -6713,7 +6689,6 @@ async function executeScan(
     );
     const config: CodexSecurityConfig = {
       pluginPath: arguments_.pluginPath,
-      pythonPath: arguments_.pythonPath,
       codexOverrides:
         arguments_.codexOverrides ??
         parseCodexOverrides(
@@ -7423,8 +7398,7 @@ function isLocalScanFailure(error: unknown): boolean {
   if (
     error instanceof InvalidTargetError ||
     error instanceof OutputDirectoryError ||
-    error instanceof ConfigurationError ||
-    error instanceof PluginPythonUnavailableError
+    error instanceof ConfigurationError
   ) {
     return true;
   }

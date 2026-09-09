@@ -234,7 +234,7 @@ test("rejects unexpected workbench commands after their errors are caught", asyn
   const workbench = scriptedWorkbench([]);
   await expect(
     workbench.run(
-      { environment: {}, pluginRoot: "unused", python: "unused" },
+      { environment: {}, pluginRoot: "unused" },
       ["unexpected-command"],
       "{}",
     ),

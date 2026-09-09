@@ -86,7 +86,7 @@ const finished = new Set();
 // Replace model output and runtime installation only. The installed SDK still
 // prepares output, registers scans, validates artifacts, and updates real SQLite.
 const client = new sdk.CodexSecurity(
-  { pythonPath: process.env.PYTHON },
+  {},
   {
     environment,
     prepareRuntime: async () => ({
@@ -152,7 +152,7 @@ const client = new sdk.CodexSecurity(
 async function savedScan(index) {
   const env = turns[index];
   return (
-    await runWorkbench({ python: env.PYTHON, pluginRoot, environment: env }, [
+    await runWorkbench({ pluginRoot, environment: env }, [
       "get-scan",
       "--scan-id",
       env.CODEX_SECURITY_SCAN_ID,

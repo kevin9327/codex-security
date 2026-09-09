@@ -49,7 +49,6 @@ describe("delegated scan attribution", () => {
                 CODEX_SECURITY_SURFACE: "spoofed",
                 OPENAI_API_KEY: `synthetic-${surface}-key`,
               },
-              resolvePluginPython: async () => "/managed/python",
               prepareOutputDir: async () => scanDirectory,
               repositoryRevision: async () => "deadbeef",
               runWorkbench: async (

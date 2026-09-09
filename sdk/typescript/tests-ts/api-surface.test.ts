@@ -40,7 +40,6 @@ async function scanResponseSurface(runtimeOptions?: {
     {
       environment: {},
       prepareRuntime: async () => preparedRuntime(codexHome),
-      resolvePluginPython: async () => "/managed/python",
       prepareOutputDir: async () => scanDir,
       repositoryRevision: async () => "deadbeef",
       runWorkbench: async (

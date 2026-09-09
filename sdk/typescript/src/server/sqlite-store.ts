@@ -18,7 +18,7 @@ import type {
 } from "./storage.js";
 
 export class SqliteFindingsStore implements FindingsStore {
-  private options?: Promise<Omit<WorkbenchCommandOptions, "python">>;
+  private options?: Promise<WorkbenchCommandOptions>;
 
   constructor(private readonly environment: NodeJS.ProcessEnv = process.env) {}
 
@@ -115,9 +115,7 @@ export class SqliteFindingsStore implements FindingsStore {
     return await runWorkbench(options, args, input);
   }
 
-  private async resolveOptions(): Promise<
-    Omit<WorkbenchCommandOptions, "python">
-  > {
+  private async resolveOptions(): Promise<WorkbenchCommandOptions> {
     const environment = {
       ...this.environment,
       CODEX_SECURITY_STATE_DIR: codexSecurityStateDirectory(this.environment),

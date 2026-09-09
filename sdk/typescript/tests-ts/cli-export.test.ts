@@ -59,10 +59,10 @@ async function copyLargeExportScan(root: string, payloadBytes: number) {
 }
 
 describe("CLI", () => {
-  test("does not pass credentials or Python startup paths to the exporter", () => {
+  test("passes only the exporter runtime environment", () => {
     expect(
       exportEnvironment({
-        Path: "C:\\Python;C:\\Windows\\System32",
+        Path: "C:\\Node;C:\\Windows\\System32",
         PYTHON: "/managed/python",
         TMPDIR: "/tmp",
         OPENAI_API_KEY: "openai-secret",
@@ -71,9 +71,7 @@ describe("CLI", () => {
         PYTHONPATH: ".",
       }),
     ).toEqual({
-      Path: "C:\\Python;C:\\Windows\\System32",
-      PYTHON: "/managed/python",
-      PYTHONUTF8: "1",
+      Path: "C:\\Node;C:\\Windows\\System32",
       TMPDIR: "/tmp",
     });
   });
@@ -183,16 +181,7 @@ describe("CLI", () => {
       try {
         expect(
           await main(
-            [
-              "export",
-              scan,
-              "--export-format",
-              "json",
-              "--output",
-              "-",
-              "--python",
-              join(root, "unavailable-python"),
-            ],
+            ["export", scan, "--export-format", "json", "--output", "-"],
             stdout,
             stderr.stream,
           ),
@@ -206,16 +195,7 @@ describe("CLI", () => {
         const lightweight = capture();
         expect(
           await main(
-            [
-              "export",
-              scan,
-              "--export-format",
-              "json",
-              "--output",
-              "-",
-              "--python",
-              join(root, "unavailable-python"),
-            ],
+            ["export", scan, "--export-format", "json", "--output", "-"],
             lightweight.stream,
             capture().stream,
           ),
@@ -259,16 +239,7 @@ describe("CLI", () => {
         try {
           const result = await Promise.race([
             main(
-              [
-                "export",
-                scan,
-                "--export-format",
-                "json",
-                "--output",
-                "-",
-                "--python",
-                join(root, "unavailable-python"),
-              ],
+              ["export", scan, "--export-format", "json", "--output", "-"],
               stdout,
               stderr.stream,
             ),
@@ -307,16 +278,7 @@ describe("CLI", () => {
       try {
         const result = await Promise.race([
           main(
-            [
-              "export",
-              scan,
-              "--export-format",
-              "json",
-              "--output",
-              "-",
-              "--python",
-              join(root, "unavailable-python"),
-            ],
+            ["export", scan, "--export-format", "json", "--output", "-"],
             stdout,
             stderr.stream,
           ),

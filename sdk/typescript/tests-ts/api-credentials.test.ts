@@ -72,7 +72,6 @@ describe("CodexSecurity orchestration", () => {
                 }
               : {}),
           },
-          resolvePluginPython: async () => "/managed/python",
           ...(profile
             ? {
                 prepareRuntime: async () => ({
@@ -355,7 +354,6 @@ describe("CodexSecurity orchestration", () => {
             CODEX_HOME: ambientHome,
             CODEX_SECURITY_STATE_DIR: stateDirectory,
           },
-          resolvePluginPython: async () => "/managed/python",
           prepareOutputDir: async () => scanDir,
           repositoryRevision: async () => "deadbeef",
           createCodex: (options: CodexOptions) => {
@@ -410,7 +408,6 @@ describe("CodexSecurity orchestration", () => {
               CODEX_HOME: ambientHome,
               CODEX_SECURITY_STATE_DIR: stateDirectory,
             },
-            resolvePluginPython: async () => "/managed/python",
             prepareOutputDir: async () => scanDir,
             repositoryRevision: async () => "deadbeef",
             createCodex: (options: CodexOptions) => {
@@ -518,7 +515,6 @@ describe("CodexSecurity orchestration", () => {
           CODEX_SECURITY_STATE_DIR: stateDirectory,
           OPENAI_API_KEY: "synthetic-transient-key",
         },
-        resolvePluginPython: async () => "/managed/python",
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => {

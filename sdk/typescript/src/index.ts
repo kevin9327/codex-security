@@ -74,7 +74,6 @@ export {
   OutputDirectoryNotEmptyError,
   OutputInsideProtectedRootError,
   PluginBootstrapError,
-  PluginPythonUnavailableError,
   ScanCostLimitExceededError,
   ScanInterruptedError,
 } from "./errors.js";
@@ -135,19 +134,16 @@ export {
   extractPluginZip,
   importAmbientAuth,
   MARKETPLACE_NAME,
-  pluginExecutionEnvironment,
   pluginMetadata,
   PLUGIN_NAME,
   prepareOutputDir,
   resolveCodexCommand,
   resolvePluginPath,
-  resolvePluginPython,
   validateOutputDir,
 } from "./runtime.js";
 export type {
   CodexCommand,
   PluginInstall,
-  PluginPythonOptions,
   ProcessEnvironment,
 } from "./runtime.js";
 export {

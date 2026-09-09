@@ -53,12 +53,10 @@ import {
   OutputDirectoryNotEmptyError,
   OutputInsideProtectedRootError,
   PluginBootstrapError,
-  PluginPythonUnavailableError,
   type ProtectedScanPathKind,
   errorMessage,
 } from "./errors.js";
 import type { JsonObject } from "./config.js";
-import { resolveTrustedExecutable } from "./trusted-executable.js";
 import {
   isWindowsUnsafePathComponent,
   windowsUnsafePathComponent,
@@ -113,19 +111,7 @@ interface CodexCommandResult {
 
 export type ProcessEnvironment = Record<string, string | undefined>;
 
-/** @deprecated Scan execution no longer resolves Python. */
-export interface PluginPythonOptions {
-  configuredPath?: string;
-  environment?: ProcessEnvironment;
-  homeDirectory?: string;
-  managedRuntimeRoots?: readonly string[];
-  protectedRoot?: string;
-  signal?: AbortSignal;
-}
-
 export interface WorkbenchCommandOptions {
-  /** @deprecated Helpers use Node.js; this option is ignored. */
-  python?: string;
   pluginRoot: string;
   environment: ProcessEnvironment;
   signal?: AbortSignal;
@@ -2516,109 +2502,13 @@ export async function pluginMetadata(
   return { name: PLUGIN_NAME, version };
 }
 
-/** @deprecated Helpers use Node.js; scans no longer call this resolver. */
-export async function resolvePluginPython(
-  options: PluginPythonOptions = {},
-): Promise<string> {
-  const environment = options.environment ?? process.env;
-  const protectedRoot = options.protectedRoot ?? process.cwd();
-  if (options.configuredPath !== undefined) {
-    return await requirePython(
-      options.configuredPath,
-      "configured plugin Python",
-      environment,
-      protectedRoot,
-      options.signal,
-    );
-  }
-  const inherited = environmentValue(environment, "PYTHON");
-  if (inherited) {
-    return await requirePython(
-      inherited,
-      "PYTHON",
-      environment,
-      protectedRoot,
-      options.signal,
-    );
-  }
-
-  const home = options.homeDirectory ?? homedir();
-  const managedRoots = options.managedRuntimeRoots ?? [
-    join(home, ".cache", "codex-runtimes", "codex-primary-runtime"),
-  ];
-  const relativeCandidates =
-    process.platform === "win32"
-      ? [
-          join("dependencies", "python", "python.exe"),
-          join("dependencies", "python", "python", "python.exe"),
-          join("dependencies", "python", "bin", "python.exe"),
-        ]
-      : [
-          join("dependencies", "python", "bin", "python3"),
-          join("dependencies", "python", "bin", "python"),
-        ];
-  for (const root of managedRoots) {
-    for (const relativeCandidate of relativeCandidates) {
-      const candidate = join(root, relativeCandidate);
-      const resolved = await usablePython(
-        candidate,
-        environment,
-        protectedRoot,
-        options.signal,
-      );
-      if (resolved !== null) return resolved;
-    }
-  }
-
-  for (const candidate of process.platform === "win32"
-    ? ["python", "python3", "py"]
-    : ["python3", "python"]) {
-    const resolved = await usablePython(
-      candidate,
-      environment,
-      protectedRoot,
-      options.signal,
-    );
-    if (resolved !== null) return resolved;
-  }
-  throw new PluginPythonUnavailableError(
-    "The bundled Codex Security plugin requires Python 3.10 or later (Python 3.10 also requires tomli), but no usable interpreter was found. " +
-      "Set pythonPath, --python, or PYTHON, install the Codex managed runtime, or add python3/python (py on Windows) to PATH.",
-  );
-}
-
-/** @deprecated Helpers use Node.js; scans no longer use this environment. */
-export function pluginExecutionEnvironment(
-  python: string,
-  environment: ProcessEnvironment = process.env,
-): ProcessEnvironment {
-  return {
-    ...pythonUtf8Environment(environment),
-    PYTHON: python,
-    CODEX_CLI_PATH: resolveCodexCommand(environment).command,
-  };
-}
-
-export function pythonUtf8Environment(
-  environment: ProcessEnvironment,
-): ProcessEnvironment {
-  const normalized = { ...environment };
-  for (const name of Object.keys(normalized)) {
-    if (name.toUpperCase() === "PYTHONUTF8") delete normalized[name];
-  }
-  normalized["PYTHONUTF8"] = "1";
-  return normalized;
-}
-
 function pluginHelperEnvironment(
   environment: ProcessEnvironment,
 ): ProcessEnvironment {
-  return pythonUtf8Environment(
-    Object.fromEntries(
-      Object.entries(environment).filter(
-        ([name]) =>
-          !PLUGIN_HELPER_SECRET_ENVIRONMENT_VARIABLES.has(name.toUpperCase()),
-      ),
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      ([name]) =>
+        !PLUGIN_HELPER_SECRET_ENVIRONMENT_VARIABLES.has(name.toUpperCase()),
     ),
   );
 }
@@ -2797,73 +2687,6 @@ function safeArchivePath(value: string): string {
     );
   }
   return normalized;
-}
-
-async function requirePython(
-  candidate: string,
-  source: string,
-  environment: ProcessEnvironment,
-  protectedRoot: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  const resolved = await usablePython(
-    candidate,
-    environment,
-    protectedRoot,
-    signal,
-  );
-  if (resolved !== null) return resolved;
-  throw new PluginPythonUnavailableError(
-    `The ${source} interpreter is unavailable or unusable: ${candidate}. ` +
-      "The bundled Codex Security plugin requires Python 3.10 or later for scan execution; Python 3.10 also requires tomli.",
-  );
-}
-
-async function usablePython(
-  candidate: string,
-  environment: ProcessEnvironment = process.env,
-  protectedRoot: string = process.cwd(),
-  signal?: AbortSignal,
-): Promise<string | null> {
-  const command = await resolveTrustedExecutable(
-    isPythonPathCandidate(candidate)
-      ? expandHome(candidate, environment)
-      : candidate,
-    environment,
-    protectedRoot,
-  );
-  if (command === null) return null;
-  try {
-    const { stdout } = await execFile(
-      command.executable,
-      [
-        "-I",
-        "-c",
-        "import importlib.util,sys\nif sys.version_info < (3, 10): raise SystemExit(1)\nif sys.version_info < (3, 11) and importlib.util.find_spec('tomli') is None: raise SystemExit(1)\nprint('codex-security-python-ok')",
-      ],
-      {
-        env: command.environment,
-        encoding: "utf8",
-        timeout: 5_000,
-        windowsHide: true,
-        signal,
-      },
-    );
-    return stdout.trim() === "codex-security-python-ok"
-      ? command.executable
-      : null;
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    return null;
-  }
-}
-
-export function isPythonPathCandidate(candidate: string): boolean {
-  return (
-    candidate.includes("/") ||
-    candidate.includes("\\") ||
-    candidate.startsWith(".")
-  );
 }
 
 async function hasPluginManifest(root: string): Promise<boolean> {

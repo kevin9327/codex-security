@@ -44,7 +44,7 @@ async function fixture() {
     PYTHON: join(root, "missing-python"),
   };
   const client = new TestClient(
-    { pythonPath: environment.PYTHON },
+    {},
     {
       environment,
       runWorkbench,

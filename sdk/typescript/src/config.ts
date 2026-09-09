@@ -13,8 +13,6 @@ export interface JsonObject {
 export interface CodexSecurityConfig {
   pluginPath?: string;
   codexOverrides?: JsonObject;
-  /** @deprecated Helpers use Node.js; this option is ignored. */
-  pythonPath?: string;
 }
 
 export interface ScanModelConfiguration {

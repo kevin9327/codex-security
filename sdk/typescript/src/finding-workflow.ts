@@ -55,7 +55,7 @@ export function workflowDestination(url: string): string {
 
 /** State lives in the workbench database, never in sealed scan artifacts. */
 export class FindingWorkflow {
-  private options?: Promise<Omit<WorkbenchCommandOptions, "python">>;
+  private options?: Promise<WorkbenchCommandOptions>;
 
   constructor(
     readonly id: string,

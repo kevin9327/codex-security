@@ -19,7 +19,7 @@ import {
 
 /** @internal */
 export class SeverityStore {
-  private options?: Promise<Omit<WorkbenchCommandOptions, "python">>;
+  private options?: Promise<WorkbenchCommandOptions>;
 
   constructor(
     private readonly environment: NodeJS.ProcessEnv,
@@ -110,9 +110,7 @@ export class SeverityStore {
     );
   }
 
-  private async resolveOptions(): Promise<
-    Omit<WorkbenchCommandOptions, "python">
-  > {
+  private async resolveOptions(): Promise<WorkbenchCommandOptions> {
     const environment = {
       ...this.environment,
       CODEX_SECURITY_STATE_DIR: codexSecurityStateDirectory(this.environment),

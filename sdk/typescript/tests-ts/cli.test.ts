@@ -27,7 +27,6 @@ import {
   InvalidTargetError,
   OutputDirectoryError,
   OutputInsideProtectedRootError,
-  PluginPythonUnavailableError,
   ScanCostLimitExceededError,
   ScanInterruptedError,
   VERSION,
@@ -347,7 +346,6 @@ describe("CLI", () => {
       "LOG_LEVEL",
       "CODEX_SECURITY_STATE_DIR",
       "CODEX_HOME",
-      "PYTHON",
       "GH_HOST",
       "GH_TOKEN",
       "GITHUB_TOKEN",
@@ -992,7 +990,6 @@ describe("CLI", () => {
       ["bulk-scan", "--model", "gpt-5.6-terra", "--effort", "high"],
       ["bulk-scan", "--workers", "8", "--mode", "deep"],
       ["bulk-scan", "--max-attempts=3", "--plugin-path", "./plugin"],
-      ["bulk-scan", "--python=python3"],
       ["--format", "toon", "bulk-scan", "--workers", "8"],
       ["bulk-scan", "--knowledge-base", "/shared/threat-models"],
       [
@@ -2428,9 +2425,7 @@ describe("CLI", () => {
     expect(help.text()).toContain(
       "Codex Security plugin directory or ZIP (default: bundled plugin).",
     );
-    expect(help.text()).toContain(
-      "Deprecated and ignored; bundled helpers use Node.js.",
-    );
+    expect(help.text()).not.toContain("--python");
     expect(help.text()).toContain(
       "codex-security bulk-scan repositories.csv " +
         "--output-dir /path/outside/repositories/results " +
@@ -2584,7 +2579,6 @@ describe("CLI", () => {
           "1.5",
           "--plugin-path",
           "plugin.zip",
-          "--python=/managed/python",
           "--codex",
           "features.goals=true",
           "--output-dir",
@@ -2610,7 +2604,6 @@ describe("CLI", () => {
     });
     expect(pathConfig).toMatchObject({
       pluginPath: "plugin.zip",
-      pythonPath: "/managed/python",
       codexOverrides: { features: { goals: true } },
     });
 
@@ -2792,6 +2785,13 @@ describe("CLI", () => {
       ],
       [["scan", ".", "--mode", "bogus"], "Invalid option"],
       [["scan", ".", "--unknown"], "Unknown flag: --unknown"],
+      [["scan", ".", "--python=python3"], "Unknown flag: --python"],
+      [
+        ["scan-components", ".", "--output-dir", "/output", "--python=python3"],
+        "Unknown flag: --python",
+      ],
+      [["bulk-scan", "--python=python3"], "Unknown flag: --python"],
+      [["export", ".", "--python=python3"], "Unknown flag: --python"],
       [["scan", ".", "--path", "--dry-run"], "Missing value for flag"],
       [["scan", ".", "--model", "--dry-run"], "Missing value for flag"],
       [["scan", ".", "--effort", "--dry-run"], "Missing value for flag"],
@@ -2943,8 +2943,6 @@ describe("CLI", () => {
         "repo",
         "--plugin-path",
         "plugin.zip",
-        "--python",
-        "/managed/python",
         "--codex",
         "features.goals=true",
         "--json",
@@ -2967,7 +2965,6 @@ describe("CLI", () => {
     expect(stderr.text()).toContain("Scan complete");
     expect(captured.config).toEqual({
       pluginPath: "plugin.zip",
-      pythonPath: "/managed/python",
       codexOverrides: { features: { goals: true } },
     });
     expect(repository).toBe("repo");
@@ -4110,12 +4107,6 @@ describe("CLI", () => {
       [
         "git ref naming a forbidden branch",
         new InvalidTargetError("unknown Git ref: origin/forbidden-paths"),
-      ],
-      [
-        "python interpreter unavailable",
-        new PluginPythonUnavailableError(
-          "The configured plugin Python interpreter is unavailable or unusable: /usr/bin/python3",
-        ),
       ],
     ];
 

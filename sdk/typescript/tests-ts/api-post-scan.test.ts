@@ -123,7 +123,6 @@ async function startFailedPostScan(scenario: FailedPostScanScenario) {
     {
       environment: {},
       prepareRuntime: async () => runtime,
-      resolvePluginPython: async () => "/unavailable/python",
       prepareOutputDir: async () => scanDir,
       repositoryRevision: async () => "deadbeef",
       prepareScanArtifactRestorer: async (...args) => {
