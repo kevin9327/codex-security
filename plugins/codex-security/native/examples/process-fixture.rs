@@ -37,6 +37,31 @@ fn hex(value: &[u8]) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[cfg(windows)]
+fn file_identity(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
+    let mut info = FILE_ID_INFO::default();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        None
+    } else {
+        Some(format!(
+            "{}:{}",
+            info.VolumeSerialNumber,
+            hex(&info.FileId.Identifier)
+        ))
+    }
+}
+
 #[cfg(unix)]
 static SIGNALS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(unix)]
@@ -153,6 +178,7 @@ fn launch(args: &[OsString]) {
             0
         );
         node.arg((handle as usize).to_string());
+        node.env("PROCESS_SENTINEL_ID", file_identity(handle).unwrap());
     }
     let status = node.status().unwrap();
     #[cfg(unix)]
@@ -196,6 +222,10 @@ fn main() {
                         DUPLICATE_SAME_ACCESS
                     ),
                     0
+                );
+                assert_eq!(
+                    file_identity(duplicate),
+                    Some(env::var("PROCESS_SENTINEL_ID").unwrap())
                 );
                 drop(OwnedHandle::from_raw_handle(duplicate));
             }
@@ -241,11 +271,11 @@ fn main() {
             }
             #[cfg(windows)]
             {
-                use windows_sys::Win32::Foundation::GetHandleInformation;
-                let mut flags = 0;
+                // The child may reuse the numeric value for an unrelated handle.
                 println!(
                     "closed={}",
-                    unsafe { GetHandleInformation(descriptor as _, &mut flags) } == 0
+                    file_identity(descriptor as _)
+                        != Some(env::var("PROCESS_SENTINEL_ID").unwrap())
                 );
             }
         }

@@ -138,13 +138,14 @@ function copyMetadataProof(root: string) {
 
     const held = open(destination);
     try {
+      // Attribute-only access is unaffected by data-handle sharing modes.
       assert.deepEqual(
         native.setWindowsTimes(
           pathBytes(destination),
           captured.atimeNs,
           captured.mtimeNs,
         ),
-        { error: 32, path: pathBytes(destination) },
+        { error: 0, path: null },
       );
     } finally {
       success(held.close());

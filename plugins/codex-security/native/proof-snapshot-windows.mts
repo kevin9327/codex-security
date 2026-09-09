@@ -64,7 +64,7 @@ from pathlib import Path
 from contextlib import closing
 results = []
 with tempfile.TemporaryDirectory(prefix="snapshot-oracle-") as base:
-    for spec in json.loads(sys.stdin.read()):
+    for spec in json.loads(sys.stdin.buffer.read()):
         root = Path(base, spec["name"]); root.mkdir()
         seed = root / "seed.sqlite3"
         with closing(sqlite3.connect(seed)) as db:
