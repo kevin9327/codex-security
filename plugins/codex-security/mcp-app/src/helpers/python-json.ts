@@ -61,7 +61,12 @@ export function assignJson(target: Row, source: Row): void {
 // json.dumps(..., ensure_ascii=True, indent=2), with compact persistence support.
 export function stringifyJson(
   value: unknown,
-  options: { compact?: boolean; allowNan?: boolean; sortKeys?: boolean } = {},
+  options: {
+    compact?: boolean;
+    allowNan?: boolean;
+    sortKeys?: boolean;
+    separators?: readonly [string, string];
+  } = {},
 ): string {
   const quote = (text: string) =>
     JSON.stringify(text).replace(
@@ -108,12 +113,16 @@ export function stringifyJson(
                 return left.length - right.length;
               })
             : objectEntries(item)
-          ).map(([key, child]) => `${quote(key)}: ${encode(child, depth + 1)}`);
+          ).map(
+            ([key, child]) =>
+              `${quote(key)}${options.separators?.[1] ?? ": "}${encode(child, depth + 1)}`,
+          );
       const [open, close] = array ? ["[", "]"] : ["{", "}"];
       if (entries.length === 0) return open + close;
-      if (options.compact) return open + entries.join(", ") + close;
+      if (options.compact)
+        return open + entries.join(options.separators?.[0] ?? ", ") + close;
       const prefix = "  ".repeat(depth + 1);
-      return `${open}\n${prefix}${entries.join(`,\n${prefix}`)}\n${"  ".repeat(depth)}${close}`;
+      return `${open}\n${prefix}${entries.join(`${options.separators?.[0] ?? ","}\n${prefix}`)}\n${"  ".repeat(depth)}${close}`;
     }
     return JSON.stringify(item);
   }

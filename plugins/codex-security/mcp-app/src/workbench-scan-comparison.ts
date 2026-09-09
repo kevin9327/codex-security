@@ -1,4 +1,4 @@
-import decimalDigit from "@unicode/unicode-15.0.0/General_Category/Decimal_Number/regex.js";
+import { normalizedUuid } from "./workbench-validation";
 import type { Connection, Parameter } from "../../native/sqlite.mjs";
 import { hasText } from "./helpers/finding-root-cause";
 import {
@@ -64,36 +64,8 @@ export interface ComparisonCallbacks {
 export class ScanComparisonError extends Error {}
 
 export function resolveScanId(connection: Connection, value: string): string {
-  const hex = value
-    .replaceAll("urn:", "")
-    .replaceAll("uuid:", "")
-    .replace(/^[{}]+|[{}]+$/gu, "")
-    .replaceAll("-", "");
-  if (Array.from(hex).length === 32) {
-    const normalized = Array.from(hex, (character) => {
-      if (!decimalDigit.test(character)) return character;
-      const point = character.codePointAt(0)!;
-      let first = point;
-      while (decimalDigit.test(String.fromCodePoint(first - 1))) first--;
-      return String((point - first) % 10);
-    })
-      .join("")
-      .replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
-    if (/^\+?(?:0[xX]_?)?[\da-fA-F]+(?:_[\da-fA-F]+)*$/u.test(normalized)) {
-      const digits = normalized
-        .replace(/^\+/, "")
-        .replace(/^0[xX]/u, "")
-        .replaceAll("_", "");
-      const canonical = BigInt(`0x${digits}`).toString(16).padStart(32, "0");
-      return [
-        canonical.slice(0, 8),
-        canonical.slice(8, 12),
-        canonical.slice(12, 16),
-        canonical.slice(16, 20),
-        canonical.slice(20),
-      ].join("-");
-    }
-  }
+  const canonical = normalizedUuid(value);
+  if (canonical !== null) return canonical;
   const length = Array.from(value).length;
   if (length < 8)
     throw new ScanComparisonError(
