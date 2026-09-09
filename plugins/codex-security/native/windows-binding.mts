@@ -33,6 +33,7 @@ export interface WindowsBinding {
   windowsReadFileCrt(path: Buffer): { errno: number; value: Buffer };
   windowsArguments(): Buffer[];
   windowsEnvironment(name: Buffer): Buffer | null;
+  windowsInvariantLowercase(value: Buffer): WindowsResult<Buffer>;
   windowsAbsolutePath(path: Buffer): WindowsResult<Buffer>;
   windowsDirectoryEntries(
     path: Buffer,

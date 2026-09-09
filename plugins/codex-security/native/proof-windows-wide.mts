@@ -23,6 +23,15 @@ export function wideProcessProof(root: string): Record<string, boolean> {
 function worker(root: string): Record<string, boolean> {
   const native = loadWindowsBinding();
   const files = windowsFileSystem(native);
+  const lowercase = native.windowsInvariantLowercase(
+    widePath("ABC-\ud800-\udfff"),
+  );
+  assert.equal(lowercase.error, 0);
+  assert.equal(pathText(lowercase.value), "abc-\ud800-\udfff");
+  assert.deepEqual(native.windowsInvariantLowercase(Buffer.alloc(0)), {
+    error: 0,
+    value: Buffer.alloc(0),
+  });
   const cwd = win32.join(root, "cwd-\ud800");
   const expectedArguments = [
     "arg-high-\ud800",

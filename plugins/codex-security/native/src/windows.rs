@@ -17,6 +17,7 @@ use windows_sys::Win32::{
         GetLastError, LocalFree, SetLastError, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER,
         ERROR_LOCK_VIOLATION, HANDLE, INVALID_HANDLE_VALUE,
     },
+    Globalization::{LCMapStringEx, LCMAP_LOWERCASE, LOCALE_NAME_INVARIANT},
     Storage::FileSystem::*,
     System::Diagnostics::Debug::{
         FormatMessageW, FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_FROM_SYSTEM,
@@ -201,6 +202,53 @@ pub fn windows_arguments() -> Vec<Buffer> {
 #[napi]
 pub fn windows_environment(name: Buffer) -> napi::Result<Option<Buffer>> {
     Ok(std::env::var_os(os_string(name)?).map(|value| wide_bytes(value.encode_wide())))
+}
+
+// Python ntpath.normcase uses the invariant Windows filesystem case mapping.
+#[napi]
+pub fn windows_invariant_lowercase(value: Buffer) -> napi::Result<BufferResult> {
+    let value = wide_path(value)?;
+    let length = i32::try_from(value.len() - 1)
+        .map_err(|_| invalid("String exceeds the Win32 character count"))?;
+    if length == 0 {
+        return Ok(BufferResult {
+            error: 0,
+            value: Vec::new().into(),
+        });
+    }
+    let map = |output: *mut u16, capacity: i32| unsafe {
+        LCMapStringEx(
+            LOCALE_NAME_INVARIANT,
+            LCMAP_LOWERCASE,
+            value.as_ptr(),
+            length,
+            output,
+            capacity,
+            null(),
+            null(),
+            0,
+        )
+    };
+    let capacity = map(null_mut(), 0);
+    if capacity == 0 {
+        return Ok(BufferResult {
+            error: unsafe { GetLastError() },
+            value: Vec::new().into(),
+        });
+    }
+    let mut output = vec![0_u16; capacity as usize];
+    let written = map(output.as_mut_ptr(), capacity);
+    if written == 0 {
+        return Ok(BufferResult {
+            error: unsafe { GetLastError() },
+            value: Vec::new().into(),
+        });
+    }
+    output.truncate(written as usize);
+    Ok(BufferResult {
+        error: 0,
+        value: wide_bytes(output),
+    })
 }
 
 // CPython chmod changes only the readonly attribute on Windows.
