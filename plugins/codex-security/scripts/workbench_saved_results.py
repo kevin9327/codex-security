@@ -838,6 +838,60 @@ def merge_saved_results(
             for relative in dict.fromkeys(current_checkpoint_paths or [])
             if relative in accepted_root_paths
         ]
+    identity_decisions: dict[str, str] = {}
+    identity_rejections: dict[str, dict[str, Any]] = {}
+
+    def previous_identity_keys(item: dict[str, Any]) -> list[str]:
+        previous = item.get("previousFindings", [])
+        return (
+            [
+                _finding_key(finding)
+                for finding in previous
+                if isinstance(finding, dict)
+                and not finding_candidate_id(finding)
+                and valid_finding(finding)
+            ]
+            if isinstance(previous, list)
+            else []
+        )
+
+    def record_identity_decision(item: dict[str, Any], decision: str) -> None:
+        for key in previous_identity_keys(item):
+            if key not in identity_decisions:
+                identity_decisions[key] = decision
+                if decision in {"rejected", "not_applicable"}:
+                    identity_rejections[key] = item
+
+    # Optional candidate IDs cannot be required to resolve a source finding.
+    # Reuse the existing source identity only for accepted Standard root decisions.
+    for relative in dict.fromkeys(current_checkpoint_paths or []):
+        if relative not in accepted_root_paths:
+            continue
+        draft = drafts_by_path[relative]
+        for field in ("deferred", "surfaces", "explicitExclusions"):
+            items = draft["coverage"].get(field, [])
+            for item in items if isinstance(items, list) else []:
+                if isinstance(item, dict) and (
+                    field == "deferred" or item.get("disposition") == "needs_follow_up"
+                ):
+                    record_identity_decision(item, "pending")
+        for finding in draft["findings"]:
+            if (
+                isinstance(finding, dict)
+                and not finding_candidate_id(finding)
+                and valid_finding(finding)
+            ):
+                identity_decisions.setdefault(_finding_key(finding), "reported")
+        for field in ("surfaces", "explicitExclusions"):
+            items = draft["coverage"].get(field, [])
+            for item in items if isinstance(items, list) else []:
+                if isinstance(item, dict) and item.get("disposition") in {
+                    "reported",
+                    "rejected",
+                    "not_applicable",
+                }:
+                    record_identity_decision(item, item["disposition"])
+
     for draft in represented_parents:
         for finding in draft["findings"]:
             if valid_finding(finding):
@@ -917,6 +971,22 @@ def merge_saved_results(
         if "threatModel" not in manifest["scan"] and isinstance(draft.get("threatModel"), dict):
             manifest["scan"]["threatModel"] = copy.deepcopy(draft["threatModel"])
         for value in draft["findings"]:
+            if isinstance(value, dict) and not finding_candidate_id(value):
+                key = _finding_key(value)
+                if key in identity_rejections:
+                    items = [identity_rejections[key], *coverage.get("surfaces", [])]
+                    for item in items:
+                        if not isinstance(item, dict) or key not in previous_identity_keys(item):
+                            continue
+                        history = item["previousFindings"]
+                        if not any(
+                            _finding_key(previous) == key
+                            and _finding_content(previous) == _finding_content(value)
+                            for previous in history
+                            if isinstance(previous, dict)
+                        ):
+                            history.append(copy.deepcopy(value))
+                    continue
             if relative == "parent" and parent_manifest:
                 finding = copy.deepcopy(value)
                 _ensure_finding_identity(finding, candidate_only=True)
@@ -1145,6 +1215,14 @@ def merge_saved_results(
                 retained_items.append(item)
                 continue
             decision = latest_decisions.get((candidate_owner(item, None), item.get("candidateId")))
+            if decision is None:
+                decisions = {
+                    identity_decisions[key]
+                    for key in previous_identity_keys(item)
+                    if key in identity_decisions
+                }
+                if len(decisions) == 1:
+                    decision = next(iter(decisions))
             disposition = (
                 "pending"
                 if field == "deferred" or item.get("disposition") == "needs_follow_up"
@@ -1375,6 +1453,24 @@ def preserve_scan_results_locked(
                 return True
             if recovery_source_digests is None:
                 raise ContractError("Stopped scan sources changed after terminal publication.")
+    current_checkpoints = []
+    if (
+        scan["mode"] in {"standard", "diff"}
+        and scan["recipe_json"]
+        and json.loads(scan["recipe_json"]).get("validationMode") == "custom"
+    ):
+        checkpoint = connection.execute(
+            "SELECT * FROM scan_checkpoints WHERE scan_id = ? AND source_path = '.' ORDER BY sequence DESC LIMIT 1",
+            (scan_id,),
+        ).fetchone()
+        if checkpoint is not None:
+            path = checkpoint["checkpoint_path"]
+            _, digest = _read_saved_result(scan_dir, path, scan_id)
+            if digest != _digest(json.loads(checkpoint["snapshot_json"])):
+                raise ContractError(
+                    "The accepted custom-validation checkpoint changed after it was saved."
+                )
+            current_checkpoints.append(path)
     binding = {**db.workbench_completion_binding(scan, scan["completed_at"]), "status": outcome}
     documents = merge_saved_results(
         scan_dir,
@@ -1391,6 +1487,7 @@ def preserve_scan_results_locked(
             f"{scan['failure_message'] or ''}"
         ).strip(),
         frozen_source_digests=frozen_source_digests,
+        current_checkpoint_paths=current_checkpoints,
         allow_frozen_legacy_parent=(
             include_parent_with_recovery
             or (

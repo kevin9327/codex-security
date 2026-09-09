@@ -406,22 +406,23 @@ export async function runCustomValidation(options: {
       (value): value is string =>
         typeof value === "string" && value.trim().length > 0,
     );
-    if (sourceCandidateId !== undefined) {
-      coverage.surfaces.push({
-        id: `custom-validation-${candidate.candidateId}`,
-        candidateId: sourceCandidateId,
-        label: candidate.finding.title,
-        disposition:
-          validation.disposition === "reportable"
-            ? "reported"
-            : validation.disposition === "suppressed"
-              ? "rejected"
-              : validation.disposition === "deferred"
-                ? "needs_follow_up"
-                : "not_applicable",
-        receiptRefs: [RESULTS, ...validation.artifact_paths],
-      });
-    }
+    coverage.surfaces.push({
+      id: `custom-validation-${candidate.candidateId}`,
+      ...(sourceCandidateId === undefined
+        ? {}
+        : { candidateId: sourceCandidateId }),
+      previousFindings: [structuredClone(candidate.finding)],
+      label: candidate.finding.title,
+      disposition:
+        validation.disposition === "reportable"
+          ? "reported"
+          : validation.disposition === "suppressed"
+            ? "rejected"
+            : validation.disposition === "deferred"
+              ? "needs_follow_up"
+              : "not_applicable",
+      receiptRefs: [RESULTS, ...validation.artifact_paths],
+    });
     for (const id of candidate.surfaceIds) {
       const values = decisions.get(id) ?? [];
       values.push(update);
@@ -440,6 +441,7 @@ export async function runCustomValidation(options: {
           validation.evidence.join("\n"),
         paths: candidate.finding.locations.map((location) => location.path),
         surfaceIds: candidate.surfaceIds,
+        previousFindings: [structuredClone(candidate.finding)],
       });
     }
     if (validation.disposition !== "reportable") continue;
