@@ -239,6 +239,11 @@ export function windowsFileSystem(native: WindowsBinding) {
       const link = !follow && info.reparseTag === 0xa000000c;
       const directory =
         (info.attributes & flags.FILE_ATTRIBUTE_DIRECTORY) !== 0;
+      const size =
+        directory || type.value !== 1
+          ? { error: 0, value: "0" }
+          : handle.size();
+      check(size.error, path);
       // Match pathlib's Windows stat permissions, including executable suffixes.
       const permissions =
         (info.attributes & 1 ? 0o444 : 0o666) |
@@ -246,6 +251,7 @@ export function windowsFileSystem(native: WindowsBinding) {
           ? 0o111
           : 0);
       return {
+        size: BigInt(size.value),
         mode:
           (link
             ? 0o120000
