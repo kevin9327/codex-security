@@ -6,6 +6,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 
+import pytest
 from test_workbench_standard_deep_results import accepted_standard_worker, deep_scan_fixture
 from workbench_test_support import run_workbench, write_checkpoint, write_completed_contract
 
@@ -255,6 +256,92 @@ def test_child_registration_against_changed_source_cannot_reuse_parent_coverage(
     )
     assert "original source" in result["stderr"]
     assert not (child_dir / "findings.json").exists()
+
+
+@pytest.mark.parametrize("receipt_change", [None, "contents", "symlink"])
+def test_completed_checkpoint_continuation_keeps_bound_reports_receipts_and_poc_files(
+    tmp_path: Path,
+    receipt_change: str | None,
+) -> None:
+    state, repository, scan_dir, scan_id = scan_fixture(tmp_path)
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    write_completed_contract(contract, scan_id, repository, relative_path="clean.ts")
+    payload = semantic(scan_id, ["clean.ts", "pending.ts"])
+    payload["complete"] = True
+    payload["findings"] = json.loads((contract / "findings.json").read_text())["findings"]
+    payload["findings"][0]["writeup"] = {"reportPath": "findings/saved/saved.md"}
+    payload["coverage"] = json.loads((contract / "coverage.json").read_text())
+    payload["coverage"]["reviewedFiles"] = ["clean.ts", "pending.ts"]
+    payload["coverage"]["surfaces"][0]["receiptRefs"] = ["artifacts/review/clean.json"]
+    artifacts = {
+        "findings/saved/saved.md": b"# Saved finding\n\n[Proof](poc/sample.bin)\n",
+        "findings/saved/poc/sample.bin": b"\x00saved evidence\xff",
+        "artifacts/review/clean.json": b'{"reviewed": ["clean.ts", "pending.ts"]}\n',
+    }
+    for relative, contents in artifacts.items():
+        path = scan_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(contents)
+    save(state, scan_id, write_checkpoint(scan_dir / "checkpoints", payload))
+    run_workbench(state, "fail-scan", "--scan-id", scan_id, "--message", "Export interrupted")
+    parent_seal = (scan_dir / "scan-manifest.json").read_bytes()
+    recipe = run_workbench(state, "get-scan-recipe", "--scan-id", scan_id)["recipe"]
+    child_dir = tmp_path / "child"
+    child_dir.mkdir(mode=0o700)
+    child = run_workbench(
+        state,
+        "register-cli-scan",
+        "--repository",
+        str(repository),
+        "--scan-dir",
+        str(child_dir),
+        "--recipe-json",
+        json.dumps(recipe),
+        "--parent-scan-id",
+        scan_id,
+    )["scanId"]
+    if receipt_change is not None:
+        receipt = scan_dir / "artifacts/review/clean.json"
+        if receipt_change == "contents":
+            receipt.write_text("changed receipt\n")
+        else:
+            outside = tmp_path / "outside.json"
+            outside.write_text("outside evidence\n")
+            receipt.unlink()
+            receipt.symlink_to(outside)
+        rejected = run_workbench(
+            state,
+            "continue-scan-checkpoint",
+            "--scan-id",
+            child,
+            "--parent-scan-id",
+            scan_id,
+            check=False,
+        )
+        assert rejected["returncode"] != 0
+        assert (
+            "sealed artifact changed"
+            if receipt_change == "contents"
+            else "inside the scan directory"
+        ) in rejected["stderr"]
+        assert not (child_dir / "scan-manifest.json").exists()
+        assert (scan_dir / "scan-manifest.json").read_bytes() == parent_seal
+        return
+    continued = run_workbench(
+        state, "continue-scan-checkpoint", "--scan-id", child, "--parent-scan-id", scan_id
+    )
+    assert continued["completionReady"] is True
+    run_workbench(state, "prepare-scan-completion", "--scan-id", child)
+    completed = run_workbench(state, "complete-scan", "--scan-id", child)["scan"]
+    assert completed["progress"]["status"] == "complete"
+    assert json.loads((child_dir / "coverage.json").read_text())["completeness"] == "complete"
+    findings = json.loads((child_dir / "findings.json").read_text())["findings"]
+    assert findings[0]["writeup"] == {"reportPath": "findings/saved/saved.md"}
+    for relative, contents in artifacts.items():
+        assert (child_dir / relative).read_bytes() == contents
+        assert (scan_dir / relative).read_bytes() == contents
+    assert (scan_dir / "scan-manifest.json").read_bytes() == parent_seal
 
 
 def test_worker_checkpoint_commits_under_registered_scan_with_clean_source_coverage(

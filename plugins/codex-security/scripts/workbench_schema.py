@@ -872,6 +872,7 @@ MIGRATIONS = (
         "persist semantic scan checkpoints and reviewed source files",
         """
         ALTER TABLE scans ADD COLUMN continuation_cost_json TEXT;
+        ALTER TABLE scans ADD COLUMN continuation_checkpoint_path TEXT;
         CREATE TABLE scan_checkpoints (
             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
             scan_id TEXT NOT NULL REFERENCES scans(id) ON DELETE CASCADE,

@@ -747,7 +747,8 @@ export function createCodexSecurityServer(): McpServer {
               scanRoot: begun.run.scanDir,
               repoRoot: begun.run.targetPath,
               scanId: begun.run.scanId,
-              scope: begun.run.scope
+              scope: begun.run.scope,
+              stateDirectory: CONFIGURED_WORKBENCH_STATE_DIR ?? await fallbackWorkbenchStateDir
             }
           }),
           pluginRoot: PLUGIN_ROOT,

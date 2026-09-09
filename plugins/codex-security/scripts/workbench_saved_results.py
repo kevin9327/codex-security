@@ -466,9 +466,11 @@ def merge_saved_results(
     frozen_source_digests: dict[str, str] | None = None,
     allow_frozen_legacy_parent: bool = False,
     include_parent: bool = True,
+    preserve_sources: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
     """Read only bound parent/worker files; return an unsealed loss-preserving union."""
     initial_warnings = set(warnings)
+    preserve_sources = preserve_sources or set()
     parent: dict[str, Any] | None = None
     parent_manifest: dict[str, Any] | None = None
     if include_parent and (frozen_source_digests is None or allow_frozen_legacy_parent):
@@ -795,9 +797,12 @@ def merge_saved_results(
                 for saved_path, current, saved_worker in sources
             )
         )
+        if relative in preserve_sources:
+            superseded = False
         if (
             (relative != "parent" or not parent_manifest)
             and not superseded
+            and relative not in preserve_sources
             and (
                 draft.get("complete") is False
                 or draft["coverage"].get("completeness") != "complete"
@@ -1033,7 +1038,21 @@ def merge_saved_results(
             used.add(item["id"])
             if field == "surfaces":
                 item.setdefault("receiptRefs", [])
-    if stopped or any(warning not in initial_warnings for warning in warnings):
+    if (
+        stopped
+        or any(warning not in initial_warnings for warning in warnings)
+        or (
+            preserve_sources
+            and (
+                coverage.get("deferred")
+                or any(
+                    row.get("disposition") == "needs_follow_up"
+                    for row in coverage.get("surfaces", [])
+                    if isinstance(row, dict)
+                )
+            )
+        )
+    ):
         coverage["completeness"] = "partial"
     if stopped:
         if not isinstance(coverage.get("deferred"), list):

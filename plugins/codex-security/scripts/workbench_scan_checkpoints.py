@@ -11,7 +11,12 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from finalize_scan_contract import open_scan_local_file_descriptor, write_scan_local_bytes
+from finalize_scan_contract import (
+    ContractError,
+    _read_scan_local_json,
+    open_scan_local_file_descriptor,
+    write_scan_local_bytes,
+)
 from workbench_target import git_directory_snapshot_paths, source_directory_snapshot_paths
 from workbench_validation import path_within_scope
 
@@ -141,8 +146,10 @@ def record_checkpoint(
 def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, Any] | None:
     rows = connection.execute(
         "SELECT * FROM scan_checkpoints WHERE sequence IN (SELECT MAX(sequence) "
-        "FROM scan_checkpoints WHERE scan_id = ? GROUP BY source_path) ORDER BY source_path",
-        (scan_id,),
+        "FROM scan_checkpoints WHERE scan_id = ? GROUP BY source_path) OR "
+        "(scan_id = ? AND checkpoint_path = (SELECT continuation_checkpoint_path FROM scans WHERE id = ?)) "
+        "ORDER BY source_path, sequence",
+        (scan_id, scan_id, scan_id),
     ).fetchall()
     if not rows:
         return None
@@ -184,8 +191,10 @@ def checkpoint_summary(connection: sqlite3.Connection, scan_id: str) -> dict[str
         "COALESCE(json_extract(snapshot_json, '$.complete'), 1) AND "
         "json_extract(snapshot_json, '$.coverage.completeness') = 'complete' AS complete "
         "FROM scan_checkpoints WHERE sequence IN (SELECT MAX(sequence) FROM scan_checkpoints "
-        "WHERE scan_id = ? GROUP BY source_path) ORDER BY source_path",
-        (scan_id,),
+        "WHERE scan_id = ? GROUP BY source_path) OR "
+        "(scan_id = ? AND checkpoint_path = (SELECT continuation_checkpoint_path FROM scans WHERE id = ?)) "
+        "ORDER BY source_path, sequence",
+        (scan_id, scan_id, scan_id),
     ).fetchall()
     if not rows:
         return None
@@ -257,6 +266,72 @@ def checkpoint_completion_ready(checkpoint: dict[str, Any], mode: str) -> bool:
     )
 
 
+def copy_checkpoint_artifacts(
+    db: Any, parent: sqlite3.Row, child_root: Path, checkpoint: dict[str, Any]
+) -> None:
+    """Keep referenced reports, coverage receipts, and report-local PoCs with their result."""
+    parent_root = db.require_canonical_scan_directory(Path(parent["scan_dir"]))
+    sealed_artifacts = (
+        {
+            item["path"]: item["sha256"]
+            for item in _read_scan_local_json(
+                parent_root, "scan-manifest.json", "Saved scan manifest"
+            )["scan"]["artifacts"]
+        }
+        if parent["seal_manifest_digest"] is not None
+        else {}
+    )
+    files: set[str] = set()
+    reports: set[str] = set()
+
+    def references(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                references(item)
+        elif isinstance(value, dict):
+            writeup = value.get("writeup")
+            report = writeup.get("reportPath") if isinstance(writeup, dict) else None
+            if isinstance(report, str) and re.fullmatch(
+                r"findings/([a-z0-9][a-z0-9._-]*)/\1\.md", report
+            ):
+                reports.add(report)
+                files.add(report)
+            for receipt in (
+                value.get("receiptRefs", []) if isinstance(value.get("receiptRefs"), list) else []
+            ):
+                if isinstance(receipt, str) and receipt.startswith("artifacts/"):
+                    files.add(receipt)
+            for item in value.values():
+                references(item)
+
+    references(checkpoint["sources"])
+    for report in sorted(reports):
+        poc = parent_root / Path(report).parent / "poc"
+        if not poc.exists() and not poc.is_symlink():
+            continue
+        db.deep_scan.deep_scan_path(parent, str(poc), "Saved report evidence", kind="directory")
+        for directory, directories, filenames in os.walk(poc, followlinks=False):
+            for path in (Path(directory), *(Path(directory) / name for name in directories)):
+                db.deep_scan.deep_scan_path(
+                    parent, str(path), "Saved report evidence", kind="directory"
+                )
+            files.update(
+                (Path(directory) / name).relative_to(parent_root).as_posix() for name in filenames
+            )
+    for relative in sorted(files):
+        descriptor = open_scan_local_file_descriptor(
+            parent_root, relative, "Saved checkpoint artifact"
+        )
+        with os.fdopen(descriptor, "rb") as source:
+            contents = source.read()
+        if (
+            relative in sealed_artifacts
+            and hashlib.sha256(contents).hexdigest() != sealed_artifacts[relative]
+        ):
+            raise ContractError(f"{relative}: sealed artifact changed after completion")
+        write_scan_local_bytes(child_root, relative, contents)
+
+
 def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> dict[str, Any]:
     """Seed a new bound scan from saved semantic results without reopening its parent."""
     # Reuse the stopped-result merger so finding identity and evidence retention have one owner.
@@ -300,6 +375,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         completion_ready = checkpoint_completion_ready(checkpoint, parent["mode"])
         worker_ids = db.deep_scan.restore_checkpoint_workers(connection, parent, child, db.now())
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
+        copy_checkpoint_artifacts(db, parent, root, checkpoint)
         for source in checkpoint["sources"]:
             snapshot = {
                 "scanId": child["id"],
@@ -344,8 +420,12 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         path = root / "checkpoints" / f"{hashlib.sha256(contents).hexdigest()}.json"
         write_scan_local_bytes(root, path.relative_to(root).as_posix(), contents)
         connection.execute(
-            "UPDATE scans SET continuation_cost_json = ? WHERE id = ?",
-            (db.parse_scan_cost(args.cost_json), child["id"]),
+            "UPDATE scans SET continuation_cost_json = ?, continuation_checkpoint_path = ? WHERE id = ?",
+            (
+                db.parse_scan_cost(args.cost_json),
+                path.relative_to(root).as_posix() if child["mode"] == "deep" else None,
+                child["id"],
+            ),
         )
         record_checkpoint(connection, child, path, db.now())
         for filename, document in (
@@ -373,3 +453,44 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             "completionReady": completion_ready,
             "restoredWorkers": len(worker_ids),
         }
+
+
+def continued_deep_documents(
+    connection: sqlite3.Connection,
+    scan: sqlite3.Row,
+    binding: dict[str, Any],
+    warnings: list[str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+    """Preserve inherited work when a continued coordinator publishes its result.
+
+    A partial worker is not a completed independent pass. Its saved findings and
+    pending evidence still belong in the final result, even if the deadline means
+    that the resumed coordinator cannot dispatch another discovery.
+    """
+    from workbench_saved_results import _digest, _read_saved_result, merge_saved_results
+
+    relative = scan["continuation_checkpoint_path"]
+    if scan["mode"] != "deep" or relative is None:
+        return None
+    saved = connection.execute(
+        "SELECT snapshot_json FROM scan_checkpoints WHERE scan_id = ? AND checkpoint_path = ?",
+        (scan["id"], relative),
+    ).fetchone()
+    if saved is None:
+        raise SystemExit("The continuation's inherited checkpoint is missing from saved state.")
+    root = Path(scan["scan_dir"])
+    _, digest = _read_saved_result(root, relative, scan["id"])
+    if digest != _digest(json.loads(saved["snapshot_json"])):
+        raise SystemExit("The continuation's inherited checkpoint changed after it was saved.")
+    return merge_saved_results(
+        root,
+        scan["id"],
+        binding,
+        [],
+        warnings,
+        stopped=False,
+        reason="",
+        frozen_source_digests={relative: digest},
+        allow_frozen_legacy_parent=True,
+        preserve_sources={relative},
+    )

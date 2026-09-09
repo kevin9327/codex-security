@@ -1540,8 +1540,8 @@ def complete_scan_locked(
             scan_dir,
             expected_coverage_mode=expected_coverage_mode(scan),
             completion_binding=completion_binding,
-            # Save the finished Deep result as submitted. Worker drafts and
-            # recovery repairs belong to the stopped-scan path.
+            # Ordinary Deep results remain as submitted. A linked continuation
+            # also retains inherited work that its coordinator did not consume.
             completion_warnings=warnings if scan["mode"] != "deep" else None,
             draft_documents=saved_results.merge_saved_results(
                 scan_dir,
@@ -1556,6 +1556,10 @@ def complete_scan_locked(
                 reason="",
             )
             if scan["mode"] != "deep" and current_manifest_path is not None and not already_sealed
+            else scan_checkpoints.continued_deep_documents(
+                connection, scan, completion_binding, warnings
+            )
+            if not already_sealed
             else None,
         )
         add_warning()
@@ -3482,6 +3486,7 @@ def main() -> None:
                     parse_scan_recipe=parse_scan_recipe,
                     scan_contract=scan_contract,
                     require_scan_directory=require_canonical_scan_directory,
+                    read_coverage=coverage_for_comparison,
                 )
             except SystemExit as exc:
                 if not args.allow_unavailable:

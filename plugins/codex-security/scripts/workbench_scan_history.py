@@ -41,6 +41,7 @@ def cli_scan_resume(
     parse_scan_recipe: Callable[[str, Path], dict[str, Any]],
     scan_contract: Callable[[sqlite3.Row], dict[str, Any]],
     require_scan_directory: Callable[[Path], Path],
+    read_coverage: Callable[[sqlite3.Row], dict[str, Any]],
 ) -> dict[str, Any]:
     if scan["mode"] not in {"standard", "deep"} or scan["recipe_json"] is None:
         raise SystemExit("Resume requires a saved CLI launch recipe.")
@@ -73,20 +74,13 @@ def cli_scan_resume(
             or (run["status"] in {"running", "succeeded"} and not run["cancel_requested"])
         )
     )
+    if scan["status"] == "complete" and read_coverage(scan).get("completeness") == "complete":
+        raise SystemExit("This scan already completed; use scans rerun to start another scan.")
     if not session_available and checkpoint is None:
         raise SystemExit(
             "Resume requires a running Deep Scan in its original owning CLI session "
             "or saved semantic checkpoints. No completed source work can be resumed."
         )
-    if (
-        scan["status"] == "complete"
-        and checkpoint is not None
-        and all(
-            source["complete"] and source["coverage"].get("completeness") == "complete"
-            for source in checkpoint["sources"]
-        )
-    ):
-        raise SystemExit("This scan already completed; use scans rerun to start another scan.")
     try:
         repository = require_scan_target_identity(scan)
     except SystemExit as exc:

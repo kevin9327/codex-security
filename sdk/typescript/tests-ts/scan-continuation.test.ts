@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { scanPreflightCodexConfig } from "../src/api.js";
 import { main } from "../src/cli.js";
 import { DEFAULT_CODEX_CONFIG } from "../src/config.js";
+import { ScanCostTracker } from "../src/cost.js";
 import { runWorkbench } from "../src/runtime.js";
 import { capture, dependencies } from "./cli-fixtures.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
@@ -386,6 +387,51 @@ test.each([
           : "--validation-prompt-file",
   );
 });
+
+test.each([false, true])(
+  "historical cost read failures allow continuation only when no saved cap needs it: cap=%j",
+  async (capped) => {
+    const f = await savedScan({
+      cost: false,
+      ...(capped ? { maxCostUsd: 100 } : {}),
+    });
+    const tracker = spyOn(
+      ScanCostTracker.prototype,
+      "stop",
+    ).mockRejectedValueOnce(new Error("Synthetic unreadable sibling rollout"));
+    let modelCalls = 0;
+    try {
+      const outcome = await resume(f, (options) => ({
+        startThread(threadOptions) {
+          const threadId = randomUUID();
+          return {
+            id: threadId,
+            async runStreamed() {
+              modelCalls++;
+              await finishChild(
+                f,
+                threadOptions.workingDirectory!,
+                options.env!["CODEX_SECURITY_SCAN_ID"]!,
+              );
+              return { events: completedEvents(threadId) };
+            },
+          };
+        },
+        resumeThread() {
+          throw new Error("A sealed parent requires a linked attempt");
+        },
+      }));
+      expect(outcome.stderr).toContain("Previous scan cost is unavailable");
+      expect(outcome.stderr).toContain("Synthetic unreadable sibling rollout");
+      expect(outcome.code, outcome.stderr).toBe(capped ? 2 : 0);
+      expect(modelCalls).toBe(capped ? 0 : 1);
+      if (capped) expect(outcome.stderr).toContain("limit cannot be enforced");
+      else expect(JSON.parse(outcome.stdout).findings.findings).toHaveLength(1);
+    } finally {
+      tracker.mockRestore();
+    }
+  },
+);
 
 test("a hard-killed continuation recovers native spend on top of its durable inherited cost", async () => {
   const f = await savedScan({ maxCostUsd: 20 });

@@ -275,3 +275,117 @@ def test_deep_continuation_rejects_a_changed_frozen_worker_result(tmp_path: Path
             == 0
         )
     assert (parent_dir / relative).is_file()
+
+
+@pytest.mark.parametrize("outcome", ["deadline", "reported", "rejected"])
+def test_deep_finalization_accounts_for_inherited_partial_worker_evidence(
+    tmp_path: Path, outcome: str
+):
+    from workbench_test_support import write_completed_contract
+
+    state, repository, parent_dir, parent_id = scan_fixture(tmp_path, "deep")
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    write_completed_contract(contract, parent_id, repository, relative_path="clean.ts")
+    finding = json.loads((contract / "findings.json").read_text())["findings"][0]
+    finding["extensions"] = {"candidateId": "saved-candidate"}
+    partial = semantic(parent_id, ["clean.ts"])
+    partial["findings"] = [finding]
+    partial["coverage"]["deferred"] = [
+        {"candidateId": "saved-candidate", "reason": "Finish saved validation"}
+    ]
+    worker_id = str(uuid.uuid4())
+    output = parent_dir / "artifacts/deep_discovery/workers/discovery-0001/output"
+    output.mkdir(parents=True)
+    prompt = output.parent / "prompt.md"
+    prompt.write_text("Saved independent review\n")
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.execute(
+            "INSERT INTO deep_scan_runs (scan_id, schema_version, workflow_version, status, phase, "
+            "workers, subagents, stop_after_no_new, max_discovery_runs, discovery_runs_dispatched, "
+            "created_at, updated_at) VALUES (?, 1, 'deep-security-scan/v1', 'failed', 'terminal', "
+            "1, 0, 2, 3, 1, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')",
+            (parent_id,),
+        )
+        connection.execute(
+            "INSERT INTO deep_scan_workers (id, scan_id, kind, status, prompt_path, artifact_dir, "
+            "created_at, updated_at) VALUES (?, ?, 'discovery', 'failed', ?, ?, "
+            "'2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')",
+            (worker_id, parent_id, str(prompt), str(output)),
+        )
+    source = write_checkpoint(output / "checkpoints", partial)
+    save(state, parent_id, source)
+    original = source.read_bytes()
+    recipe = run_workbench(state, "get-scan-recipe", "--scan-id", parent_id)["recipe"]
+    child_dir = tmp_path / "child"
+    child_dir.mkdir(mode=0o700)
+    child_id = run_workbench(
+        state,
+        "register-cli-scan",
+        "--repository",
+        str(repository),
+        "--scan-dir",
+        str(child_dir),
+        "--recipe-json",
+        json.dumps(recipe),
+        "--parent-scan-id",
+        parent_id,
+    )["scanId"]
+    continued = run_workbench(
+        state, "continue-scan-checkpoint", "--scan-id", child_id, "--parent-scan-id", parent_id
+    )
+    assert continued["restoredWorkers"] == 0
+    # Publish what the coordinator actually completed. The expired case has no
+    # discoveries; the other cases explicitly account for the inherited candidate.
+    completed = semantic(child_id, ["clean.ts", "pending.ts"])
+    completed["complete"] = True
+    completed["findings"] = [finding] if outcome == "reported" else []
+    completed["coverage"].update(
+        completeness="partial" if outcome == "deadline" else "complete", deferred=[]
+    )
+    save(state, child_id, write_checkpoint(child_dir / "checkpoints", completed))
+    context = run_workbench(state, "get-cli-scan-resume", "--scan-id", child_id)["checkpoint"]
+    assert any(source["findings"] for source in context["sources"]), (
+        "a later empty publication must not hide inherited state"
+    )
+    write_completed_contract(child_dir, child_id, repository, relative_path="clean.ts")
+    findings = json.loads((child_dir / "findings.json").read_text())
+    findings["findings"] = completed["findings"]
+    (child_dir / "findings.json").write_text(json.dumps(findings))
+    coverage = json.loads((child_dir / "coverage.json").read_text())
+    coverage["completeness"] = completed["coverage"]["completeness"]
+    if outcome == "rejected":
+        coverage["surfaces"] = [
+            {
+                "id": "saved-review",
+                "candidateId": "saved-candidate",
+                "label": "Saved candidate review",
+                "disposition": "rejected",
+                "receiptRefs": [],
+                "reason": "Existing control prevents the candidate",
+            }
+        ]
+    (child_dir / "coverage.json").write_text(json.dumps(coverage))
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        connection.execute(
+            "UPDATE deep_scan_runs SET status = 'succeeded', phase = 'terminal', manifest_path = ? WHERE scan_id = ?",
+            (str(child_dir / "scan-manifest.json"), child_id),
+        )
+    run_workbench(state, "prepare-scan-completion", "--scan-id", child_id)
+    first_seal = (child_dir / "scan-manifest.json").read_bytes()
+    run_workbench(state, "prepare-scan-completion", "--scan-id", child_id)
+    assert (child_dir / "scan-manifest.json").read_bytes() == first_seal
+    result = json.loads((child_dir / "findings.json").read_text())
+    coverage = json.loads((child_dir / "coverage.json").read_text())
+    assert len(result["findings"]) == (0 if outcome == "rejected" else 1)
+    if outcome == "deadline":
+        assert coverage["completeness"] == "partial"
+        assert any(item.get("candidateId") == "saved-candidate" for item in coverage["deferred"])
+    else:
+        assert coverage["completeness"] == "complete"
+        assert not coverage["deferred"]
+    assert source.read_bytes() == original
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM deep_scan_workers WHERE scan_id = ?", (child_id,)
+        ).fetchone() == (0,)

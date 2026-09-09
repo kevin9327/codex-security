@@ -989,9 +989,18 @@ export class CodexSecurity {
                 scanDirectory: resumeContext["scanDir"],
               });
               previousTracker.start(savedThreadId);
-              const recoveredCost = (await previousTracker.stop()).cost;
-              previousCost = inheritedCost;
-              previousCost = cumulativeCost(recoveredCost);
+              try {
+                const recoveredCost = (await previousTracker.stop()).cost;
+                previousCost = inheritedCost;
+                previousCost = cumulativeCost(recoveredCost);
+              } catch (error) {
+                notifyObserver(
+                  "onWarning",
+                  options.onWarning,
+                  options.onObserverError,
+                  `Previous scan cost is unavailable: ${safeErrorMessage(error)}`,
+                );
+              }
             } else if (savedThreadId === null) {
               // Registration and checkpoint seeding can finish before the first model call.
               previousCost = inheritedCost;

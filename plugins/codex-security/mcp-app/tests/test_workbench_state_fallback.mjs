@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 if (process.platform !== "win32") {
@@ -35,6 +35,19 @@ async function testWorkbenchStateFallback() {
     format: "cjs",
     loader: { ".md": "text" },
     logLevel: "silent",
+    plugins: [{
+      name: "capture-worker-state",
+      setup(builder) {
+        builder.onLoad({ filter: /deep-scan[/\\]executor\.ts$/ }, () => ({
+          contents: `export class CodexSdkWorkerExecutor {
+            constructor(settings) {
+              throw new Error("Synthetic worker state: " + settings.artifactContext.stateDirectory);
+            }
+          }`,
+          loader: "ts"
+        }));
+      }
+    }],
     outfile: serverBundlePath,
     platform: "node",
     target: "node20"
@@ -77,6 +90,33 @@ async function testWorkbenchStateFallback() {
         reason: "persistent_sqlite_unwritable"
       });
       assert.doesNotMatch(JSON.stringify(events[0]), new RegExp(escapeRegex(fixtureRoot)));
+      const deepTarget = path.join(fixtureRoot, "deep-target");
+      await mkdir(deepTarget);
+      await writeFile(path.join(deepTarget, "app.py"), "print('deep fixture')\n");
+      const workerStart = await fallbackServer.request(9, "tools/call", {
+        name: "start_codex_security_deep_scan",
+        arguments: { targetPath: deepTarget },
+        _meta: {
+          "openai/threadId": "state-fallback-deep-thread",
+          "codex/sandbox-state-meta": {
+            permissionProfile: {
+              type: "managed",
+              file_system: {
+                type: "restricted",
+                entries: [{
+                  path: { type: "special", value: { kind: "root" } },
+                  access: "read"
+                }]
+              },
+              network: "restricted"
+            },
+            sandboxCwd: pathToFileURL(pluginRoot).href
+          }
+        }
+      });
+      assertToolError(workerStart, new RegExp(
+        `Synthetic worker state: ${escapeRegex(fallbackStateDir)}`
+      ));
     } finally {
       await fallbackServer.stop();
     }
