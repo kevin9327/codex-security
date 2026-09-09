@@ -1624,7 +1624,7 @@ async function runWorkbench(
 ): Promise<JsonObject> {
   let pythonCommand: string | undefined;
   try {
-    if (!["list-global-findings", "list-repositories", "list-scans", "create-workspace", "save-workspace", "start-scan", "start-prompt-only-scan", "start-headless-standard-scan", "register-cli-scan", "set-scan-thread", "get-scan-recipe", "begin-deep-scan", "get-deep-scan", "claim-deep-scan-coordinator", "upsert-deep-scan-worker", "claim-deep-scan-dedup", "commit-deep-scan-dedup", "finish-deep-scan", "fail-deep-scan", "record-deep-scan-publication-failure", "inspect-target", "inspect-setup", "get-workspace", "get-scan", "list-findings"].includes(args[0] ?? "")) {
+    if (!["list-global-findings", "list-repositories", "list-scans", "create-workspace", "save-workspace", "start-scan", "start-prompt-only-scan", "start-headless-standard-scan", "register-cli-scan", "set-scan-thread", "get-scan-recipe", "update-progress", "update-scan-context", "claim-handoff-delivery", "release-handoff-delivery", "attach-scan-continuation-thread", "mark-handoff-delivered", "begin-deep-scan", "get-deep-scan", "claim-deep-scan-coordinator", "upsert-deep-scan-worker", "claim-deep-scan-dedup", "commit-deep-scan-dedup", "finish-deep-scan", "fail-deep-scan", "record-deep-scan-publication-failure", "inspect-target", "inspect-setup", "get-workspace", "get-scan", "list-findings"].includes(args[0] ?? "")) {
       pythonCommand = await resolvePythonCommand();
     }
     return await executeWorkbenchWithStateSelection(pythonCommand, args, input);

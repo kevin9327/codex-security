@@ -262,7 +262,7 @@ test("configured state and malformed databases retain the existing no-fallback b
   }
 });
 
-test("MCP workspace setup and start preserve context without Python", async () => {
+test("MCP setup, handoff, context and progress work without Python", async () => {
   const root = realpathSync(mkdtempSync(join(directory, "lifecycle-"))),
     target = join(root, "target"),
     state = join(root, "state");
@@ -302,6 +302,64 @@ test("MCP workspace setup and start preserve context without Python", async () =
     expect(started["results"]).toMatchObject({
       progress: { status: "running" },
       userContext: context,
+    });
+    const scanId = (started["results"] as Record<string, unknown>)["scanId"],
+      claimToken = "22222222-2222-4222-8222-222222222222";
+    for (const name of [
+      "claim_codex_security_scan_handoff_delivery",
+      "release_codex_security_scan_handoff_delivery",
+      "claim_codex_security_scan_handoff_delivery",
+      "attach_codex_security_scan_continuation_thread",
+      "mark_codex_security_scan_handoff_delivered",
+    ]) {
+      const state = successful(
+        await server.call(name, {
+          scanId,
+          claimToken,
+          ...(name === "attach_codex_security_scan_continuation_thread"
+            ? { threadId: "continuation" }
+            : {}),
+        }),
+      )!["workspace"] as Record<string, unknown>;
+      expect(state["results"]).toMatchObject({
+        handoffClaimToken:
+          name === "release_codex_security_scan_handoff_delivery"
+            ? null
+            : claimToken,
+      });
+    }
+    successful(
+      await server.call("update_codex_security_scan_context_from_app", {
+        scanId,
+        userContext: "Updated context",
+      }),
+    );
+    successful(
+      await server.call("update_codex_security_scan_progress", {
+        scanId,
+        handoffClaimToken: claimToken,
+        phase: "preflight",
+        preflightChecks: [
+          {
+            capability: "test",
+            severity: "warn",
+            status: "unknown",
+            reason: "Not available",
+          },
+        ],
+      }),
+    );
+    const final = successful(
+      await server.call("get_codex_security_scan", { scanId }),
+    )!["scan"] as Record<string, unknown>;
+    expect(final).toMatchObject({
+      continuationThreadId: "continuation",
+      handoffStatus: "delivered",
+      userContext: "Updated context",
+      progress: {
+        phase: "preflight",
+        phaseProgress: { total: 1, completed: 0, unit: "checks" },
+      },
     });
     expect(statSync(join(state, "workbench.sqlite3")).isFile()).toBe(true);
     expect(server.events()).toEqual([]);
