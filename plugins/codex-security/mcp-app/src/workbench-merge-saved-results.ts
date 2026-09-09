@@ -279,7 +279,9 @@ export function mergeSavedResults(
 ): [Table, Table, Table] | null {
   const { stopped, reason, allowFrozenLegacyParent = false } = options;
   let frozen = options.frozenSourceDigests ?? null;
-  const initialWarnings = new Set(warnings);
+  const initialWarnings = new Set(
+    warnings.map((warning) => tupleKey([warning])),
+  );
   let parent: Table | null = null,
     parentManifest: Table | null = null;
   if (frozen === null || allowFrozenLegacyParent) {
@@ -484,7 +486,7 @@ export function mergeSavedResults(
     truth(get(parentScan, "sealedAt")) &&
     parentScan["status"] === binding.status &&
     equal(get(parentScan, "preservedSources"), sourceMap) &&
-    warnings.every((warning) => initialWarnings.has(warning))
+    warnings.every((warning) => initialWarnings.has(tupleKey([warning])))
   )
     return null;
   let targetKind = binding.allowedTargetKinds[0]!;
@@ -962,7 +964,10 @@ export function mergeSavedResults(
       if (field === "surfaces") setdefault(item, "receiptRefs", []);
     }
   }
-  if (stopped || warnings.some((warning) => !initialWarnings.has(warning)))
+  if (
+    stopped ||
+    warnings.some((warning) => !initialWarnings.has(tupleKey([warning])))
+  )
     coverage["completeness"] = "partial";
   if (stopped) {
     if (!Array.isArray(coverage["deferred"])) coverage["deferred"] = [];

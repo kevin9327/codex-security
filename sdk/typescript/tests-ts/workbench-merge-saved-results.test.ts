@@ -463,3 +463,20 @@ test("reducer drafts retain original hashes while recovery supplies missing cove
     }
   }
 });
+
+test("invalid saved warning values fail before preserving a parent checkpoint", () => {
+  for (const [kind, warning] of [
+    ["list", []],
+    ["dict", {}],
+  ] as const) {
+    const scan = root(`warning-${kind}`);
+    parent(scan, [finding()], {}, { sealedAt: null });
+    const before = readdirSync(scan).sort();
+    const input = action(scan);
+    input.warnings = [warning] as unknown as string[];
+    const result = run(input)[0]!;
+    expect(result["error"]).toBe(`unhashable type: '${kind}'`);
+    expect(result["warnings"]).toEqual([warning]);
+    expect(readdirSync(scan).sort()).toEqual(before);
+  }
+});
