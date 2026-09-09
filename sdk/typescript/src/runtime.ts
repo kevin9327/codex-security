@@ -1511,93 +1511,15 @@ export async function runWorkbench(
 ): Promise<JsonObject> {
   let stdout: string;
   try {
-    const node = [
-      "dashboard",
-      "database-info",
-      "store-findings",
-      "list-stored-findings",
-      "find-potential-duplicates",
-      "store-dedupe-groups",
-      "list-dedupe-groups",
-      "list-global-findings",
-      "list-repositories",
-      "list-scans",
-      "get-scan-feedback",
-      "create-workspace",
-      "save-workspace",
-      "start-scan",
-      "start-prompt-only-scan",
-      "start-headless-standard-scan",
-      "register-cli-scan",
-      "set-scan-thread",
-      "get-scan-recipe",
-      "compare-scans",
-      "list-unmatched-scan-pairs",
-      "save-scan-comparison",
-      "export-findings",
-      "inspect-linear-publication",
-      "prepare-linear-publication",
-      "record-linear-publications",
-      "set-scan-cost-limit",
-      "finding-workflow",
-      "severity-classification",
-      "read-severity-classification",
-      "set-finding-triage",
-      "request-finding-remediation",
-      "request-finding-remediation-action",
-      "claim-finding-remediation-resend",
-      "mark-finding-remediation-delivered",
-      "release-finding-remediation-claim",
-      "cancel-finding-remediation-request",
-      "set-finding-remediation",
-      "prepare-scan-completion",
-      "complete-scan",
-      "complete-budget-exhausted-scan",
-      "cancel-scan",
-      "fail-scan",
-      "preserve-scan-results",
-      "recover-scan-results",
-      "write-scan-draft",
-      "update-progress",
-      "update-scan-context",
-      "claim-handoff-delivery",
-      "release-handoff-delivery",
-      "attach-scan-continuation-thread",
-      "mark-handoff-delivered",
-      "begin-deep-scan",
-      "get-deep-scan",
-      "claim-deep-scan-coordinator",
-      "upsert-deep-scan-worker",
-      "claim-deep-scan-dedup",
-      "commit-deep-scan-dedup",
-      "finish-deep-scan",
-      "fail-deep-scan",
-      "record-deep-scan-publication-failure",
-      "inspect-target",
-      "inspect-setup",
-      "get-workspace",
-      "get-scan",
-      "list-findings",
-    ].includes(args[0] ?? "");
-    const command = node
-      ? process.execPath
-      : options.python ??
-        (await resolvePluginPython({
-          environment: options.environment,
-          signal: options.signal,
-        }));
-    const script = node
-      ? join(options.pluginRoot, "mcp", "helpers.mjs")
-      : join(options.pluginRoot, "scripts", "workbench_db.py");
+    const command = process.execPath;
+    const script = join(options.pluginRoot, "mcp", "helpers.mjs");
     const run = async (
       arguments_: readonly string[],
       input?: string,
     ): Promise<string> => {
       const result = await runCodexCommand(
         { command },
-        node
-          ? [script, ...arguments_]
-          : ["-I", "-X", "utf8", "-B", script, ...arguments_],
+        [script, ...arguments_],
         pluginHelperEnvironment(options.environment),
         input,
         options.signal,
