@@ -276,9 +276,10 @@ function publicationPathProof(root: string) {
       flags.FILE_SHARE_READ | flags.FILE_SHARE_WRITE,
     );
     try {
+      // MoveFileExW reports access denied while the destination denies delete sharing.
       assert.equal(
         native.replaceWindowsPath(pathBytes(link), pathBytes(destination)),
-        32,
+        5,
       );
     } finally {
       success(held.close());
@@ -1291,31 +1292,39 @@ if (process.argv[2] === "worker") {
     assert.equal(native.errnoMessage(13).toString(), "Permission denied");
     assert(native.windowsErrorMessage(5).toString("utf16le").length > 0);
     assert.equal(native.windowsErrorMessage(0xdeadbeef).length, 0);
-    console.log(
-      JSON.stringify(
-        {
-          node: process.version,
-          platform: process.platform,
-          architecture: process.arch,
-          nodeApi: 8,
-          rawProcess: rawProcessProof(root),
-          copyMetadata: copyMetadataProof(root),
-          privateDirectories: privateDirectoryProof(root),
-          publicationPaths: publicationPathProof(root),
-          readFiles: readFileProof(root),
-          copyPrimitives: copyPrimitivesProof(root),
-          completionFiles: await completionFileProof(root),
-          exclusiveFiles: await exclusiveFileProof(root),
-          handles: handleProof(root),
-          wideProcessAndPaths: wideProcessProof(root),
-          garbageCollectionClosesHandle: await ownershipProof(root),
-          locks: await lockProof(root),
-          fixture: basename(root),
-        },
-        null,
-        2,
-      ),
-    );
+    const results: Record<string, unknown> = {
+      node: process.version,
+      platform: process.platform,
+      architecture: process.arch,
+      nodeApi: 8,
+    };
+    const proofs: [string, (root: string) => unknown][] = [
+      ["rawProcess", rawProcessProof],
+      ["copyMetadata", copyMetadataProof],
+      ["privateDirectories", privateDirectoryProof],
+      ["publicationPaths", publicationPathProof],
+      ["readFiles", readFileProof],
+      ["copyPrimitives", copyPrimitivesProof],
+      ["completionFiles", completionFileProof],
+      ["exclusiveFiles", exclusiveFileProof],
+      ["handles", handleProof],
+      ["wideProcessAndPaths", wideProcessProof],
+      ["garbageCollectionClosesHandle", ownershipProof],
+      ["locks", lockProof],
+    ];
+    const failures: unknown[] = [];
+    for (const [name, proof] of proofs) {
+      try {
+        results[name] = await proof(root);
+      } catch (error) {
+        console.error(`Windows proof failed: ${name}`, error);
+        failures.push(error);
+      }
+    }
+    results["fixture"] = basename(root);
+    console.log(JSON.stringify(results, null, 2));
+    if (failures.length)
+      throw new AggregateError(failures, "Windows native proofs failed");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
