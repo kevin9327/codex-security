@@ -99,6 +99,7 @@ import {
   type JsonValue,
 } from "./config.js";
 import { formatUsd, type ScanCost } from "./cost.js";
+import { formatTokenUsage, scanCostUsage } from "./cost-model.js";
 import {
   CodexSecurityError,
   ConfigurationError,
@@ -6842,11 +6843,7 @@ async function executeScan(
         );
       }
       if (runningCost !== null) {
-        const tokens = formatTokenUsage({
-          input_tokens: runningCost.inputTokens,
-          cached_input_tokens: runningCost.cachedInputTokens,
-          output_tokens: runningCost.outputTokens,
-        });
+        const tokens = formatTokenUsage(scanCostUsage(runningCost));
         if (tokens !== null) details.push(`Tokens: ${tokens}`);
         details.push(`Cost: ${formatUsd(runningCost.estimatedUsd)}`);
       }
@@ -6914,11 +6911,7 @@ async function executeScan(
         }
         progress?.stopTimer();
         if (maxCostUsd === undefined) {
-          const tokens = formatTokenUsage({
-            input_tokens: cost.inputTokens,
-            cached_input_tokens: cost.cachedInputTokens,
-            output_tokens: cost.outputTokens,
-          });
+          const tokens = formatTokenUsage(scanCostUsage(cost));
           progress?.stage(
             `${tokens === null ? "" : `Tokens: ${tokens}. `}Estimated cost: ${formatUsd(cost.estimatedUsd)} USD.`,
           );
@@ -7670,41 +7663,15 @@ function printScanSummary(
   if (tokenSummary !== null) {
     errorOutput.write(`  ${paint("TOKENS", 1)}    ${tokenSummary}\n`);
   }
-  if (result.cost !== null) {
-    errorOutput.write(
-      `  ${paint("COST", 1)}      ${formatUsd(result.cost.estimatedUsd)}\n`,
-    );
-  }
+  errorOutput.write(
+    `  ${paint("COST", 1)}      ${result.cost === null ? "unavailable (model pricing or usage missing)" : `${formatUsd(result.cost.estimatedUsd)} (standard, short context)`}\n`,
+  );
   errorOutput.write(
     `  ${paint("RESULTS", 1)}   ${errorMessage(result.scanDir)}\n`,
   );
   if (deepScanStop?.nextStep !== undefined) {
     errorOutput.write(`\n  ${deepScanStop.nextStep}\n`);
   }
-}
-
-function formatTokenUsage(usage: unknown): string | null {
-  if (usage === null || typeof usage !== "object") return null;
-  const values = usage as Record<string, unknown>;
-  return (
-    (
-      [
-        ["input_tokens", "input"],
-        ["cached_input_tokens", "cached"],
-        ["output_tokens", "output"],
-      ] as const
-    )
-      .map(([key, label]) => {
-        const value = values[key];
-        return typeof value === "number" &&
-          Number.isSafeInteger(value) &&
-          value >= 0
-          ? `${value.toLocaleString("en-US")} ${label}`
-          : null;
-      })
-      .filter((value): value is string => value !== null)
-      .join(", ") || null
-  );
 }
 
 function componentScanEventLine(
@@ -7717,11 +7684,7 @@ function componentScanEventLine(
   }
   if (event.type !== "cost") return null;
   const cost = event.value;
-  const tokens = formatTokenUsage({
-    input_tokens: cost.inputTokens,
-    cached_input_tokens: cost.cachedInputTokens,
-    output_tokens: cost.outputTokens,
-  });
+  const tokens = formatTokenUsage(scanCostUsage(cost));
   return `codex-security: ${componentName} | ${tokens === null ? "" : `Tokens: ${tokens} | `}Cost: ${formatUsd(cost.estimatedUsd)}\n`;
 }
 
