@@ -199,6 +199,7 @@ function run(request: Request): Response {
                 reparseTag: request.reparseTag ?? 0,
               }),
               fileType: () => ({ error: 0, value: request.fileType ?? 1 }),
+              size: () => ({ error: 0, value: "0" }),
               close: () => {
                 closed++;
                 return 0;

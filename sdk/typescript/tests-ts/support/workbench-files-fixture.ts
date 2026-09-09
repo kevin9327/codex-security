@@ -1,4 +1,11 @@
 import { readFileSync, readdirSync } from "node:fs";
+import * as guards from "../../../../plugins/codex-security/mcp-app/src/workbench-remediation-guards";
+import {
+  remediationCheckoutSnapshot,
+  scanTargetIdentity,
+  type RemediationScan,
+} from "../../../../plugins/codex-security/mcp-app/src/workbench-target";
+import { TargetInspectionError } from "../../../../plugins/codex-security/mcp-app/src/workbench-git-snapshot";
 import * as files from "../../../../plugins/codex-security/mcp-app/src/workbench-files";
 import { filesystemErrorMessage } from "../../../../plugins/codex-security/mcp-app/src/helpers/file-errors";
 import {
@@ -17,7 +24,13 @@ export interface Request {
     | "open"
     | "regular"
     | "preview"
-    | "finding";
+    | "finding"
+    | "sha256"
+    | "relativeFile"
+    | "matchingPatch"
+    | "unchanged"
+    | "checkoutSnapshot"
+    | "targetIdentity";
   root?: string;
   path?: string;
   relative?: string | null;
@@ -26,6 +39,13 @@ export interface Request {
   details?: Record<string, unknown>;
   cwd?: string;
   uid?: number;
+  value?: string | null;
+  label?: string;
+  scan?: RemediationScan;
+  remediation?: guards.RemediationCheckoutDigests;
+  requireAppliedContent?: boolean;
+  requireBaseContent?: boolean;
+  readerThrow?: boolean;
 }
 export interface Outcome {
   result?: unknown;
@@ -50,6 +70,40 @@ const outcomes = requests.map((request): Outcome => {
       process.geteuid = () => Number(request.uid);
     let result: unknown;
     switch (request.operation) {
+      case "sha256":
+        result = guards.requireSha256Digest(
+          request.value!,
+          request.label ?? "Patch digest",
+        );
+        break;
+      case "relativeFile":
+        result = guards.requireScanRelativeFile(
+          { scan_dir: request.root! },
+          request.value!,
+        );
+        break;
+      case "matchingPatch":
+        guards.requireMatchingPatchDigest(
+          { scan_dir: request.root! },
+          request.relative!,
+          request.digest!,
+        );
+        result = null;
+        break;
+      case "targetIdentity":
+        result = scanTargetIdentity(request.path!, null);
+        break;
+      case "checkoutSnapshot":
+        result = remediationCheckoutSnapshot(request.scan!);
+        break;
+      case "unchanged":
+        guards.requireRemediationCheckoutUnchanged(
+          request.scan!,
+          request.remediation!,
+          request,
+        );
+        result = null;
+        break;
       case "canonical":
         result = files.requireCanonicalScanDirectory(request.root!);
         break;
@@ -92,6 +146,8 @@ const outcomes = requests.map((request): Outcome => {
           const buffer = Buffer.alloc(64 * 1024);
           for (;;) {
             const count = file.read(buffer);
+            if (request.readerThrow)
+              throw new Error("Synthetic reader consumer failed.");
             if (!count) break;
             chunks.push(Buffer.from(buffer.subarray(0, count)));
           }
@@ -112,7 +168,9 @@ const outcomes = requests.map((request): Outcome => {
     const after = descriptors();
     return {
       error: filesystemErrorMessage(error),
-      systemExit: error instanceof WorkbenchValidationError,
+      systemExit:
+        error instanceof WorkbenchValidationError ||
+        error instanceof TargetInspectionError,
       descriptors:
         before === null || after === null ? null : BigInt(after - before),
     };
