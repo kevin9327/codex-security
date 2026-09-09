@@ -49,7 +49,10 @@ function windowsStatus(error: number): void {
   if (error) throw Object.assign(new Error(), { winerror: error });
 }
 
-function replace(source: string, destination: string): void {
+export function replacePublicationFile(
+  source: string,
+  destination: string,
+): void {
   pathCall(
     source,
     () => {
@@ -86,11 +89,11 @@ export function promoteStagedFile(
   const backup = pathExists(output)
     ? appendPath(dirname(output), `.${basename(output)}.${uuid()}.backup`)
     : null;
-  if (backup !== null) replace(output, backup);
+  if (backup !== null) replacePublicationFile(output, backup);
   try {
-    replace(staged, output);
+    replacePublicationFile(staged, output);
   } catch (error) {
-    if (backup !== null) replace(backup, output);
+    if (backup !== null) replacePublicationFile(backup, output);
     throw error;
   }
   return [staged, output, backup];
@@ -101,18 +104,21 @@ export function rollbackStagedFile([
   output,
   backup,
 ]: StagedFilePromotion): void {
-  if (pathExists(output)) replace(output, staged);
-  if (backup !== null) replace(backup, output);
+  if (pathExists(output)) replacePublicationFile(output, staged);
+  if (backup !== null) replacePublicationFile(backup, output);
 }
 
 export function finishStagedFile(promotion: StagedFilePromotion): void {
   const backup = promotion[2];
-  if (backup === null) return;
+  if (backup !== null) unlinkPublicationFile(backup);
+}
+
+export function unlinkPublicationFile(path: string): void {
   try {
-    pathCall(backup, () => {
+    pathCall(path, () => {
       if (windows)
-        windowsStatus(windowsBinding().unlinkWindowsPath(widePath(backup)));
-      else unlinkSync(encodePosixPath(backup));
+        windowsStatus(windowsBinding().unlinkWindowsPath(widePath(path)));
+      else unlinkSync(encodePosixPath(path));
     });
   } catch (error) {
     const value = error as NodeJS.ErrnoException & { winerror?: number };
