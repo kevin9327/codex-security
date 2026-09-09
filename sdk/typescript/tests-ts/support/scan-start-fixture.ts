@@ -7,6 +7,11 @@ import { sqliteBinding } from "../../../../plugins/codex-security/mcp-app/src/na
 import { applyMigrations } from "../../../../plugins/codex-security/mcp-app/src/workbench-db";
 import { getScanFeedback } from "../../../../plugins/codex-security/mcp-app/src/workbench-feedback";
 import {
+  getScanRecipe,
+  parseScanRecipe,
+  setScanThread,
+} from "../../../../plugins/codex-security/mcp-app/src/workbench-scan-recipes";
+import {
   archiveScan,
   compactTimestamp,
   insertRunningScan,
@@ -29,6 +34,16 @@ import {
 import type { WindowsBinding } from "../../../../plugins/codex-security/native/windows-binding.mjs";
 
 export type Action =
+  | { kind: "parseRecipe"; value: string; repository: string }
+  | { kind: "getRecipe"; scanId: string }
+  | {
+      kind: "setThread";
+      scanId: string;
+      threadId: string;
+      now?: string;
+      nowSql?: string;
+      failNow?: string;
+    }
   | { kind: "windowsMkdir"; errors: number[]; recursive?: boolean }
   | { kind: "sql"; sql: string; parameters?: Parameter[] }
   | { kind: "query"; sql: string; parameters?: Parameter[] }
@@ -65,6 +80,19 @@ try {
     try {
       let value: unknown = null;
       switch (action.kind) {
+        case "parseRecipe":
+          value = parseScanRecipe(action.value, action.repository);
+          break;
+        case "getRecipe":
+          value = getScanRecipe(connection, action);
+          break;
+        case "setThread":
+          value = setScanThread(connection, action, () => {
+            if (action.nowSql) connection.prepare(action.nowSql).run();
+            if (action.failNow) throw new Error(action.failNow);
+            return action.now ?? "2026-08-15T12:00:00.123456Z";
+          });
+          break;
         case "windowsMkdir": {
           const calls: { path: string; recursive: boolean }[] = [],
             errors = action.errors.map(Number);
