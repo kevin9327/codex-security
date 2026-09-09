@@ -47,7 +47,8 @@ export async function buildMcpApp({ output }) {
     try {
       await build({
         bundle: true,
-        define: { "import.meta.url": "__filename" },
+        banner: { js: 'var __codex_security_import_meta_url = require("node:url").pathToFileURL(__filename).href;' },
+        define: { "import.meta.url": "__codex_security_import_meta_url" },
         entryPoints: [join(root, entryPoint)],
         external: ["fsevents"],
         format: "cjs",

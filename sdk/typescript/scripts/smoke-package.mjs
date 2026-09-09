@@ -548,6 +548,26 @@ try {
   assert.match(help, /\bpublish\b/u);
   assert.match(help, /\bdedupe\b/u);
 
+  const { prepareScanArtifactRestorer } = await import(
+    pathToFileURL(join(installedRoot, "dist", "runtime.js")).href
+  );
+  const restorationScan = join(consumer, "restoration-scan");
+  await mkdir(restorationScan, { mode: 0o700 });
+  const restorer = await prepareScanArtifactRestorer(
+    {
+      python: "/unavailable/python",
+      pluginRoot: join(consumer, "unused-selected-plugin"),
+      environment: { PATH: "" },
+    },
+    restorationScan,
+  );
+  const artifact = join(restorationScan, "artifacts", "worker.bin");
+  const original = Buffer.from([0, 255, 10, 1]);
+  await restorer.restore("artifacts/worker.bin", original);
+  await writeFile(artifact, Buffer.from([9, 0, 8]));
+  await restorer.restore("artifacts/worker.bin", original);
+  assert.deepEqual(await readFile(artifact), original);
+
   const publicationScan = join(consumer, "publication-scan");
   await cp(
     join(installedRoot, "_bundled_plugin", "examples", "completed-scan"),

@@ -207,6 +207,32 @@ async function inspectMcpServer(): Promise<McpServerResponse[]> {
 }
 
 describe("plugin runtime preparation", () => {
+  test("artifact restoration preserves cancellation without starting a write", async () => {
+    const root = await temporaryDirectory();
+    const path = join(root, "artifact.bin");
+    await writeFile(path, "preserved");
+    const controller = new AbortController();
+    const options = {
+      python: "/unavailable/python",
+      pluginRoot: "/unavailable/selected-plugin",
+      environment: { PATH: "" },
+      signal: controller.signal,
+    };
+    const restorer = await prepareScanArtifactRestorer(options, root);
+    controller.abort();
+    await expect(
+      restorer.restore("artifact.bin", Buffer.from("changed")),
+    ).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    await expect(
+      prepareScanArtifactRestorer(options, root),
+    ).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(await readFile(path, "utf8")).toBe("preserved");
+  });
+
   test("keeps installed-package plugin lookup inside the package", async () => {
     const root = await temporaryDirectory();
     const packageRoot = join(root, "node_modules", "@openai", "codex-security");
@@ -2101,10 +2127,9 @@ describe("plugin runtime preparation", () => {
         mode: 0o700,
       });
       await writeFile(join(scanDir, artifact), expected);
-      const python = await resolvePluginPython({ environment });
       const restorer = await prepareScanArtifactRestorer(
         {
-          python,
+          python: "/unavailable/python",
           pluginRoot: upgraded.installedRoot,
           environment,
         },

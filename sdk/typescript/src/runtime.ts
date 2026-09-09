@@ -88,36 +88,6 @@ const PLUGIN_HELPER_SECRET_ENVIRONMENT_VARIABLES = new Set([
   "OPENROUTER_API_KEY",
   "FIREWORKS_API_KEY",
 ]);
-const PREPARE_SCAN_ARTIFACT_RESTORER_PROGRAM = `
-from pathlib import Path
-from runpy import run_path
-import json
-import sys
-
-module = run_path(sys.argv[1])
-canonical_path, root_identity = module["scan_root_identity"](Path(sys.argv[2]))
-print(json.dumps({
-    "canonicalPath": str(canonical_path),
-    "dev": str(root_identity[0]),
-    "ino": str(root_identity[1]),
-}, ensure_ascii=False))
-`.trim();
-const RESTORE_SCAN_ARTIFACT_PROGRAM = `
-from pathlib import Path
-from runpy import run_path
-import sys
-
-module = run_path(sys.argv[1])
-try:
-    module["write_scan_local_bytes"](
-        Path(sys.argv[2]),
-        sys.argv[3],
-        sys.stdin.buffer.read(),
-        expected_root_identity=(int(sys.argv[4]), int(sys.argv[5])),
-    )
-except (module["ContractError"], OSError) as error:
-    raise SystemExit(str(error))
-`.trim();
 const WINDOWS_CREDENTIAL_ACL_COMPLETE_PREFIX = "CODEX_SECURITY_ACL_COMPLETE:";
 const WINDOWS_CREDENTIAL_DESCENDANTS_CHANGED_EXIT_CODE = 2;
 
@@ -1743,23 +1713,10 @@ export async function prepareScanArtifactRestorer(
   let ino: string;
   try {
     // Recovery uses the SDK-owned writer, even if the scan selected a custom plugin.
-    helperPath = join(
-      await bundledPluginRoot(),
-      "scripts",
-      "finalize_scan_contract.py",
-    );
+    helperPath = join(await bundledPluginRoot(), "mcp", "helpers.mjs");
     const result = await runCodexCommand(
-      { command: options.python },
-      [
-        "-I",
-        "-X",
-        "utf8",
-        "-B",
-        "-c",
-        PREPARE_SCAN_ARTIFACT_RESTORER_PROGRAM,
-        helperPath,
-        scanDirectory,
-      ],
+      { command: process.execPath },
+      [helperPath, "scan-artifact-restorer", "prepare", scanDirectory],
       pluginHelperEnvironment(options.environment),
       undefined,
       options.signal,
@@ -1798,15 +1755,11 @@ export async function prepareScanArtifactRestorer(
     async restore(relativePath, contents) {
       try {
         const result = await runCodexCommand(
-          { command: options.python },
+          { command: process.execPath },
           [
-            "-I",
-            "-X",
-            "utf8",
-            "-B",
-            "-c",
-            RESTORE_SCAN_ARTIFACT_PROGRAM,
             helperPath,
+            "scan-artifact-restorer",
+            "restore",
             canonicalPath,
             relativePath,
             dev,

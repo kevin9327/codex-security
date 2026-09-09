@@ -12,6 +12,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
@@ -31,6 +33,40 @@ const { cleanup, copyCompletedScan, temporaryDirectory } =
 
 afterEach(cleanup);
 
+async function runFileOperation(
+  root: string,
+  operation: string,
+  ...args: string[]
+) {
+  const fixture = join(root, "post-scan-file.cjs");
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/post-scan-file-fixture.ts", import.meta.url),
+      ),
+    ],
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: {
+      "import.meta.url": JSON.stringify(
+        pathToFileURL(join(PLUGIN_ROOT, "mcp/helpers.mjs")).href,
+      ),
+    },
+  });
+  const execution = Bun.spawnSync(
+    [Bun.which("node")!, fixture, operation, ...args],
+    {
+      env: { ...process.env, PATH: "", PYTHON: "/unavailable/python" },
+    },
+  );
+  expect(execution.exitCode, new TextDecoder().decode(execution.stderr)).toBe(
+    0,
+  );
+}
+
 interface FailedPostScanContext {
   artifactPath: string;
   outside: string;
@@ -40,7 +76,7 @@ interface FailedPostScanContext {
 interface FailedPostScanScenario {
   artifact: string;
   initialContents?: string | Uint8Array;
-  selectedPluginFinalizer?: string;
+  selectedPluginHelper?: string;
   mutate(context: FailedPostScanContext): Promise<void>;
   wrapRestorer?(
     restorer: ScanArtifactRestorer,
@@ -63,18 +99,16 @@ async function startFailedPostScan(scenario: FailedPostScanScenario) {
   const outside = join(root, "outside");
   const artifactPath = join(scanDir, scenario.artifact);
   const context = { artifactPath, outside, scanDir };
-  const python = Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
   await mkdir(repository);
   await mkdir(codexHome);
   await mkdir(scanDir, { mode: 0o700 });
   const runtime = preparedRuntime(codexHome);
-  if (scenario.selectedPluginFinalizer !== undefined) {
+  if (scenario.selectedPluginHelper !== undefined) {
     const selectedPluginRoot = join(root, "selected-plugin");
     await cp(PLUGIN_ROOT, selectedPluginRoot, { recursive: true });
     await writeFile(
-      join(selectedPluginRoot, "scripts", "finalize_scan_contract.py"),
-      scenario.selectedPluginFinalizer,
+      join(selectedPluginRoot, "mcp", "helpers.mjs"),
+      scenario.selectedPluginHelper,
     );
     runtime.plugin = {
       ...runtime.plugin,
@@ -89,7 +123,7 @@ async function startFailedPostScan(scenario: FailedPostScanScenario) {
     {
       environment: {},
       prepareRuntime: async () => runtime,
-      resolvePluginPython: async () => python!,
+      resolvePluginPython: async () => "/unavailable/python",
       prepareOutputDir: async () => scanDir,
       repositoryRevision: async () => "deadbeef",
       prepareScanArtifactRestorer: async (...args) => {
@@ -208,8 +242,8 @@ const ordinaryRestorationCases: ReadonlyArray<
     "selected custom plugin",
     {
       artifact: "report.md",
-      selectedPluginFinalizer:
-        "raise RuntimeError('selected plugin helper must not run')\n",
+      selectedPluginHelper:
+        "throw new Error('selected plugin helper must not run');\n",
       mutate: ({ artifactPath }) =>
         writeFile(artifactPath, "# Incomplete draft\n"),
     },
@@ -267,34 +301,11 @@ describe("completed scan follow-up instructions", () => {
       const scanDir = join(root, "scan");
       const artifactPath = join(scanDir, "artifact.bin");
       const payload = Buffer.from("unchanged\n");
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
       await mkdir(scanDir, { mode: 0o700 });
       await writeFile(artifactPath, payload);
       await chmod(artifactPath, 0o644);
       const before = await stat(artifactPath);
-      const script = [
-        "from pathlib import Path",
-        "from runpy import run_path",
-        "import sys",
-        "module = run_path(sys.argv[1])",
-        "scan_dir = Path(sys.argv[2])",
-        "module['write_scan_local_bytes'](scan_dir, 'artifact.bin', b'unchanged\\n')",
-      ].join("\n");
-      const execution = Bun.spawnSync([
-        python!,
-        "-I",
-        "-B",
-        "-c",
-        script,
-        join(PLUGIN_ROOT, "scripts", "finalize_scan_contract.py"),
-        scanDir,
-      ]);
-
-      expect(
-        execution.exitCode,
-        new TextDecoder().decode(execution.stderr),
-      ).toBe(0);
+      await runFileOperation(root, "ordinary", scanDir);
       const after = await stat(artifactPath);
       expect(after.mode & 0o777).toBe(0o600);
       expect(after.ino).not.toBe(before.ino);
@@ -309,43 +320,8 @@ describe("completed scan follow-up instructions", () => {
       const scanDir = join(root, "scan");
       const artifactPath = join(scanDir, "artifact.bin");
       const artifactSize = 32 * 1024 * 1024;
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
       await mkdir(scanDir, { mode: 0o700 });
-      const script = [
-        "from pathlib import Path",
-        "from runpy import run_path",
-        "import os",
-        "import resource",
-        "import sys",
-        "module = run_path(sys.argv[1])",
-        "scan_dir = Path(sys.argv[2])",
-        "artifact = scan_dir / 'artifact.bin'",
-        "size = 32 * 1024 * 1024",
-        "payload = b'x' * size",
-        "with artifact.open('wb') as stream:",
-        "    stream.truncate(size)",
-        "canonical, identity = module['scan_root_identity'](scan_dir)",
-        "pages = int(Path('/proc/self/statm').read_text().split()[0])",
-        "current_vms = pages * os.sysconf('SC_PAGE_SIZE')",
-        "_, hard_limit = resource.getrlimit(resource.RLIMIT_AS)",
-        "resource.setrlimit(resource.RLIMIT_AS, (current_vms + 8 * 1024 * 1024, hard_limit))",
-        "module['write_scan_local_bytes'](canonical, 'artifact.bin', payload, expected_root_identity=identity)",
-      ].join("\n");
-      const execution = Bun.spawnSync([
-        python!,
-        "-I",
-        "-B",
-        "-c",
-        script,
-        join(PLUGIN_ROOT, "scripts", "finalize_scan_contract.py"),
-        scanDir,
-      ]);
-
-      expect(
-        execution.exitCode,
-        new TextDecoder().decode(execution.stderr),
-      ).toBe(0);
+      await runFileOperation(root, "sparse", scanDir);
       expect((await stat(artifactPath)).size).toBe(artifactSize);
       const artifact = await open(artifactPath, "r");
       try {
@@ -462,51 +438,12 @@ describe("completed scan follow-up instructions", () => {
       const parent = join(scanDir, "artifacts");
       const movedParent = join(root, "moved-artifacts");
       const outside = join(root, "outside");
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
       await mkdir(scanDir, { mode: 0o700 });
       await mkdir(parent);
       await mkdir(outside);
       await writeFile(join(parent, "worker.bin"), Buffer.from([1]));
       await writeFile(join(outside, "worker.bin"), "untouched\n");
-      const script = [
-        "from pathlib import Path",
-        "from runpy import run_path",
-        "import sys",
-        "module = run_path(sys.argv[1])",
-        "scan_dir = Path(sys.argv[2])",
-        "parent = scan_dir / 'artifacts'",
-        "moved_parent = Path(sys.argv[4])",
-        "outside = Path(sys.argv[3])",
-        "canonical, identity = module['scan_root_identity'](scan_dir)",
-        "original_replace = module['os'].replace",
-        "swapped = False",
-        "def replace(source, destination, *, src_dir_fd=None, dst_dir_fd=None):",
-        "    global swapped",
-        "    if not swapped:",
-        "        parent.rename(moved_parent)",
-        "        parent.symlink_to(outside, target_is_directory=True)",
-        "        swapped = True",
-        "    return original_replace(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)",
-        "module['os'].replace = replace",
-        "module['write_scan_local_bytes'](canonical, 'artifacts/worker.bin', bytes([0, 255, 10, 1]), expected_root_identity=identity)",
-      ].join("\n");
-      const execution = Bun.spawnSync([
-        python!,
-        "-I",
-        "-B",
-        "-c",
-        script,
-        join(PLUGIN_ROOT, "scripts", "finalize_scan_contract.py"),
-        scanDir,
-        outside,
-        movedParent,
-      ]);
-
-      expect(
-        execution.exitCode,
-        new TextDecoder().decode(execution.stderr),
-      ).toBe(0);
+      await runFileOperation(root, "rename", scanDir, outside, movedParent);
       expect(await readFile(join(outside, "worker.bin"), "utf8")).toBe(
         "untouched\n",
       );
