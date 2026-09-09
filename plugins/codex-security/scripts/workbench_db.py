@@ -1820,20 +1820,6 @@ def set_scan_thread(connection: sqlite3.Connection, args: argparse.Namespace) ->
     return {"scanId": scan["id"], "threadId": args.thread_id}
 
 
-def start_scan_inference(
-    connection: sqlite3.Connection, args: argparse.Namespace
-) -> dict[str, Any]:
-    with scan_completion_lock(args.scan_id), connection:
-        scan = require_scan(connection, args.scan_id)
-        if scan["status"] != "running":
-            raise SystemExit("Only a running scan can start inference.")
-        connection.execute(
-            "UPDATE scans SET inference_started = 1, updated_at = ? WHERE id = ?",
-            (now(), scan["id"]),
-        )
-    return {"scanId": scan["id"], "inferenceStarted": True}
-
-
 def set_scan_cost_limit(connection: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
     scan_id = require_uuid(args.scan_id, "scan-id")
     limit = args.max_cost_usd
@@ -3503,7 +3489,7 @@ def main() -> None:
         elif args.command == "set-scan-thread":
             result = set_scan_thread(connection, args)
         elif args.command == "start-scan-inference":
-            result = start_scan_inference(connection, args)
+            result = scan_checkpoints.start_inference(_WORKBENCH_DB_CONTEXT, connection, args)
         elif args.command == "set-scan-cost-limit":
             result = set_scan_cost_limit(connection, args)
         elif args.command == "get-scan-recipe":
