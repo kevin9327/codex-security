@@ -402,18 +402,49 @@ try {
     "Installed npm package does not match the complete bundled-plugin contract.",
   );
 
+  const libc =
+    process.platform === "linux"
+      ? process.report.getReport().header.glibcVersionRuntime === undefined
+        ? "-musl"
+        : "-gnu"
+      : "";
+  const nativeLibrary = join(
+    installedRoot,
+    "_bundled_plugin",
+    "mcp",
+    "native",
+    `${process.platform}-${process.arch}${libc}`,
+    process.platform === "win32" ? "windows.node" : "unix.node",
+  );
+  run(
+    process.execPath,
+    [
+      "--input-type=commonjs",
+      "--eval",
+      "require(process.argv[1])",
+      nativeLibrary,
+    ],
+    { cwd: consumer, env: { ...process.env, PATH: "" } },
+  );
+
   run(
     process.execPath,
     [
       "--input-type=module",
       "--eval",
-      [
-        `const sdk = await import(${JSON.stringify(packageManifest.name)});`,
-        `for (const name of ${JSON.stringify(["CodexSecurity", "publishScan", "publishScanToCustom", "checkScanPublication", "deduplicateScan", "classifySeverity", "classifyScanSeverity", "classifyScanDirectorySeverity", "applySecurityPolicy", "loadSecurityPolicyDraft", "securityPolicyDiff", "SecurityPolicyRecoveryError", "SecurityPolicyVerificationError"])}) {`,
-        '  if (typeof sdk[name] !== "function") throw new Error(`The installed package does not export ${name}.`);',
-        "}",
-        'if (typeof sdk.CodexSecurity.prototype.generatePolicy !== "function") throw new Error("The installed package does not export generatePolicy.");',
-      ].join("\n"),
+      `const sdk = await import(${JSON.stringify(packageManifest.name)});
+      for (const name of ["CodexSecurity", "publishScan", "publishScanToCustom", "checkScanPublication", "deduplicateScan", "classifySeverity", "classifyScanSeverity", "classifyScanDirectorySeverity", "matchScanFindings", "applySecurityPolicy", "loadSecurityPolicyDraft", "securityPolicyDiff", "SecurityPolicyRecoveryError", "SecurityPolicyVerificationError"]) {
+        if (typeof sdk[name] !== "function") {
+          throw new Error("The installed package does not export " + name + ".");
+        }
+      }
+      if (typeof sdk.CodexSecurity.prototype.generatePolicy !== "function") {
+        throw new Error("The installed package does not export generatePolicy.");
+      }
+      const result = await sdk.matchScanFindings({ before: [], after: [] });
+      if (result.matches.length !== 0 || result.uncertain.length !== 0) {
+        throw new Error("Empty finding comparison did not return an empty result.");
+      }`,
     ],
     { cwd: consumer },
   );
@@ -677,6 +708,14 @@ try {
     await readFile(policyPreflight.targetPath, "utf8"),
     policyMarkdown,
   );
+  assert.equal(
+    JSON.parse(previewPolicy(["--json", "--python", "missing-python"])).status,
+    "unchanged",
+  );
+  assert.equal(
+    JSON.parse(previewPolicy(["--write", "--json"])).status,
+    "unchanged",
+  );
   run(
     process.execPath,
     [
@@ -685,7 +724,7 @@ try {
       [
         'import assert from "node:assert/strict";',
         'import { createHash } from "node:crypto";',
-        'import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";',
+        'import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";',
         'import { dirname, join } from "node:path";',
         `const { CodexSecurity, loadSecurityPolicyDraft, applySecurityPolicy } = await import(${JSON.stringify(packageManifest.name)});`,
         "const repository = await realpath(process.argv[1]);",
@@ -704,6 +743,14 @@ try {
         "assert.equal(dirname(applied.recoveryPath), artifacts);",
         'assert.equal(await readFile(applied.recoveryPath, "utf8"), previous);',
         'assert.equal(await readFile(target, "utf8"), next);',
+        "const inode = (await stat(target)).ino;",
+        "const retry = await applySecurityPolicy(await loadSecurityPolicyDraft(repository, artifacts));",
+        'assert.equal(retry.status, "unchanged");',
+        "assert.equal((await stat(target)).ino, inode);",
+        'await writeFile(target, "# Concurrent owner edit\\n");',
+        "await assert.rejects(applySecurityPolicy(await loadSecurityPolicyDraft(repository, artifacts)), /changed after/);",
+        'assert.equal(await readFile(target, "utf8"), "# Concurrent owner edit\\n");',
+        "await writeFile(target, next);",
         'await mkdir(join(repository, "component"));',
         "const security = new CodexSecurity();",
         "try {",

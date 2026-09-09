@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod,
+  cp,
   link,
   lstat,
   mkdir,
@@ -17,6 +18,7 @@ import {
 } from "node:fs/promises";
 import * as fsPromises from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { strToU8, zipSync } from "fflate";
 import {
@@ -25,8 +27,8 @@ import {
 } from "../src/errors.js";
 import {
   applySecurityPolicy,
-  inspectSecurityPolicyPaths,
   loadSecurityPolicyDraft,
+  inspectSecurityPolicySources,
   readSecurityPolicy,
   resolveSecurityPolicyGuidance,
   resolveSecurityPolicyTarget,
@@ -167,9 +169,9 @@ describe("security policy generation", () => {
       scope: "services/api",
       targetPath: join(component, "SECURITY.md"),
     });
-    expect(
-      await resolveSecurityPolicyGuidance(target, PYTHON, PLUGIN_ROOT),
-    ).toContain("Root invariant.");
+    expect(await resolveSecurityPolicyGuidance(target, PLUGIN_ROOT)).toContain(
+      "Root invariant.",
+    );
     expect(
       await resolveSecurityPolicyTarget(f.repository, "services/api"),
     ).toEqual(target);
@@ -188,6 +190,29 @@ describe("security policy generation", () => {
     await expect(securityPolicyProtectedRoots(target)).rejects.toThrow(
       "Git metadata changed",
     );
+  });
+
+  test("does not complete a draft after its Git binding changes during generation", async () => {
+    const f = await fixture();
+    policyGit(f.repository, "init", "--quiet");
+    await expect(
+      f.generate({
+        run: async (stage) => {
+          if (stage === "policy")
+            await rename(
+              join(f.repository, ".git"),
+              join(f.root, "previous-git"),
+            );
+          return stageResult(stage);
+        },
+      }),
+    ).rejects.toThrow("Git metadata changed");
+    expect((await readdir(f.outputDir)).sort()).toEqual([
+      "SECURITY.md",
+      "THREAT_MODEL.md",
+      "previous-SECURITY.md",
+      "project-spec.md",
+    ]);
   });
 
   test("rejects Git configuration that redirects the selected checkout", async () => {
@@ -293,14 +318,276 @@ describe("security policy generation", () => {
         "Not policy guidance\n",
       );
       expect(
-        await inspectSecurityPolicyPaths(
-          await resolveSecurityPolicyTarget(f.repository),
-        ),
+        (
+          await inspectSecurityPolicySources(
+            await resolveSecurityPolicyTarget(f.repository),
+          )
+        ).policyPaths,
       ).toEqual(
         nested ? ["SECURITY.md", "a-checkout/SECURITY.md"] : ["SECURITY.md"],
       );
     }
   });
+
+  test.each(["detached", "explicit worktree", "malformed config"])(
+    "excludes %s Git metadata without a worktree marker",
+    async (kind) => {
+      const f = await fixture();
+      const metadata = join(f.repository, "saved-metadata");
+      policyGit(f.repository, "init", "--quiet", "--bare", metadata);
+      policyGit(metadata, "config", "core.bare", "false");
+      if (kind === "explicit worktree")
+        policyGit(metadata, "config", "core.worktree", f.repository);
+      if (kind === "malformed config")
+        await writeFile(join(metadata, "config"), "[malformed config\n");
+      await writeFile(join(metadata, "SECURITY.md"), "Git metadata fixture");
+      const inventory = await inspectSecurityPolicySources(
+        await resolveSecurityPolicyTarget(f.repository),
+      );
+      expect(inventory.policyPaths).toEqual([]);
+      expect(inventory.gitMetadataPaths).toContain(metadata);
+    },
+  );
+
+  test("excludes copied linked-worktree metadata", async () => {
+    const f = await fixture();
+    policyGit(f.repository, "init", "--quiet");
+    policyGit(
+      f.repository,
+      "commit",
+      "--allow-empty",
+      "--quiet",
+      "-m",
+      "initial",
+    );
+    const linked = join(f.root, "linked");
+    policyGit(
+      f.repository,
+      "worktree",
+      "add",
+      "--quiet",
+      "--detach",
+      linked,
+      "HEAD",
+    );
+    const original = execFileSync(
+      "git",
+      ["-C", linked, "rev-parse", "--absolute-git-dir"],
+      { encoding: "utf8" },
+    ).trim();
+    const archived = join(f.repository, "archived-admin");
+    const common = join(f.repository, "shared-data");
+    await cp(join(f.repository, ".git"), common, { recursive: true });
+    await rm(join(common, "HEAD"));
+    await cp(original, archived, { recursive: true });
+    await writeFile(join(archived, "commondir"), `${common}\r\n`);
+    await writeFile(join(archived, "SECURITY.md"), "Git metadata fixture");
+    await writeFile(join(common, "SECURITY.md"), "Shared Git metadata fixture");
+    const inventory = await inspectSecurityPolicySources(
+      await resolveSecurityPolicyTarget(f.repository),
+    );
+    expect(inventory.policyPaths).toEqual([]);
+    expect(inventory.gitMetadataPaths).toContain(archived);
+    expect(inventory.gitMetadataPaths).toContain(common);
+  });
+
+  test("keeps source with Git-like names in the policy inventory", async () => {
+    const f = await fixture();
+    await writeFile(join(f.repository, "HEAD"), "Ordinary source\n");
+    await mkdir(join(f.repository, "objects"));
+    await mkdir(join(f.repository, "refs"));
+    await writeFile(join(f.repository, "objects", "SECURITY.md"), POLICY);
+    const inventory = await inspectSecurityPolicySources(
+      await resolveSecurityPolicyTarget(f.repository),
+    );
+    expect(inventory.policyPaths).toEqual(["objects/SECURITY.md"]);
+    expect(inventory.gitMetadataPaths).toEqual([]);
+  });
+
+  test("recognizes shared Git storage without HEAD during policy discovery", async () => {
+    const f = await fixture();
+    const metadata = join(f.repository, "shared-data");
+    policyGit(f.repository, "init", "--quiet", "--bare", metadata);
+    await rm(join(metadata, "HEAD"));
+    const inventory = await inspectSecurityPolicySources(
+      await resolveSecurityPolicyTarget(f.repository),
+    );
+    expect(inventory.gitMetadataPaths).toContain(metadata);
+    expect(inventory.policyPaths).toEqual([]);
+  });
+
+  test("keeps ordinary source with config, objects and refs directories", async () => {
+    const f = await fixture();
+    await writeFile(join(f.repository, "config"), "[app]\nname = example\n");
+    await mkdir(join(f.repository, "objects"));
+    await mkdir(join(f.repository, "refs"));
+    await writeFile(join(f.repository, "objects", "SECURITY.md"), POLICY);
+    const inventory = await inspectSecurityPolicySources(
+      await resolveSecurityPolicyTarget(f.repository),
+    );
+    expect(inventory.policyPaths).toEqual(["objects/SECURITY.md"]);
+    expect(inventory.gitMetadataPaths).toEqual([]);
+  });
+
+  test("protects relative and recursive alternate Git object stores", async () => {
+    const f = await fixture();
+    policyGit(f.repository, "init", "--quiet");
+    const primary = join(f.repository, ".git", "objects");
+    const first = join(f.repository, "object-cache-\u00e9");
+    const second = join(f.root, "shared-object-cache");
+    for (const directory of [first, second]) {
+      await mkdir(join(directory, "info"), { recursive: true });
+      await mkdir(join(directory, "pack"));
+    }
+    await writeFile(
+      join(primary, "info", "alternates"),
+      `# Shared object storage\nmissing-store\n${relative(primary, first)}\n`,
+    );
+    await writeFile(join(first, "info", "alternates"), `${second}\n`);
+    await writeFile(join(second, "info", "alternates"), `${first}\n`);
+    await writeFile(join(first, "SECURITY.md"), "Object-store fixture\n");
+    const target = await resolveSecurityPolicyTarget(f.repository);
+    const inventory = await inspectSecurityPolicySources(target);
+    expect(inventory.gitMetadataPaths).toContain(first);
+    expect(inventory.gitMetadataPaths).toContain(second);
+    expect(inventory.policyPaths).toEqual([]);
+    expect(await securityPolicyProtectedRoots(target)).toEqual(
+      expect.arrayContaining([first, second]),
+    );
+  });
+
+  test.each([
+    "object store",
+    "object-\u00e9",
+    ...(process.platform === "win32"
+      ? []
+      : [
+          "object\nstore",
+          "object\tstore",
+          'object"store',
+          "object\\001",
+          "object\u0001",
+          "object\u0007",
+          "object\u000b",
+        ]),
+  ])("preserves alternate Git object-store path %j", async (name) => {
+    const f = await fixture();
+    policyGit(f.repository, "init", "--quiet");
+    const alternate = join(f.repository, name);
+    await mkdir(join(alternate, "info"), { recursive: true });
+    await mkdir(join(alternate, "pack"));
+    const quoted = JSON.stringify(alternate)
+      .replaceAll("\u00e9", "\\303\\251")
+      .replace(/\\u00([0-9a-f]{2})/gu, (_escape, hex: string) =>
+        hex === "07"
+          ? "\\a"
+          : hex === "0b"
+            ? "\\v"
+            : `\\${Number.parseInt(hex, 16).toString(8).padStart(3, "0")}`,
+      );
+    await writeFile(
+      join(f.repository, ".git", "objects", "info", "alternates"),
+      `${quoted}\n`,
+    );
+    const listed = execFileSync(
+      "git",
+      ["-C", f.repository, "count-objects", "--verbose"],
+      { encoding: "utf8" },
+    );
+    expect(
+      listed.split("\n").filter((line) => line.startsWith("alternate: ")),
+    ).toHaveLength(1);
+    if (name.includes("\\")) {
+      // Bun's POSIX realpath misreads backslashes; verify the supported Node runtime.
+      const build = await Bun.build({
+        entrypoints: [
+          fileURLToPath(new URL("../src/targets.ts", import.meta.url)),
+        ],
+        target: "node",
+        format: "esm",
+      });
+      expect(build.success).toBe(true);
+      const module = join(f.root, "targets.mjs");
+      await writeFile(module, await build.outputs[0]!.text());
+      const output = execFileSync(
+        "node",
+        [
+          "--input-type=module",
+          "--eval",
+          `import { gitObjectDirectories } from ${JSON.stringify(pathToFileURL(module).href)}; console.log(JSON.stringify(await gitObjectDirectories([${JSON.stringify(join(f.repository, ".git"))}])));`,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(JSON.parse(output)).toContain(alternate);
+      return;
+    }
+    const target = await resolveSecurityPolicyTarget(f.repository);
+    expect(
+      (await inspectSecurityPolicySources(target)).gitMetadataPaths,
+    ).toContain(alternate);
+  });
+
+  test.each(["bare", "headless", "archived"])(
+    "protects alternate object stores for nested %s metadata",
+    async (kind) => {
+      const f = await fixture();
+      const metadata = join(f.repository, "metadata");
+      const alternate = join(f.repository, "zz-object-cache");
+      policyGit(f.repository, "init", "--quiet", "--bare", metadata);
+      if (kind === "archived") {
+        const administrative = join(f.repository, "archived-admin");
+        await mkdir(administrative);
+        await writeFile(
+          join(administrative, "HEAD"),
+          await readFile(join(metadata, "HEAD")),
+        );
+        await writeFile(join(administrative, "commondir"), `${metadata}\n`);
+      }
+      if (kind !== "bare") await rm(join(metadata, "HEAD"));
+      await mkdir(join(alternate, "info"), { recursive: true });
+      await mkdir(join(alternate, "pack"));
+      await writeFile(
+        join(metadata, "objects", "info", "alternates"),
+        `${alternate}\n`,
+      );
+      await writeFile(join(alternate, "SECURITY.md"), "Object-store fixture\n");
+      const inventory = await inspectSecurityPolicySources(
+        await resolveSecurityPolicyTarget(f.repository),
+      );
+      expect(inventory.gitMetadataPaths).toContain(alternate);
+      expect(inventory.policyPaths).toEqual([]);
+    },
+  );
+
+  test.each(["worktree", "headless"])(
+    "protects a relocated primary Git object store for %s metadata",
+    async (kind) => {
+      const f = await fixture();
+      const metadata = join(
+        f.repository,
+        kind === "worktree" ? ".git" : "metadata",
+      );
+      if (kind === "worktree") policyGit(f.repository, "init", "--quiet");
+      else {
+        policyGit(f.repository, "init", "--quiet", "--bare", metadata);
+        await rm(join(metadata, "HEAD"));
+      }
+      const primary = join(metadata, "objects");
+      const relocated = join(f.repository, "object-cache");
+      await rename(primary, relocated);
+      await symlink(
+        relocated,
+        primary,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const target = await resolveSecurityPolicyTarget(f.repository);
+      expect(
+        (await inspectSecurityPolicySources(target)).gitMetadataPaths,
+      ).toContain(relocated);
+      if (kind === "worktree")
+        expect(await securityPolicyProtectedRoots(target)).toContain(relocated);
+    },
+  );
 
   test("keeps linked worktrees and submodules as their own policy roots", async () => {
     const f = await fixture();
@@ -359,11 +646,7 @@ describe("security policy generation", () => {
     expect(
       await resolveSecurityPolicyTarget(f.repository, "services/api"),
     ).toEqual(direct);
-    const guidance = await resolveSecurityPolicyGuidance(
-      direct,
-      PYTHON,
-      PLUGIN_ROOT,
-    );
+    const guidance = await resolveSecurityPolicyGuidance(direct, PLUGIN_ROOT);
     expect(guidance).toContain("Submodule policy");
     expect(guidance).not.toContain("Parent policy");
     await mkdir(join(submodule, "component"));
@@ -383,6 +666,13 @@ describe("security policy generation", () => {
     const checkout = await fixture();
     const standalone = await fixture();
     execFileSync("git", ["init", "--quiet", checkout.repository]);
+    policyGit(
+      standalone.repository,
+      "init",
+      "--quiet",
+      "--bare",
+      join(standalone.repository, "cache.git"),
+    );
     const component = join(checkout.repository, "component");
     await mkdir(component);
     await writeFile(join(checkout.repository, "SECURITY.md"), POLICY);
@@ -395,9 +685,11 @@ describe("security policy generation", () => {
       await expect(resolveSecurityPolicyTarget(component)).rejects.toThrow(
         "Could not determine the Git worktree root",
       );
-      expect(
-        (await resolveSecurityPolicyTarget(standalone.repository)).repository,
-      ).toBe(standalone.repository);
+      const target = await resolveSecurityPolicyTarget(standalone.repository);
+      expect(target.repository).toBe(standalone.repository);
+      await expect(inspectSecurityPolicySources(target)).rejects.toThrow(
+        "Git is not available on a trusted PATH",
+      );
     } finally {
       delete process.env["PATH"];
       for (const [key, value] of pathEntries) process.env[key] = value;
@@ -758,9 +1050,9 @@ describe("security policy review and application", () => {
       expect(draft.content).toBe(content);
       await applySecurityPolicy(draft, { pythonPath: PYTHON });
       expect(await readFile(draft.targetPath, "utf8")).toBe(content);
-      expect(
-        await resolveSecurityPolicyGuidance(draft, PYTHON, PLUGIN_ROOT),
-      ).toContain(content);
+      expect(await resolveSecurityPolicyGuidance(draft, PLUGIN_ROOT)).toContain(
+        content,
+      );
     }
   });
 
@@ -776,9 +1068,9 @@ describe("security policy review and application", () => {
       recoveryPath: null,
     });
     expect(await readFile(draft.targetPath, "utf8")).toBe(POLICY);
-    expect(
-      await resolveSecurityPolicyGuidance(draft, PYTHON, PLUGIN_ROOT),
-    ).toContain(POLICY.trim());
+    expect(await resolveSecurityPolicyGuidance(draft, PLUGIN_ROOT)).toContain(
+      POLICY.trim(),
+    );
     expect(await readdir(f.repository)).toEqual(["SECURITY.md"]);
   });
 
@@ -925,10 +1217,9 @@ describe("security policy review and application", () => {
     const pluginPath = await policyPlugin(
       f.root,
       [
-        "import os, pathlib",
-        "with pathlib.Path(os.environ['POLICY_TEST_LOG']).open('a') as output:",
-        "    output.write('custom resolver\\n')",
-        "print('custom guidance')",
+        'import { appendFileSync } from "node:fs";',
+        'appendFileSync(process.env.POLICY_TEST_LOG, "custom resolver\\n");',
+        'console.log("custom guidance");',
       ].join("\n"),
     );
     const draft = await f.generate({ pluginPath });
@@ -973,10 +1264,10 @@ describe("security policy review and application", () => {
     const log = join(f.root, "resolver-paths.log");
     const archive = join(f.root, "policy-plugin.zip");
     const script = [
-      "import os, pathlib",
-      "with pathlib.Path(os.environ['POLICY_TEST_LOG']).open('a') as output:",
-      "    output.write(str(pathlib.Path(__file__).resolve()) + '\\n')",
-      "print('custom guidance')",
+      'import { appendFileSync } from "node:fs";',
+      'import { fileURLToPath } from "node:url";',
+      'appendFileSync(process.env.POLICY_TEST_LOG, fileURLToPath(import.meta.url) + "\\n");',
+      'console.log("custom guidance");',
     ].join("\n");
     await writeFile(
       archive,
@@ -987,7 +1278,7 @@ describe("security policy review and application", () => {
             version: "test-policy-plugin",
           }),
         ),
-        "scripts/resolve_security_md.py": strToU8(script),
+        "mcp/helpers.mjs": strToU8(script),
       }),
     );
     await f.generate({ pluginPath: archive });
@@ -1008,7 +1299,7 @@ describe("security policy review and application", () => {
     const f = await fixture();
     const pluginPath = await policyPlugin(
       f.root,
-      "raise SystemExit('synthetic preflight failure')\n",
+      'throw new Error("synthetic preflight failure");\n',
     );
     const draft = await f.generate({ pluginPath });
     await expect(applySecurityPolicy(draft)).rejects.toThrow(
@@ -1019,17 +1310,18 @@ describe("security policy review and application", () => {
 
   test("reports a committed policy when verification fails or is interrupted", async () => {
     for (const failure of [
-      "raise SystemExit('synthetic verification failure')",
-      "signal.raise_signal(signal.SIGINT)",
+      'throw new Error("synthetic verification failure");',
+      'process.kill(process.pid, "SIGINT");',
     ]) {
       const f = await fixture();
       const pluginPath = await policyPlugin(
         f.root,
         [
-          "import pathlib, signal, sys",
-          "root = pathlib.Path(sys.argv[sys.argv.index('--repo') + 1])",
-          `if (root / 'SECURITY.md').exists(): ${failure}`,
-          "print('preflight passed')",
+          'import { existsSync } from "node:fs";',
+          'import { join } from "node:path";',
+          'const root = process.argv[process.argv.indexOf("--repo") + 1];',
+          `if (existsSync(join(root, "SECURITY.md"))) { ${failure} }`,
+          'console.log("preflight passed");',
         ].join("\n"),
       );
       const draft = await f.generate({ pluginPath });
@@ -1055,11 +1347,12 @@ describe("security policy review and application", () => {
       const pluginPath = await policyPlugin(
         f.root,
         [
-          "import pathlib, sys",
-          "target = pathlib.Path(sys.argv[sys.argv.index('--scope') + 1]) / 'SECURITY.md'",
-          `if target.exists() and target.read_text() == ${JSON.stringify(POLICY)} and pathlib.Path(${JSON.stringify(blocked)}).exists():`,
-          "    raise SystemExit('synthetic verification failure')",
-          "print('resolver accepted the policy')",
+          'import { existsSync, readFileSync } from "node:fs";',
+          'import { join } from "node:path";',
+          'const target = join(process.argv[process.argv.indexOf("--scope") + 1], "SECURITY.md");',
+          `if (existsSync(target) && readFileSync(target, "utf8") === ${JSON.stringify(POLICY)} && existsSync(${JSON.stringify(blocked)}))`,
+          '  throw new Error("synthetic verification failure");',
+          'console.log("resolver accepted the policy");',
         ].join("\n"),
       );
       const draft = await f.generate({ pluginPath });
@@ -1102,14 +1395,15 @@ describe("security policy review and application", () => {
       const pluginPath = await policyPlugin(
         f.root,
         [
-          "import pathlib, sys",
-          "root = pathlib.Path(sys.argv[sys.argv.index('--repo') + 1])",
-          "target = root / 'SECURITY.md'",
-          `if target.read_text() == ${JSON.stringify(POLICY)}:`,
+          'import { readFileSync, unlinkSync, writeFileSync } from "node:fs";',
+          'import { join } from "node:path";',
+          'const root = process.argv[process.argv.indexOf("--repo") + 1];',
+          'const target = join(root, "SECURITY.md");',
+          `if (readFileSync(target, "utf8") === ${JSON.stringify(POLICY)})`,
           change === "remove"
-            ? "    target.unlink()"
-            : "    target.write_bytes(b'# Concurrent policy\\n')",
-          "print('resolver accepted the current policy chain')",
+            ? "  unlinkSync(target);"
+            : '  writeFileSync(target, "# Concurrent policy\\n");',
+          'console.log("resolver accepted the current policy chain");',
         ].join("\n"),
       );
       const draft = await f.generate({ pluginPath });
@@ -3635,9 +3929,10 @@ describe("security policy review and application", () => {
 
   test("applies a component policy without changing a safe inherited link", async () => {
     const f = await fixture();
-    const ownerPolicy = join(f.repository, "owner-policy.md");
+    const ownerPolicy = join(f.repository, "docs", "SECURITY.md");
     const inherited = join(f.repository, "SECURITY.md");
     await mkdir(join(f.repository, "component"));
+    await mkdir(dirname(ownerPolicy));
     await writeFile(ownerPolicy, "# Owner policy\n");
     await symlink(ownerPolicy, inherited, "file");
     const draft = await f.generate({ path: "component" });
@@ -3645,7 +3940,7 @@ describe("security policy review and application", () => {
       createHash("sha256").update(text).digest("hex");
     const links = {
       links: [["SECURITY.md", await readlink(inherited)]],
-      destination: "owner-policy.md",
+      destination: "docs/SECURITY.md",
     };
     expect(draft.inheritedPolicySha256).toBe(
       hash(
@@ -3693,7 +3988,8 @@ describe("security policy review and application", () => {
 
   test("tracks safe inherited policy links and rejects outside links", async () => {
     const f = await fixture();
-    const linkedPolicy = join(f.repository, "owner-policy.md");
+    const linkedPolicy = join(f.repository, ".github", "SECURITY.md");
+    await mkdir(dirname(linkedPolicy));
     await mkdir(join(f.repository, "component"));
     await writeFile(linkedPolicy, "# Owner policy\n");
     await symlink(linkedPolicy, join(f.repository, "SECURITY.md"), "file");
@@ -4093,8 +4389,9 @@ describe("security policy review and application", () => {
       const component = join(f.repository, "component");
       const target = join(component, "SECURITY.md");
       const inherited = join(f.repository, "SECURITY.md");
-      const ownerPolicy = join(f.repository, "owner-policy.md");
+      const ownerPolicy = join(f.repository, ".github", "SECURITY.md");
       const intermediate = join(f.repository, "policy-link.md");
+      await mkdir(dirname(ownerPolicy));
       await mkdir(component);
       await writeFile(target, "# Original policy\n");
       await writeFile(ownerPolicy, "# Owner policy\n");
@@ -4162,12 +4459,13 @@ describe("security policy review and application", () => {
         const pluginPath = await policyPlugin(
           f.root,
           [
-            "import pathlib, sys",
-            "root = pathlib.Path(sys.argv[sys.argv.index('--repo') + 1])",
-            "target = root / 'component' / 'SECURITY.md'",
-            `if ${timing === "before" ? "not " : ""}target.exists():`,
-            `    (root / ${JSON.stringify(policyDirectory)} / 'SECURITY.md').symlink_to(target)`,
-            "print('resolver accepted the current policy chain')",
+            'import { existsSync, symlinkSync } from "node:fs";',
+            'import { join } from "node:path";',
+            'const root = process.argv[process.argv.indexOf("--repo") + 1];',
+            'const target = join(root, "component", "SECURITY.md");',
+            `if (${timing === "before" ? "!" : ""}existsSync(target))`,
+            `  symlinkSync(target, join(root, ${JSON.stringify(policyDirectory)}, "SECURITY.md"), "file");`,
+            'console.log("resolver accepted the current policy chain");',
           ].join("\n"),
         );
         const draft = await f.generate({ path: "component", pluginPath });
@@ -4195,12 +4493,13 @@ describe("security policy review and application", () => {
       const pluginPath = await policyPlugin(
         f.root,
         [
-          "import pathlib, sys",
-          "root = pathlib.Path(sys.argv[sys.argv.index('--repo') + 1])",
-          "target = root / 'component' / 'SECURITY.md'",
-          `if ${timing === "before" ? "not " : ""}target.exists():`,
-          "    (root / 'SECURITY.md').write_text('# New root policy\\n')",
-          "print('resolver accepted the current policy chain')",
+          'import { existsSync, writeFileSync } from "node:fs";',
+          'import { join } from "node:path";',
+          'const root = process.argv[process.argv.indexOf("--repo") + 1];',
+          'const target = join(root, "component", "SECURITY.md");',
+          `if (${timing === "before" ? "!" : ""}existsSync(target))`,
+          '  writeFileSync(join(root, "SECURITY.md"), "# New root policy\\n");',
+          'console.log("resolver accepted the current policy chain");',
         ].join("\n"),
       );
       const draft = await f.generate({ path: "component", pluginPath });

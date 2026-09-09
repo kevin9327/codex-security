@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
@@ -230,18 +230,188 @@ export async function enclosingGitWorktreeRoots(
   }
 }
 
+export async function isGitMetadataDirectory(
+  repository: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const metadata = async (name: string, followLinks = false) =>
+    await (followLinks ? stat : lstat)(join(repository, name)).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+        throw error;
+      },
+    );
+  const head = await metadata("HEAD");
+  if (head === null) {
+    // A common directory can outlive its main worktree's HEAD. Require both
+    // Git storage directories and its format declaration, not names alone.
+    if (!(await metadata("config", true))?.isFile()) return false;
+    const [objects, refs] = await Promise.all([
+      metadata("objects", true),
+      metadata("refs", true),
+    ]);
+    if (!objects?.isDirectory() || !refs?.isDirectory()) return false;
+    try {
+      const version = await gitOutput(
+        repository,
+        [
+          "config",
+          "--no-includes",
+          "--file",
+          join(repository, "config"),
+          "--type=int",
+          "--get",
+          "core.repositoryformatversion",
+        ],
+        signal,
+      );
+      return /^\d+$/u.test(version);
+    } catch (error) {
+      throwIfAborted(signal);
+      // git config uses status 1 when the requested key is absent.
+      if (error instanceof Error && "code" in error && error.code === 1)
+        return false;
+      throw error;
+    }
+  }
+  if (!head.isFile() && !head.isSymbolicLink()) return false;
+  try {
+    // This resolver validates Git directories without loading their configuration.
+    const directory = await gitOutput(
+      repository,
+      ["rev-parse", "--resolve-git-dir", repository],
+      signal,
+      { LC_ALL: "C" },
+    );
+    return (
+      relative(await realpath(directory), await realpath(repository)) === ""
+    );
+  } catch (error) {
+    throwIfAborted(signal);
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === 128 &&
+      "stderr" in error &&
+      typeof error.stderr === "string" &&
+      error.stderr.trimEnd() === `fatal: not a gitdir '${repository}'`
+    )
+      return false;
+    throw error;
+  }
+}
+
 export async function gitMetadataDirectories(
   repository: string,
   signal?: AbortSignal,
-): Promise<[string, string]> {
+): Promise<[string, string, ...string[]]> {
   const [directory, commonDirectory] = await Promise.all([
     gitOutput(repository, ["rev-parse", "--absolute-git-dir"], signal),
     gitOutput(repository, ["rev-parse", "--git-common-dir"], signal),
   ]);
-  return await Promise.all([
+  const roots = await Promise.all([
     abortable(() => realpath(resolve(repository, directory)), signal),
     abortable(() => realpath(resolve(repository, commonDirectory)), signal),
   ]);
+  return [...roots, ...(await gitObjectDirectories(roots, signal))];
+}
+
+function gitAlternatePaths(contents: Buffer): string[] {
+  const text = contents.toString("latin1").split("\0", 1)[0]!;
+  const paths: string[] = [];
+  const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  for (let offset = 0; offset < text.length; ) {
+    const newline = text.indexOf("\n", offset);
+    let end = newline === -1 ? text.length : newline;
+    let path = text.slice(offset, end);
+    if (path.startsWith("#")) path = "";
+    const quoted = /^"(?:[^"\\]|\\[\s\S])*"/u.exec(text.slice(offset))?.[0];
+    if (quoted !== undefined) {
+      try {
+        // Git uses C-quoted bytes; JSON handles the shared escapes after conversion.
+        path = JSON.parse(
+          quoted.replace(
+            /\\(?:[0-3][0-7]{2}|[\s\S])|[\u0000-\u001f]/gu,
+            (escape) => {
+              if (/^\\[btnfr\\"]$/u.test(escape)) return escape;
+              const byte =
+                escape[0] !== "\\"
+                  ? escape.charCodeAt(0)
+                  : escape === "\\a"
+                    ? 7
+                    : escape === "\\v"
+                      ? 11
+                      : /^\\[0-3][0-7]{2}$/u.test(escape)
+                        ? Number.parseInt(escape.slice(1), 8)
+                        : undefined;
+              if (byte === undefined)
+                throw new SyntaxError("Invalid Git path escape.");
+              return `\\u${byte.toString(16).padStart(4, "0")}`;
+            },
+          ),
+        ) as string;
+        end = offset + quoted.length;
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        // Git treats malformed quoting as an unquoted pathname.
+      }
+    }
+    if (path !== "") {
+      try {
+        paths.push(utf8.decode(Buffer.from(path, "latin1")));
+      } catch (error) {
+        throw new InvalidTargetError("Git object-store paths must use UTF-8.", {
+          cause: error,
+        });
+      }
+    }
+    offset = end + 1;
+  }
+  return paths;
+}
+
+export async function gitObjectDirectories(
+  metadataDirectories: readonly string[],
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const pending = metadataDirectories.map((path) => join(path, "objects"));
+  const visited = new Set<string>();
+  const canonical = (path: string): string | null => {
+    try {
+      return realpathSync.native(path);
+    } catch (error) {
+      if (
+        ["ENOENT", "ENOTDIR"].includes(
+          (error as NodeJS.ErrnoException).code ?? "",
+        )
+      )
+        return null;
+      throw error;
+    }
+  };
+  while (pending.length > 0) {
+    throwIfAborted(signal);
+    const directory = canonical(pending.pop()!);
+    if (directory === null || visited.has(directory)) continue;
+    if (!(await stat(directory)).isDirectory()) continue;
+    visited.add(directory);
+    const contents = await readFile(join(directory, "info", "alternates"), {
+      signal,
+    }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+      throw error;
+    });
+    if (contents === null) continue;
+    for (const path of gitAlternatePaths(contents)) {
+      throwIfAborted(signal);
+      pending.push(resolve(directory, path));
+    }
+  }
+  return [...visited].filter((path) =>
+    metadataDirectories.every((root) =>
+      relativePathIsOutside(relative(root, path)),
+    ),
+  );
 }
 
 async function requireGitWorktreeBinding(
@@ -554,6 +724,7 @@ async function gitOutput(
   repository: string,
   args: readonly string[],
   signal?: AbortSignal,
+  environment: NodeJS.ProcessEnv = {},
 ): Promise<string> {
   throwIfAborted(signal);
   const command = await resolveTrustedExecutable(
@@ -570,7 +741,7 @@ async function gitOutput(
     {
       encoding: "utf8",
       signal,
-      env: command.environment,
+      env: { ...command.environment, ...environment },
       maxBuffer: Infinity,
     },
   );

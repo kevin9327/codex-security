@@ -19,7 +19,6 @@ import {
   open,
   readFile,
   readdir,
-  readlink,
   realpath,
   rename,
   rm,
@@ -60,7 +59,6 @@ import {
 } from "./errors.js";
 import type { JsonObject } from "./config.js";
 import { resolveTrustedExecutable } from "./trusted-executable.js";
-import { relativePathIsOutside } from "./targets.js";
 import {
   isWindowsUnsafePathComponent,
   windowsUnsafePathComponent,
@@ -151,12 +149,6 @@ export interface PluginPythonOptions {
   homeDirectory?: string;
   managedRuntimeRoots?: readonly string[];
   protectedRoot?: string;
-  signal?: AbortSignal;
-}
-
-export interface PluginPythonRuntimeOptions {
-  environment?: ProcessEnvironment;
-  protectedPaths: readonly string[];
   signal?: AbortSignal;
 }
 
@@ -2129,7 +2121,18 @@ export async function importAmbientAuth(
     await copyFile(source, temporary, constants.COPYFILE_EXCL);
     await chmod(temporary, 0o600);
     try {
-      await installFileNoClobber(temporary, destination);
+      try {
+        await link(temporary, destination);
+      } catch (error) {
+        if (
+          !["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "EMLINK"].includes(
+            nodeErrorCode(error) ?? "",
+          )
+        ) {
+          throw error;
+        }
+        await copyFile(temporary, destination, constants.COPYFILE_EXCL);
+      }
     } catch (error) {
       if (
         nodeErrorCode(error) === "EEXIST" &&
@@ -2150,25 +2153,6 @@ export async function importAmbientAuth(
     );
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
-  }
-}
-
-export async function installFileNoClobber(
-  source: string,
-  destination: string,
-): Promise<void> {
-  try {
-    await link(source, destination);
-  } catch (error) {
-    // Windows reports unsupported FAT/exFAT hard links as EISDIR.
-    if (
-      !["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "EMLINK", "EISDIR"].includes(
-        nodeErrorCode(error) ?? "",
-      )
-    ) {
-      throw error;
-    }
-    await copyFile(source, destination, constants.COPYFILE_EXCL);
   }
 }
 
@@ -2675,182 +2659,6 @@ export async function resolvePluginPython(
   );
 }
 
-export async function pluginPythonRuntime(
-  python: string,
-  options: PluginPythonRuntimeOptions,
-): Promise<{
-  executable: string;
-  readRoots: string[];
-  environment?: ProcessEnvironment;
-}> {
-  throwIfSignalAborted(options.signal);
-  if (!isAbsolute(python)) {
-    throw new PluginPythonUnavailableError(
-      `Plugin Python executable must be an absolute path: ${python}`,
-    );
-  }
-
-  let stdout: string;
-  try {
-    ({ stdout } = await execFile(
-      python,
-      [
-        "-I",
-        "-B",
-        "-c",
-        "import json,os,sys\nprint(json.dumps([os.path.dirname(sys.executable),sys.prefix,sys.exec_prefix,sys.base_prefix,sys.base_exec_prefix],separators=(',',':')))",
-      ],
-      {
-        encoding: "utf8",
-        env: pythonUtf8Environment(options.environment ?? process.env),
-        signal: options.signal,
-        timeout: 5_000,
-        windowsHide: true,
-      },
-    ));
-  } catch (error) {
-    throwIfSignalAborted(options.signal);
-    throw new PluginPythonUnavailableError(
-      "Unable to inspect the plugin Python runtime.",
-      { cause: error },
-    );
-  }
-  throwIfSignalAborted(options.signal);
-
-  let runtimeDirectories: unknown;
-  try {
-    runtimeDirectories = JSON.parse(stdout);
-  } catch (error) {
-    throw new PluginPythonUnavailableError(
-      "Plugin Python returned invalid runtime metadata.",
-      { cause: error },
-    );
-  }
-  if (
-    !Array.isArray(runtimeDirectories) ||
-    runtimeDirectories.length === 0 ||
-    !runtimeDirectories.every(
-      (path) => typeof path === "string" && path.length !== 0,
-    )
-  ) {
-    throw new PluginPythonUnavailableError(
-      "Plugin Python returned invalid runtime metadata.",
-    );
-  }
-
-  const protectedPaths: string[] = [];
-  for (const path of options.protectedPaths) {
-    throwIfSignalAborted(options.signal);
-    try {
-      protectedPaths.push(
-        await canonicalizeProtectedPath(path, options.signal),
-      );
-    } catch (error) {
-      throwIfSignalAborted(options.signal);
-      throw new PluginPythonUnavailableError(
-        `Unable to inspect a protected path for the plugin Python runtime: ${path}`,
-        { cause: error },
-      );
-    }
-  }
-
-  const executableDirectories: string[] = [];
-  try {
-    let executable = python;
-    while (true) {
-      throwIfSignalAborted(options.signal);
-      const directory = await realpath(dirname(executable));
-      executableDirectories.push(directory);
-      executable = join(directory, basename(executable));
-      if (!(await lstat(executable)).isSymbolicLink()) break;
-      executable = resolve(directory, await readlink(executable));
-    }
-  } catch (error) {
-    throwIfSignalAborted(options.signal);
-    throw new PluginPythonUnavailableError(
-      `Unable to inspect the plugin Python executable: ${python}`,
-      { cause: error },
-    );
-  }
-  const candidates = [...executableDirectories, ...runtimeDirectories];
-  const roots: string[] = [];
-  for (const candidate of candidates) {
-    throwIfSignalAborted(options.signal);
-    if (!isAbsolute(candidate)) {
-      throw new PluginPythonUnavailableError(
-        `Plugin Python returned a non-absolute runtime directory: ${candidate}`,
-      );
-    }
-    let canonical: string;
-    try {
-      canonical = await realpath(candidate);
-      if (!(await stat(canonical)).isDirectory()) {
-        throw new Error("path is not a directory");
-      }
-      throwIfSignalAborted(options.signal);
-    } catch (error) {
-      throwIfSignalAborted(options.signal);
-      throw new PluginPythonUnavailableError(
-        `Plugin Python returned a runtime directory that does not exist: ${candidate}`,
-        { cause: error },
-      );
-    }
-    if (dirname(canonical) === canonical) {
-      throw new PluginPythonUnavailableError(
-        `Plugin Python runtime read roots must not include a filesystem root: ${canonical}`,
-      );
-    }
-    if (
-      protectedPaths.some(
-        (path) => !relativePathIsOutside(relative(canonical, path)),
-      )
-    ) {
-      throw new PluginPythonUnavailableError(
-        `Plugin Python runtime read root contains a protected path: ${canonical}`,
-      );
-    }
-    if (!roots.some((root) => relative(root, canonical) === "")) {
-      roots.push(canonical);
-    }
-  }
-  throwIfSignalAborted(options.signal);
-  const prefix = runtimeDirectories[1];
-  // Resolve directory aliases without changing the selected virtual environment.
-  let executable = await realpath(python);
-  if (prefix !== undefined) {
-    const canonicalPrefix = await realpath(prefix);
-    for (
-      let directory = dirname(python);
-      dirname(directory) !== directory;
-      directory = dirname(directory)
-    ) {
-      if ((await realpath(directory)) === canonicalPrefix) {
-        executable = join(canonicalPrefix, relative(directory, python));
-        break;
-      }
-    }
-  }
-  if (process.platform === "darwin" && runtimeDirectories[4] !== undefined) {
-    const frameworkPython = join(
-      await realpath(runtimeDirectories[4]),
-      "Resources",
-      "Python.app",
-      "Contents",
-      "MacOS",
-      "Python",
-    );
-    if (await isRegularFile(frameworkPython)) {
-      // Framework stubs re-exec through their install alias. Use CPython's launcher protocol.
-      return {
-        executable: frameworkPython,
-        readRoots: roots,
-        environment: { __PYVENV_LAUNCHER__: executable },
-      };
-    }
-  }
-  return { executable, readRoots: roots };
-}
-
 export function pluginExecutionEnvironment(
   python: string,
   environment: ProcessEnvironment = process.env,
@@ -3178,28 +2986,6 @@ export function expandHome(
 
 function safePrefix(value: string): string {
   return basename(value).replace(/[^A-Za-z0-9._-]/g, "-") || "repository";
-}
-
-async function canonicalizeProtectedPath(
-  path: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  const absolute = resolve(path);
-  for (let ancestor = absolute; ; ancestor = dirname(ancestor)) {
-    throwIfSignalAborted(signal);
-    try {
-      const canonical = resolve(
-        await realpath(ancestor),
-        relative(ancestor, absolute),
-      );
-      throwIfSignalAborted(signal);
-      return canonical;
-    } catch (error) {
-      if (nodeErrorCode(error) !== "ENOENT" || dirname(ancestor) === ancestor) {
-        throw error;
-      }
-    }
-  }
 }
 
 function processErrorDetail(error: unknown): string {

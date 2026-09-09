@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  inspectSecurityPolicyPaths,
+  inspectSecurityPolicySources,
   readSecurityPolicySnapshot,
   resolveSecurityPolicyTarget,
   runSecurityPolicyStages,
@@ -104,10 +104,19 @@ export async function policyFixture(): Promise<{
         repository,
         options.path,
       );
+      const sources = await inspectSecurityPolicySources(
+        target,
+        options.signal,
+      );
       return await runSecurityPolicyStages({
         target,
-        snapshot: await readSecurityPolicySnapshot(target, options.signal),
-        policyPaths: await inspectSecurityPolicyPaths(target, options.signal),
+        snapshot: await readSecurityPolicySnapshot(
+          target,
+          options.signal,
+          sources.gitMetadataPaths,
+        ),
+        policyPaths: sources.policyPaths,
+        gitMetadataPaths: sources.gitMetadataPaths,
         outputDir,
         pluginRoot: PLUGIN_ROOT,
         pluginPath: options.pluginPath,
@@ -132,11 +141,11 @@ export async function policyPlugin(
 ): Promise<string> {
   const plugin = await mkdtemp(join(root, "custom-plugin-"));
   await mkdir(join(plugin, ".codex-plugin"));
-  await mkdir(join(plugin, "scripts"));
+  await mkdir(join(plugin, "mcp"));
   await writeFile(
     join(plugin, ".codex-plugin", "plugin.json"),
     JSON.stringify({ name: "codex-security", version: "test-policy-plugin" }),
   );
-  await writeFile(join(plugin, "scripts", "resolve_security_md.py"), script);
+  await writeFile(join(plugin, "mcp", "helpers.mjs"), script);
   return plugin;
 }

@@ -12,6 +12,7 @@ import {
   loadSecurityPolicyDraft,
   formatSecurityPolicyText as display,
   securityPolicyDiff,
+  securityPolicyNeedsUpdate,
   type SecurityPolicyDraft,
   type SecurityPolicyOptions,
   type SecurityPolicyStage,
@@ -191,41 +192,51 @@ export async function runPolicyCommand(
     controller.signal.throwIfAborted();
     const cost = draft.cost;
     let python: string | undefined;
-    const diff =
-      security === undefined
-        ? display(
-            await securityPolicyDiff(
-              draft,
-              async () =>
-                (python ??= await (
-                  dependencies.resolvePython ?? resolvePluginPython
-                )({
-                  configuredPath: options.config.pythonPath,
-                  environment: dependencies.environment,
-                  protectedRoot:
-                    (
-                      await enclosingGitWorktreeRoots(
-                        draft.repository,
-                        controller.signal,
-                      )
-                    ).at(-1) ?? draft.repository,
-                  signal: controller.signal,
-                })),
-              controller.signal,
-            ),
-            true,
-          )
-        : await security.previewPolicy(draft, {
-            signal: controller.signal,
-          });
-    const changed = diff.length > 0;
+    let changed = await securityPolicyNeedsUpdate(draft, controller.signal);
+    let previewed = false;
     const humanOutput = options.format === "toon" && !options.explicitOutput;
     if (humanOutput) {
+      let diff: string;
+      try {
+        diff =
+          security === undefined
+            ? display(
+                await securityPolicyDiff(
+                  draft,
+                  async () =>
+                    (python ??= await (
+                      dependencies.resolvePython ?? resolvePluginPython
+                    )({
+                      configuredPath: options.config.pythonPath,
+                      environment: dependencies.environment,
+                      protectedRoot:
+                        (
+                          await enclosingGitWorktreeRoots(
+                            draft.repository,
+                            controller.signal,
+                          )
+                        ).at(-1) ?? draft.repository,
+                      signal: controller.signal,
+                    })),
+                  controller.signal,
+                ),
+                true,
+              )
+            : await security.previewPolicy(draft, {
+                signal: controller.signal,
+              });
+        changed = diff.length > 0;
+        previewed = true;
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        diff = "Preview unavailable. Review the saved draft.";
+        write(
+          `codex-security: Could not preview the policy: ${display(safeErrorMessage(error))}`,
+        );
+      }
       const preview = [
         `\nPolicy target: ${display(draft.targetPath)}`,
-        changed
-          ? diff.replace(/\n$/u, "")
-          : "SECURITY.md is already up to date.",
+        diff.replace(/\n$/u, "") || "SECURITY.md is already up to date.",
         ...(draft.reviewNotes.length === 0
           ? []
           : [
@@ -242,6 +253,7 @@ export async function runPolicyCommand(
       options.write ||
       (changed &&
         interactive &&
+        previewed &&
         (await prompt.confirm(
           `Write this policy to ${display(draft.targetPath)}?`,
           false,

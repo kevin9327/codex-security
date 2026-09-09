@@ -51,6 +51,7 @@ import {
 import {
   DEFAULT_CODEX_CONFIG,
   EXTERNAL_CODEX_PROVIDERS,
+  inlineToml,
   isExternalModelProvider,
   hasCommandAuth,
   mergedCodexConfig,
@@ -114,7 +115,7 @@ import {
 import type { SeverityLevel } from "./models.js";
 import {
   formatSecurityPolicyText,
-  inspectSecurityPolicyPaths,
+  inspectSecurityPolicySources,
   readSecurityPolicySnapshot,
   requireUnchangedSecurityPolicy,
   resolveSecurityPolicyGuidance,
@@ -137,7 +138,6 @@ import { scanActivitiesFromEvent, type ScanActivity } from "./scan-activity.js";
 import {
   matchCompletedScan,
   matchScanFindingsInternal,
-  type matchScanFindings,
 } from "./scan-comparison.js";
 import {
   scanProgressUpdatesFromEvent,
@@ -163,7 +163,6 @@ import {
   prepareCodexSecurityCredentialHome,
   preserveCodexSecurityPluginRegistration,
   pluginExecutionEnvironment,
-  pluginPythonRuntime,
   pluginMetadata,
   planOutputArchive,
   prepareScanArtifactRestorer,
@@ -444,7 +443,7 @@ interface ClientDependencies {
   repositoryRevision?: typeof repositoryRevision;
   resolveCodexCommand?: () => CodexCommand;
   runWorkbench?: typeof runWorkbench;
-  matchFindings?: typeof matchScanFindings;
+  matchFindings?: typeof matchScanFindingsInternal;
 }
 
 const DEFAULT_DEPENDENCIES: ClientDependencies = {
@@ -802,12 +801,16 @@ export class CodexSecurity {
       options.path,
       options.signal,
     );
-    await readSecurityPolicySnapshot(target, options.signal);
     const inputs = await this.#validatePolicyInputs(
       target,
       options,
       options.signal,
     ).catch(rethrowPolicyOutputError);
+    await readSecurityPolicySnapshot(
+      target,
+      options.signal,
+      inputs.gitMetadataPaths,
+    );
     const preflight = await this.#preflightInputs(inputs, options);
     return {
       ...target,
@@ -888,8 +891,12 @@ export class CodexSecurity {
         options.path,
         signal,
       );
-      const snapshot = await readSecurityPolicySnapshot(target, signal);
       const inputs = await this.#validatePolicyInputs(target, options, signal);
+      const snapshot = await readSecurityPolicySnapshot(
+        target,
+        signal,
+        inputs.gitMetadataPaths,
+      );
       const temporaryRoot = await realpath(tmpdir());
       requireOutputOutsideRepositories(
         inputs.protectedRoots,
@@ -902,14 +909,14 @@ export class CodexSecurity {
         signal,
         temporaryRoot,
       );
-      const { runtime, python, effectiveConfig } = session;
+      const { runtime, effectiveConfig } = session;
       const model = scanModelConfiguration(effectiveConfig);
       validateScanCostLimit(options.maxCostUsd, model.model);
       for (const path of [
         "references/threat-model.md",
         "references/security-guidance.md",
         "skills/define-security-policy/SKILL.md",
-        "scripts/resolve_security_md.py",
+        "mcp/helpers.mjs",
       ]) {
         const metadata = await lstat(
           join(runtime.plugin.pluginRoot, path),
@@ -960,48 +967,29 @@ export class CodexSecurity {
         options.onObserverError,
         outputDir,
       );
-      let guidance = await resolveSecurityPolicyGuidance(
+      const guidance = await resolveSecurityPolicyGuidance(
         target,
-        python,
         runtime.plugin.pluginRoot,
         session.scanEnvironment,
         signal,
+        inputs.policyPaths,
+        inputs.gitMetadataPaths,
       );
-      for (const path of inputs.policyPaths) {
-        const targetPath = join(target.repository, path);
-        if (targetPath === target.targetPath) continue;
-        const policyGuidance = await resolveSecurityPolicyGuidance(
-          { ...target, targetPath },
-          python,
-          runtime.plugin.pluginRoot,
-          session.scanEnvironment,
-          signal,
-        );
-        guidance += `\n\nGuidance for repository-relative scope ${JSON.stringify(dirname(path))}:\n${policyGuidance}`;
-      }
-      await requireUnchangedSecurityPolicy(target, snapshot, signal);
-      await requireSecurityPolicyRepositoryBinding(target, signal);
-      const policyPython = await pluginPythonRuntime(python, {
-        environment: session.scanEnvironment,
-        protectedPaths: [
-          homedir(),
-          inputs.stateDirectory,
-          runtime.codexHome,
-          ...inputs.protectedRoots,
-        ],
+      await requireUnchangedSecurityPolicy(
+        target,
+        snapshot,
         signal,
-      });
+        inputs.gitMetadataPaths,
+      );
+      await requireSecurityPolicyRepositoryBinding(target, signal);
       const policyReadRoots = [
         dirname(target.targetPath),
         runtime.plugin.pluginRoot,
-        ...policyPython.readRoots,
         ...(knowledgeBase === null ? [] : [knowledgeBase.path]),
       ].filter((path, index, roots) => roots.indexOf(path) === index);
       const { codex } = this.#createSessionCodex(
         session,
         {
-          ...policyPython.environment,
-          PYTHON: policyPython.executable,
           CODEX_SECURITY_REPOSITORY: target.repository,
           CODEX_SECURITY_PLUGIN_ROOT: runtime.plugin.pluginRoot,
           CODEX_SECURITY_STATE_DIR: inputs.stateDirectory,
@@ -1012,6 +1000,12 @@ export class CodexSecurity {
         },
         options.auth,
         policyCodexConfig(session.sessionConfig),
+        inputs.gitMetadataPaths.length === 0
+          ? []
+          : [
+              // CLI override keys split on dots, so keep paths inside the TOML value.
+              `permissions.${POLICY_PERMISSION_PROFILE}.filesystem=${inlineToml(policyFilesystemPermissions(inputs.gitMetadataPaths))}`,
+            ],
       );
       const reportCost = (current: Readonly<ScanCost>): void => {
         const total = addScanCosts(accumulatedCost, current);
@@ -1132,6 +1126,7 @@ export class CodexSecurity {
         target,
         snapshot,
         policyPaths: inputs.policyPaths,
+        gitMetadataPaths: inputs.gitMetadataPaths,
         outputDir,
         guidance,
         pluginRoot: runtime.plugin.pluginRoot,
@@ -2118,12 +2113,15 @@ export class CodexSecurity {
             falsePositives: falsePositiveExamples as Record<string, unknown>[],
             findings: result.findings.findings,
             workbench: runWorkbench,
-            matchFindings:
-              this.#dependencies.matchFindings ??
-              ((input, comparisonOptions) =>
-                matchScanFindingsInternal(input, comparisonOptions, {
+            matchFindings: (input, comparisonOptions) =>
+              (this.#dependencies.matchFindings ?? matchScanFindingsInternal)(
+                input,
+                comparisonOptions,
+                {
                   surface: this.#surface,
-                })),
+                  singleTurn: options.maxCostUsd !== undefined,
+                },
+              ),
             environment,
             model,
             signal,
@@ -2515,6 +2513,7 @@ export class CodexSecurity {
     runtimePaths: Record<string, string>,
     auth: ScanAuthMode = "auto",
     config?: JsonObject,
+    configOverrides: string[] = [],
   ): { codex: CodexClientLike; environment: ProcessEnvironment } {
     const {
       runtime,
@@ -2580,8 +2579,15 @@ export class CodexSecurity {
         ? {}
         : { codexPathOverride: executablePathForSpawn(codexPathOverride) }),
       ...(externalProvider !== null || apiKey === null ? {} : { apiKey }),
-      ...(commandAuth
-        ? { configOverrides: modelProviderConfigOverride(sessionConfig) }
+      ...(commandAuth || configOverrides.length > 0
+        ? {
+            configOverrides: [
+              ...(commandAuth
+                ? modelProviderConfigOverride(sessionConfig)
+                : []),
+              ...configOverrides,
+            ],
+          }
         : {}),
       env: sdkEnvironment,
       config: {
@@ -2896,9 +2902,17 @@ export class CodexSecurity {
     target: SecurityPolicyTarget,
     options: SecurityPolicyOptions,
     signal?: AbortSignal,
-  ): Promise<LocalScanInputs & { policyPaths: string[] }> {
-    requirePolicyConfigKeys(this.config.codexOverrides);
-    const protectedRoots = await securityPolicyProtectedRoots(target, signal);
+  ): Promise<
+    LocalScanInputs & { policyPaths: string[]; gitMetadataPaths: string[] }
+  > {
+    policyCodexConfig(await mergedCodexConfig(this.config));
+    const sources = await inspectSecurityPolicySources(target, signal);
+    const protectedRoots = [
+      ...new Set([
+        ...(await securityPolicyProtectedRoots(target, signal)),
+        ...sources.gitMetadataPaths,
+      ]),
+    ];
     const inputs = await this.#validateLocalInputs(
       target.repository,
       {
@@ -2913,7 +2927,10 @@ export class CodexSecurity {
     );
     return {
       ...inputs,
-      policyPaths: await inspectSecurityPolicyPaths(target, signal),
+      policyPaths: sources.policyPaths,
+      gitMetadataPaths: [
+        ...new Set([...protectedRoots.slice(1), ...sources.gitMetadataPaths]),
+      ],
     };
   }
 
@@ -3908,7 +3925,7 @@ function scanPrompt(
             "This exhaustive scan authorizes the delegated-worker phases required by the selected skill; use available subagent tools and continue with parent-agent fallback if capacity changes.",
           ]),
     "This SDK host does not render MCP Apps; use the terminal/chat workflow.",
-    `Use ${python} as <python_command> for every plugin helper; replace any literal python or python3 helper invocation with this exact interpreter.`,
+    `Use ${python} as <python_command> for plugin Python helper scripts (.py files); replace any literal python or python3 helper invocation with this exact interpreter.`,
     `Repository root: ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")}`,
     `Use this exact scan directory for all scan output: ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR")}`,
     `Use exactly ${JSON.stringify(scanId)} as the scan ID in the manifest, findings, and coverage.`,
@@ -4411,13 +4428,23 @@ export function scanRuntimeCodexConfig(
         },
       },
       [POLICY_PERMISSION_PROFILE]: {
-        filesystem: {
-          ":minimal": "read",
-          ":workspace_roots": "read",
-        },
+        filesystem: policyFilesystemPermissions(),
         network: { enabled: false },
       },
     },
+  };
+}
+
+function policyFilesystemPermissions(
+  gitMetadataPaths: readonly string[] = [],
+): JsonObject {
+  return {
+    ":minimal": "read",
+    ":workspace_roots": "read",
+    // A scoped "." keeps native permission paths literal, including glob characters.
+    ...Object.fromEntries(
+      gitMetadataPaths.map((path) => [path, { ".": "deny" }]),
+    ),
   };
 }
 
@@ -4427,19 +4454,9 @@ function rethrowPolicyOutputError(error: unknown): never {
   throw error;
 }
 
-function requirePolicyConfigKeys(config: unknown): void {
-  if (!isRecord(config)) return;
+function requirePolicyConfigKeys(config: JsonObject): void {
   const tables = [config];
   if (isRecord(config["features"])) tables.push(config["features"]);
-  const profiles = config["profiles"];
-  if (isRecord(profiles)) {
-    tables.push(profiles);
-    for (const profile of Object.values(profiles)) {
-      if (!isRecord(profile)) continue;
-      tables.push(profile);
-      if (isRecord(profile["features"])) tables.push(profile["features"]);
-    }
-  }
   // The Codex SDK flattens these keys without quoting their components.
   if (
     tables.some((table) =>
@@ -4447,13 +4464,13 @@ function requirePolicyConfigKeys(config: unknown): void {
     )
   )
     throw new ConfigurationError(
-      "Policy generation does not accept dotted or quoted Codex override keys. Use nested objects and profile names with letters, numbers, underscores, or hyphens.",
+      "Policy generation does not accept dotted or quoted Codex override keys. Use nested objects instead.",
     );
 }
 
 function policyCodexConfig(config: JsonObject): JsonObject {
-  requirePolicyConfigKeys(config);
   const resolved = resolveCodexProfile(config);
+  requirePolicyConfigKeys(resolved);
   // The selected provider is already written as TOML. The SDK cannot quote
   // provider names when it flattens this table into command-line overrides.
   delete resolved["model_providers"];
@@ -4465,7 +4482,17 @@ function policyCodexConfig(config: JsonObject): JsonObject {
     // The artifact directory may be inside an unrelated checkout.
     project_doc_max_bytes: 0,
     project_root_markers: [],
-    features: { ...features, plugins: false, apps: false },
+    allow_login_shell: false,
+    shell_environment_policy: {
+      inherit: "core",
+      ignore_default_excludes: false,
+    },
+    features: {
+      ...features,
+      plugins: false,
+      apps: false,
+      shell_snapshot: false,
+    },
     mcp_servers: {},
     web_search: "disabled",
     sandbox_workspace_write: { network_access: false },

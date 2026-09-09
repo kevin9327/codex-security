@@ -39,9 +39,8 @@ try {
 ```
 
 `result.findings` contains this scan's findings; `repositoryFindings` also
-includes earlier open findings when available. Matching earlier findings uses
-additional model calls, with large inputs split into batches. These calls are
-outside the scan's recorded cost and `maxCostUsd` limit.
+includes earlier open findings when available. Matching earlier findings can
+make extra model calls; see [Progress and cost](#progress-and-cost).
 
 Keep results outside the repository and restrict access: reports can contain
 source code, vulnerability details, and reproduction steps.
@@ -273,10 +272,21 @@ review. It does not run a vulnerability scan or change application settings.
 Generation uses the scan runtime and authentication, requesting read-only access
 to the selected repository or component and required tools. Network access,
 web search, apps, and MCP servers are disabled. Drafts stay outside the checkout.
-Inherited and linked policy guidance is resolved by the host. The model cannot
-read sibling components or external Git metadata.
+The host resolves inherited guidance once and includes each checked descendant
+policy separately. Descendant policy links must stay within the selected component.
+Inherited and reporting-policy links may also resolve to ancestor `SECURITY.md`
+files or the checkout's `.github/SECURITY.md` and `docs/SECURITY.md`.
+The model cannot read sibling components or Git metadata. Policy turns deny
+access to the resolved Git metadata and markers, including those inside the
+selected source tree, nested bare repositories, and associated alternate object
+stores.
+Policy shell tools inherit only Codex's core environment; custom shell environment
+settings, login shells, and shell snapshots are disabled for these turns.
 Knowledge-base text stays with the private review artifacts during generation
 and is removed afterward.
+
+Known limitation: policy preflight and generation currently fail on Unix
+directories with non-UTF-8 names.
 
 On macOS, the pinned Codex runtime does not fully enforce write restrictions
 under `/tmp` (including `/private/tmp`). Keep the repository and artifacts outside
@@ -325,8 +335,13 @@ Review the saved `SECURITY.md` before applying it. Preserve reporting
 instructions and obtain owner approval for
 exclusions, accepted risks, and severity decisions. Later scans read this policy.
 
-Preview rejects changes to the selected or inherited policies. Other source
-files are not frozen; regenerate if relevant source or neighboring policies change.
+Generation and preview check for changes to the selected or inherited policies.
+If governing guidance changes during generation, completed documents remain for
+inspection, but no completed-draft manifest is written. Other source files are not
+frozen; regenerate if relevant source or neighboring policies change.
+A failed terminal preview reports a warning and the saved draft paths. Explicit
+output formats return the draft directly without running a diff preview.
+The command does not offer to install a draft when its preview fails.
 
 Use `--headless` or an explicit output format to skip questions and write
 prompts. Unanswered questions remain in the review notes. Drafts default to the
@@ -790,6 +805,10 @@ discovery has finished, the scan returns a sealed partial report without more
 model calls and lists unvalidated candidates as follow-up work. Bulk scans
 apply the limit per repository attempt.
 
+With `--max-cost`, automatic finding-history matching makes at most one extra
+model call. If it needs more context, the completed scan is kept and a warning
+directs you to run `scans match --all` explicitly.
+
 For a single scan in the interactive dashboard, reaching 80% of the limit
 offers a higher **total** USD limit. Enter a larger amount to approve it, or
 press Enter with an empty input or Escape to keep the current limit. The scan
@@ -1204,6 +1223,44 @@ or unknown. Missing findings aren't resolved if the later scan is incomplete
 or excludes their original scope. With one ID, `scans compare` compares it
 to the latest completed scan.
 
+Use `scans match --all --force` to rebuild comparisons chronologically while
+retaining stable finding identities. Ctrl-C keeps comparisons already saved.
+Only high-confidence duplicates are grouped; uncertain and independently
+related findings stay separate. Matching preserves triage and sealed artifacts.
+
+Codex is called only when a new decision is needed, using existing authentication.
+Scans without sealed artifacts are skipped, but their confirmed links can still
+be reused. Older custom plugins save confirmed and uncertain matches; use the
+bundled plugin for related links and large comparisons.
+
+SDK callers can compare findings without saving a workbench comparison:
+
+```ts
+import { readFile } from "node:fs/promises";
+import {
+  matchScanFindings,
+  type FindingsDocument,
+} from "@openai/codex-security";
+
+const before = JSON.parse(
+  await readFile("/path/to/earlier-scan/findings.json", "utf8"),
+) as FindingsDocument;
+const after = JSON.parse(
+  await readFile("/path/to/later-scan/findings.json", "utf8"),
+) as FindingsDocument;
+
+const comparison = await matchScanFindings(
+  { before: before.findings, after: after.findings },
+  { workingDirectory: "/path/to/repository" },
+);
+console.log(comparison.matches, comparison.uncertain, comparison.related ?? []);
+```
+
+Pass `knownFindingGroups` to reuse confirmed groups of stable `findingId` values
+from your store. Results identify the original `occurrenceId` values. Options
+include model, reasoning effort, `AbortSignal`, and an optional `onProgress`
+callback whose errors do not interrupt matching.
+
 History lives in `$CODEX_SECURITY_STATE_DIR/workbench.sqlite3`, or
 `$CODEX_HOME/state/plugins/codex-security/workbench.sqlite3`. The CLI and
 workbench maintain the database and its journal files as the current user.
@@ -1283,8 +1340,8 @@ assessment skill once on the completed patch. The assessment is advisory and
 does not change the patch or its merge state. Human-readable commands print the
 report after the patch results; saved-finding JSON output returns it as
 `patchRisk.report` in the same result object. When combined with `--create-pr`,
-the draft pull request body includes only the concise Markdown summary from the
-assessment; the validated JSON remains in the command result.
+the draft pull request or merge request body includes only the concise Markdown
+summary from the assessment; the validated JSON remains in the command result.
 
 ```bash
 npx @openai/codex-security validate "Possible SQL injection" --effort high
@@ -1306,11 +1363,25 @@ to select findings and add patch instructions. Results include a `patches`
 entry per finding with status `verified`, `no_change`, `blocked`, or `failed`.
 Verified and already-fixed findings no longer fail `--fail-on-severity`.
 
-`--create-pr` commits generated patch files and opens a draft PR with `gh`.
-Supplied-issue pull requests require a clean working tree before patching so
+`--create-pr` commits generated patch files and opens a draft GitHub pull request
+with `gh` or a draft GitLab merge request with `glab`. Install and authenticate
+the appropriate CLI first (`gh auth login` or `glab auth login`). GitLab.com is
+selected from the `origin` push URL, including SSH URLs and subgroup projects.
+For self-hosted GitLab, set `GITLAB_HOST` to the host in that URL and authenticate
+with `glab auth login --hostname HOST`. The existing `GITLAB_URI` and `GL_HOST`
+aliases are also accepted, in that order after `GITLAB_HOST`. Other hosts retain
+the GitHub workflow.
+
+```bash
+GITLAB_HOST=gitlab.example.com npx @openai/codex-security patch --scan SCAN_ID --create-pr
+```
+
+Both providers use the existing `pullRequest: { branch, url }` JSON result.
+Supplied-issue requests require a clean working tree before patching so
 existing work is never included. If publication fails, run the printed
 `patch --resume-pr BRANCH` command in the same repository. It reuses the saved
 commit without rerunning Codex, but refuses to publish if the branch changed.
+Use the same GitLab host setting when resuming a self-hosted merge request.
 
 To patch Linear issues, repeat `--linear-issue ISSUE` (ID or URL), or use
 `--linear-project "PROJECT"` with an optional native JSON `--linear-filter`.
@@ -1372,7 +1443,9 @@ checkout or Node.js installation is required. `CODEX_SECURITY_FINDINGS_IMAGE`
 defaults to `ghcr.io/openai/codex-security:latest`. Set it to a published
 version, `sha-<commit>` tag, or digest for repeatable deployments.
 
-To build from a source checkout instead:
+To build from a source checkout, first prepare the
+[universal native payload](../../plugins/codex-security/native/README.md#package-inputs)
+for that checkout. Then run from the repository root:
 
 ```bash
 docker build --target scanner -t codex-security:local .
@@ -1715,7 +1788,7 @@ use another workflow ID for a fresh review rather than changing that saved resul
 2. Screen each nonempty neighborhood with `gpt-5.6-luna` at `xhigh` reasoning
    effort. The review covers every anchor-neighbor pair; nominations between
    neighbors are rejected.
-3. Independently review each nominated pair once with `gpt-5.6-sol` at `xhigh`
+3. Independently review each nominated pair once with `gpt-5.6-sol` at `high`
    reasoning effort. Only accepted pairs contribute to duplicate groups.
 4. Group accepted duplicate pairs transitively unless a Luna or Sol `DISTINCT`
    decision contradicts the resulting component. Contradicted components are
@@ -1919,7 +1992,9 @@ Export `OPENAI_API_KEY` or `CODEX_API_KEY` to import findings with embeddings.
 Startup and listing need no key. The service does not load `.env` or authenticate
 requests; keep it on loopback or behind an authenticated TLS proxy.
 
-From a source checkout's `sdk/typescript` directory:
+For a source build, first prepare the
+[universal native payload](../../plugins/codex-security/native/README.md#package-inputs)
+for that checkout. Then run from its `sdk/typescript` directory:
 
 ```bash
 pnpm install --frozen-lockfile

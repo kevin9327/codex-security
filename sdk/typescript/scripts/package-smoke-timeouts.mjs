@@ -3,9 +3,7 @@ export function packageSmokeTimeouts(platform = process.platform) {
 
   return {
     commandTimeoutMs,
-    // Windows npm installation can consume most of one command budget before
-    // the installed-package, credential-lock, and worker checks start.
-    processTimeoutMs:
-      commandTimeoutMs * (platform === "win32" ? 2 : 1) + 30_000,
+    // Installation and verification run sequentially; allow both plus cleanup.
+    processTimeoutMs: commandTimeoutMs * 2 + 30_000,
   };
 }

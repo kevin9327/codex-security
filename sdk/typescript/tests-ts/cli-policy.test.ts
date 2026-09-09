@@ -72,6 +72,7 @@ function policyDependencies(
       options: SecurityPolicyOptions,
     ) => void | Promise<void>;
     onClose?: () => void;
+    onPreview?: () => void;
     onConfig?: (config: unknown) => void;
     signals?: FakeSignals;
   } = {},
@@ -125,11 +126,13 @@ function policyDependencies(
         previewPolicy: async (
           draft: SecurityPolicyDraft,
           preview: { signal?: AbortSignal } = {},
-        ) =>
-          formatSecurityPolicyText(
+        ) => {
+          options.onPreview?.();
+          return formatSecurityPolicyText(
             await securityPolicyDiff(draft, PYTHON, preview.signal),
             true,
-          ),
+          );
+        },
         close: async () => {
           options.onClose?.();
         },
@@ -457,8 +460,10 @@ describe("policy CLI", () => {
         capture(true).stream,
         {
           isTTY: true,
-          write: () => {
-            throw new Error("Preview output failed");
+          write: (value: string) => {
+            if (value.includes("Policy target:"))
+              throw new Error("Preview output failed");
+            return true;
           },
         },
         policyDependencies(f, {
@@ -476,51 +481,46 @@ describe("policy CLI", () => {
     expect(await readdir(f.repository)).toEqual([]);
   });
 
-  test("honors cancellation while the interactive preview is backpressured", async () => {
-    for (const [signal, exitCode] of [
-      ["SIGINT", 130],
-      ["SIGTERM", 143],
-    ] as const) {
-      const f = await fixture();
-      const draft = await f.generate();
-      const signals = new FakeSignals();
-      let interrupted = false;
-      let closed = false;
-      const stderr = Object.assign(
-        new Writable({
-          write(chunk, _encoding, callback) {
-            if (!interrupted && String(chunk).includes("\nPolicy target:")) {
-              interrupted = true;
-              queueMicrotask(() => {
-                signals.emit(signal);
-                queueMicrotask(callback);
-              });
-            } else callback();
+  test("preserves a completed draft when the diff preview fails", async () => {
+    const f = await fixture();
+    const stderr = capture(true);
+    const draft = await f.generate();
+    expect(
+      await main(
+        ["policy"],
+        capture(true).stream,
+        stderr.stream,
+        policyDependencies(f, {
+          draft,
+          onPreview: () => {
+            throw new Error("Python preview failed");
           },
         }),
-        { isTTY: true },
-      );
+      ),
+    ).toBe(0);
+    expect(stderr.text()).toContain("Python preview failed");
+    expect(stderr.text()).toContain(draft.draftPath);
+    expect(await readFile(draft.draftPath, "utf8")).toBe(POLICY);
+  });
+
+  test.each(["json", "md", "toon"])(
+    "does not run a diff preview for %s output",
+    async (format) => {
+      const f = await fixture();
+      const stdout = capture();
+      let previews = 0;
       expect(
         await main(
-          ["policy"],
-          capture(true).stream,
-          stderr,
-          policyDependencies(f, {
-            draft,
-            signals,
-            prompt: prompt({ isInteractive: () => true }),
-            onClose: () => {
-              closed = true;
-            },
-          }),
+          ["policy", "--format", format],
+          stdout.stream,
+          capture().stream,
+          policyDependencies(f, { onPreview: () => previews++ }),
         ),
-      ).toBe(exitCode);
-      expect(interrupted).toBe(true);
-      expect(closed).toBe(true);
-      expect(signals.listeners.get(signal)?.size).toBe(0);
-      expect(await readdir(f.repository)).toEqual([]);
-    }
-  });
+      ).toBe(0);
+      expect(previews).toBe(0);
+      expect(stdout.text().length).toBeGreaterThan(0);
+    },
+  );
 
   test("offers source-backed questions and shows the exact diff before approval", async () => {
     const f = await fixture();
@@ -615,9 +615,9 @@ describe("policy CLI", () => {
     const pluginPath = await policyPlugin(
       f.root,
       [
-        "import os, pathlib",
-        "with pathlib.Path(os.environ['POLICY_TEST_LOG']).open('a') as output: output.write('used\\n')",
-        "print('custom guidance')",
+        'import { appendFileSync } from "node:fs";',
+        'appendFileSync(process.env.POLICY_TEST_LOG, "used\\n");',
+        'console.log("custom guidance");',
       ].join("\n"),
     );
     const draft = await f.generate({ pluginPath });
@@ -705,10 +705,11 @@ describe("policy CLI", () => {
     const pluginPath = await policyPlugin(
       f.root,
       [
-        "import pathlib, sys",
-        "root = pathlib.Path(sys.argv[sys.argv.index('--repo') + 1])",
-        "if (root / 'SECURITY.md').exists(): raise SystemExit('synthetic verification failure')",
-        "print('preflight passed')",
+        'import { existsSync } from "node:fs";',
+        'import { join } from "node:path";',
+        'const root = process.argv[process.argv.indexOf("--repo") + 1];',
+        'if (existsSync(join(root, "SECURITY.md"))) throw new Error("synthetic verification failure");',
+        'console.log("preflight passed");',
       ].join("\n"),
     );
     const draft = await f.generate({ pluginPath });
@@ -778,8 +779,8 @@ describe("policy CLI", () => {
         });
       }
       await writeFile(
-        join(pluginPath, "scripts", "resolve_security_md.py"),
-        "print('resolver accepted the policy')\n",
+        join(pluginPath, "mcp", "helpers.mjs"),
+        "console.log('resolver accepted the policy');\n",
       );
       const retry = capture();
       expect(
@@ -900,15 +901,7 @@ describe("policy CLI", () => {
     ] as const) {
       expect(
         await main(
-          [
-            "policy",
-            repository,
-            "--path",
-            path,
-            "--apply",
-            f.outputDir,
-            "--json",
-          ],
+          ["policy", repository, "--path", path, "--apply", f.outputDir],
           capture().stream,
           capture().stream,
           deps,
@@ -944,6 +937,7 @@ describe("policy CLI", () => {
       await symlink(PYTHON, join(trustedBin, "python3"), "file");
       for (const explicit of [false, true]) {
         const stdout = capture();
+        const stderr = capture();
         const deps = {
           ...policyDependencies(f),
           environment: {
@@ -956,13 +950,14 @@ describe("policy CLI", () => {
             await resolvePluginPython({ ...options, managedRuntimeRoots: [] }),
         };
         const code = await main(
-          ["policy", nested, "--apply", f.outputDir, "--json", "--full-output"],
+          ["policy", nested, "--apply", f.outputDir],
           stdout.stream,
-          capture().stream,
+          stderr.stream,
           deps,
         );
-        expect(code).toBe(explicit ? 2 : 0);
-        expect(JSON.parse(stdout.text()).ok).toBe(!explicit);
+        expect(code).toBe(0);
+        if (explicit) expect(stderr.text()).toContain("Preview unavailable");
+        else expect(stderr.text()).toContain("+++ b/SECURITY.md");
         await expect(lstat(`${unsafePython}.executed`)).rejects.toMatchObject({
           code: "ENOENT",
         });
@@ -1359,10 +1354,11 @@ describe("policy CLI", () => {
     const pluginPath = await policyPlugin(
       f.root,
       [
-        "import pathlib, sys",
-        "root = pathlib.Path(sys.argv[sys.argv.index('--repo') + 1])",
-        "if (root / 'SECURITY.md').read_text() != '# Original policy\\n': raise SystemExit('synthetic verification failure')",
-        "print('preflight passed')",
+        'import { readFileSync } from "node:fs";',
+        'import { join } from "node:path";',
+        'const root = process.argv[process.argv.indexOf("--repo") + 1];',
+        'if (readFileSync(join(root, "SECURITY.md"), "utf8") !== "# Original policy\\n") throw new Error("synthetic verification failure");',
+        'console.log("preflight passed");',
       ].join("\n"),
     );
     const draft = await f.generate({ pluginPath });

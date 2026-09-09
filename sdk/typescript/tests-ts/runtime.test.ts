@@ -70,7 +70,6 @@ import {
   inspectWindowsCredentialAclSnapshot,
   isPythonPathCandidate,
   planOutputArchive,
-  pluginPythonRuntime,
   prepareCodexSecurityCredentialHome,
   preparePersistentOutputRoot,
   prepareScanArtifactRestorer,
@@ -88,6 +87,12 @@ import {
 } from "../src/runtime.js";
 import { loadBundledRuntime, PLUGIN_ROOT } from "./plugin-root.js";
 import { runTestInSubprocess } from "./support/test-subprocess.js";
+import {
+  lowerUuid7Turn,
+  ownedPythonUsage,
+  ownershipRollout,
+  readPythonRolloutUsage,
+} from "./support/usage-rollout.js";
 
 const temporaryDirectories: string[] = [];
 const testPosix = process.platform === "win32" ? test.skip : test;
@@ -1971,6 +1976,7 @@ describe("plugin runtime preparation", () => {
     "0.1.79",
     "0.1.92",
     "0.1.93",
+    "0.1.94",
   ])(
     "upgrades a cached %s plugin and restores with the SDK-owned helper",
     async (previousVersion) => {
@@ -1987,6 +1993,10 @@ describe("plugin runtime preparation", () => {
       await copyFile(
         join(PLUGIN_ROOT, "scripts", "workbench_target.py"),
         join(previous, "scripts", "workbench_target.py"),
+      );
+      await writeFile(
+        join(previous, "scripts", "workbench_scan_usage.py"),
+        "raise RuntimeError('stale collector must be replaced')\n",
       );
       const home = join(root, "home");
       const unrelatedProject = join(root, "unrelated-project");
@@ -2032,6 +2042,7 @@ describe("plugin runtime preparation", () => {
           "workbench_target.py",
           "finalize_scan_contract.py",
           "workbench_scan_history.py",
+          "workbench_scan_usage.py",
         ]) {
           expect(await readFile(join(pluginRoot, "scripts", script))).toEqual(
             await readFile(join(PLUGIN_ROOT, "scripts", script)),
@@ -2084,6 +2095,20 @@ describe("plugin runtime preparation", () => {
       await writeFile(join(scanDir, artifact), Buffer.from([9, 0, 8]));
       await restorer.restore(artifact, expected);
       expect(await readFile(join(scanDir, artifact))).toEqual(expected);
+
+      const rolloutPath = join(root, "cached-rollout.jsonl");
+      await writeFile(
+        rolloutPath,
+        ownershipRollout([lowerUuid7Turn])
+          .map((event) => JSON.stringify(event))
+          .join("\n") + "\n",
+      );
+      expect(
+        readPythonRolloutUsage(upgraded.installedRoot, rolloutPath),
+      ).toEqual({
+        usage: ownedPythonUsage,
+        warnings: [],
+      });
     },
   );
 
@@ -5782,181 +5807,6 @@ describe("runtime directories and plugin Python boundary", () => {
         process.umask(previousUmask);
       }
     }
-  });
-
-  test("includes the running Python launcher's directory in read roots", async () => {
-    const python =
-      Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-    expect(python).not.toBeNull();
-    const inspected = spawnSync(
-      python!,
-      [
-        "-I",
-        "-B",
-        "-c",
-        "import os,sys;print(os.path.dirname(sys.executable))",
-      ],
-      { encoding: "utf8", windowsHide: true },
-    );
-    expect(inspected.status, inspected.stderr).toBe(0);
-    expect(
-      (await pluginPythonRuntime(python!, { protectedPaths: [] })).readRoots,
-    ).toContain(await realpath(inspected.stdout.trim()));
-  });
-
-  test("discovers virtual-environment and base Python read roots", async () => {
-    const interpreter =
-      Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-    expect(interpreter).not.toBeNull();
-    if (interpreter === null) return;
-    const root = await temporaryDirectory();
-    const virtualEnvironment = join(root, "venv");
-    const created = spawnSync(
-      interpreter,
-      ["-I", "-B", "-m", "venv", "--without-pip", virtualEnvironment],
-      { encoding: "utf8", windowsHide: true },
-    );
-    expect(created.status, created.stderr).toBe(0);
-    const python = join(
-      virtualEnvironment,
-      process.platform === "win32" ? "Scripts" : "bin",
-      process.platform === "win32" ? "python.exe" : "python",
-    );
-    const protectedPath = join(root, "protected", "state");
-    const { readRoots: roots } = await pluginPythonRuntime(python, {
-      protectedPaths: [protectedPath],
-    });
-    const inspected = spawnSync(
-      python,
-      [
-        "-I",
-        "-B",
-        "-c",
-        "import json,sys;print(json.dumps([sys.prefix,sys.exec_prefix,sys.base_prefix,sys.base_exec_prefix]))",
-      ],
-      { encoding: "utf8", windowsHide: true },
-    );
-    expect(inspected.status, inspected.stderr).toBe(0);
-    const prefixes = JSON.parse(inspected.stdout) as string[];
-
-    for (const path of [
-      dirname(python),
-      dirname(await realpath(python)),
-      ...prefixes,
-    ]) {
-      expect(roots).toContain(await realpath(path));
-    }
-    expect(new Set(roots).size).toBe(roots.length);
-  });
-
-  testPosix(
-    "keeps Python symlink siblings outside model read roots",
-    async () => {
-      const root = await temporaryDirectory();
-      const launcher = join(root, "launcher");
-      const installation = join(root, "installation");
-      const binaries = join(installation, "bin");
-      const runtime = join(installation, "runtime");
-      const aliases = join(root, "aliases");
-      const linkedInstallation = join(aliases, "installation");
-      const linkedRuntime = join(root, "linked-runtime");
-      const python = join(launcher, "python");
-      await mkdir(launcher);
-      await mkdir(binaries, { recursive: true });
-      await mkdir(runtime);
-      await mkdir(aliases);
-      await symlink(installation, linkedInstallation);
-      await symlink(runtime, linkedRuntime);
-      await symlink("../aliases/installation/bin/python", python);
-      await symlink("../runtime/python", join(binaries, "python"));
-      const executable = join(runtime, "python");
-      await writeFile(
-        executable,
-        `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify([launcher, linkedRuntime, runtime, linkedRuntime, runtime])}'\n`,
-      );
-      await chmod(executable, 0o700);
-
-      expect(
-        (await pluginPythonRuntime(python, { protectedPaths: [] })).readRoots,
-      ).toEqual([
-        await realpath(launcher),
-        await realpath(binaries),
-        await realpath(runtime),
-      ]);
-    },
-  );
-
-  testPosix(
-    "rejects invalid plugin Python runtime metadata and missing directories",
-    async () => {
-      const root = await temporaryDirectory();
-      const python = join(root, "python");
-      for (const output of ["not-json", "[]", JSON.stringify([root, null])]) {
-        await writeFile(python, `#!/bin/sh\nprintf '%s\\n' '${output}'\n`);
-        await chmod(python, 0o700);
-        await expect(
-          pluginPythonRuntime(python, { protectedPaths: [] }),
-        ).rejects.toThrow(PluginBootstrapError);
-      }
-
-      const missing = join(root, "missing");
-      await writeFile(
-        python,
-        `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify([missing, root, root, root, root])}'\n`,
-      );
-      await chmod(python, 0o700);
-      await expect(
-        pluginPythonRuntime(python, { protectedPaths: [] }),
-      ).rejects.toThrow("runtime directory that does not exist");
-    },
-  );
-
-  testPosix(
-    "rejects filesystem-root and protected plugin Python read roots",
-    async () => {
-      const root = await temporaryDirectory();
-      const launcher = join(root, "launcher");
-      const runtime = join(root, "runtime");
-      const protectedPath = join(runtime, "private", "state");
-      const python = join(launcher, "python");
-      await mkdir(launcher);
-      await mkdir(runtime);
-      await mkdir(protectedPath, { recursive: true });
-      const writeMetadata = async (prefix: string): Promise<void> => {
-        await writeFile(
-          python,
-          `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify([launcher, prefix, runtime, runtime, runtime])}'\n`,
-        );
-        await chmod(python, 0o700);
-      };
-
-      await writeMetadata(parse(root).root);
-      await expect(
-        pluginPythonRuntime(python, { protectedPaths: [] }),
-      ).rejects.toThrow("must not include a filesystem root");
-
-      await writeMetadata(runtime);
-      for (const path of [runtime, protectedPath]) {
-        await expect(
-          pluginPythonRuntime(python, { protectedPaths: [path] }),
-        ).rejects.toThrow("contains a protected path");
-      }
-    },
-  );
-
-  testPosix("preserves cancellation during Python root discovery", async () => {
-    const root = await temporaryDirectory();
-    const python = join(root, "python");
-    await writeFile(python, "#!/bin/sh\nwhile :; do :; done\n");
-    await chmod(python, 0o700);
-    const controller = new AbortController();
-    const discovery = pluginPythonRuntime(python, {
-      protectedPaths: [],
-      signal: controller.signal,
-    });
-    controller.abort(new DOMException("canceled", "AbortError"));
-
-    await expect(discovery).rejects.toMatchObject({ name: "AbortError" });
   });
 
   test("resolves inherited Python names case-insensitively", async () => {

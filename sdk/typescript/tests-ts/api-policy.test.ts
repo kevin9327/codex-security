@@ -4,7 +4,7 @@ import {
   mkdir,
   readFile,
   readdir,
-  realpath,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -17,6 +17,7 @@ import type {
 } from "@openai/codex-sdk";
 import Ajv, { type AnySchema } from "ajv";
 import { afterEach, describe, expect, test } from "bun:test";
+import { parse as parseToml } from "smol-toml";
 import {
   applySecurityPolicy,
   CodexSecurity,
@@ -61,7 +62,6 @@ async function setup(
     secureOutput?: (path: string) => Promise<void>;
     surface?: "cli" | "sdk";
     config?: Record<string, unknown>;
-    python?: () => string;
   } = {},
 ) {
   const f = await policyFixture();
@@ -89,7 +89,7 @@ async function setup(
       },
       resolvePluginPython: async (selection: PluginPythonOptions) => {
         pythonSelections.push(selection);
-        return options.python?.() ?? PYTHON;
+        return PYTHON;
       },
       requirePrivatePolicyOutputDirectory: async (path: string) => {
         await options.secureOutput?.(path);
@@ -187,7 +187,7 @@ describe("CodexSecurity policy API", () => {
     await f.security.close();
   });
 
-  test("keeps prompt data on one encoded line and binds plugin Python", async () => {
+  test("keeps prompt data on one encoded line", async () => {
     const marker = "source\u0085line\u2028separator\u2029end";
     const scope = `component-${marker}`;
     const f = await setup({
@@ -206,12 +206,9 @@ describe("CodexSecurity policy API", () => {
       outputDir: f.outputDir,
       answerQuestions: async () => marker,
     });
-    const python =
-      process.platform === "win32" ? '& "$env:PYTHON"' : '"$PYTHON"';
     for (const prompt of f.prompts) {
       expect(prompt).not.toMatch(/[\u0085\u2028\u2029]/u);
       expect(prompt).toContain("source\\u0085line\\u2028separator\\u2029end");
-      expect(prompt).toContain(`Use ${python} as <python_command>`);
     }
     expect(draft.reviewNotes).toContain(marker);
     await f.security.close();
@@ -558,47 +555,24 @@ describe("CodexSecurity policy API", () => {
     }
   });
 
-  test("rejects Python runtime roots containing external Git metadata", async () => {
-    let python = PYTHON;
-    const f = await setup({ python: () => python });
-    const runtime = join(f.root, "python-runtime");
-    execFileSync(PYTHON, ["-I", "-B", "-m", "venv", "--without-pip", runtime], {
-      windowsHide: true,
-    });
-    python = join(
-      runtime,
-      process.platform === "win32" ? "Scripts" : "bin",
-      process.platform === "win32" ? "python.exe" : "python",
-    );
-    policyGit(
-      f.repository,
-      "init",
-      "--quiet",
-      "--separate-git-dir",
-      join(runtime, "git-data"),
-    );
-    policyGit(f.repository, "config", "core.worktree", f.repository);
-    await expect(
-      f.security.generatePolicy(f.repository, { outputDir: f.outputDir }),
-    ).rejects.toThrow("contains a protected path");
-    expect(f.threads).toHaveLength(0);
-    await f.security.close();
-  });
-
   test("checks descendant policy links before starting Codex", async () => {
     for (const kind of [
       "root",
       "component",
+      "component_sibling",
       "git_metadata",
       "reporting_directory",
     ]) {
       let prepared = false;
       const f = await setup({ onPrepare: () => (prepared = true) });
       policyGit(f.repository, "init", "--quiet");
-      const scope = kind === "component" ? "component" : ".";
+      const scope = kind.startsWith("component") ? "component" : ".";
       const child = join(f.repository, scope, "child");
       await mkdir(child, { recursive: true });
-      const outside = join(f.root, "outside-policy.md");
+      const outside = join(
+        kind === "component_sibling" ? f.repository : f.root,
+        "outside-policy.md",
+      );
       await writeFile(outside, "# Private synthetic policy\n");
       if (kind === "reporting_directory") {
         const directory = join(f.root, "reporting");
@@ -620,7 +594,11 @@ describe("CodexSecurity policy API", () => {
       }
       const options = { path: scope, outputDir: f.outputDir };
       const message =
-        kind === "git_metadata" ? "Git metadata" : "outside the repository";
+        kind === "git_metadata"
+          ? "Git metadata"
+          : kind === "component_sibling"
+            ? "outside the selected component"
+            : "outside the repository";
       await expect(
         f.security.preflightPolicy(f.repository, options),
       ).rejects.toThrow(message);
@@ -723,7 +701,7 @@ describe("CodexSecurity policy API", () => {
     const component = join(f.repository, "component");
     await mkdir(join(component, "child"), { recursive: true });
     policyGit(join(component, "child"), "init", "--quiet");
-    const ownerPolicy = join(f.repository, "owner-policy.md");
+    const ownerPolicy = join(component, "owner-policy.md");
     await writeFile(ownerPolicy, "# Owner policy\n");
     await symlink(ownerPolicy, join(component, "child", "SECURITY.md"), "file");
     const outside = join(f.root, "outside");
@@ -747,9 +725,10 @@ describe("CodexSecurity policy API", () => {
     expect(f.threads[0]!.additionalDirectories).not.toContain(f.repository);
     expect(
       execFileSync(
-        PYTHON,
+        process.execPath,
         [
-          join(PLUGIN_ROOT, "scripts", "resolve_security_md.py"),
+          join(PLUGIN_ROOT, "mcp", "helpers.mjs"),
+          "resolve-security-md",
           "--repo",
           f.repository,
           "--scope",
@@ -760,6 +739,286 @@ describe("CodexSecurity policy API", () => {
     ).toContain("# Owner policy");
     expect(f.prompts[0]).not.toContain("linked-directory/SECURITY.md");
     expect(f.prompts[0]).not.toContain("Unlisted synthetic policy");
+    await f.security.close();
+  });
+
+  test.each([".", "component"])(
+    "denies Git metadata in the policy permission profile for %s",
+    async (scope) => {
+      const f = await setup();
+      policyGit(f.repository, "init", "--quiet");
+      const component = join(f.repository, "component");
+      const metadata = join(f.repository, "git-data[1]");
+      const bare = join(component, "cache[1].git");
+      const common = join(component, "shared-data");
+      const alternate = join(component, "object-cache[1]");
+      const bareAlternate = join(component, "bare-object-cache");
+      const commonAlternate = join(component, "common-object-cache");
+      await mkdir(component);
+      policyGit(component, "init", "--quiet", "--separate-git-dir", metadata);
+      policyGit(component, "config", "core.worktree", component);
+      await mkdir(join(alternate, "info"), { recursive: true });
+      await mkdir(join(alternate, "pack"));
+      await writeFile(
+        join(metadata, "objects", "info", "alternates"),
+        `${alternate}\n`,
+      );
+      await writeFile(join(component, "HEAD"), "Ordinary source\n");
+      await mkdir(join(component, "objects"));
+      await mkdir(join(component, "refs"));
+      await writeFile(
+        join(component, "SECURITY.md"),
+        "Component policy fixture",
+      );
+      policyGit(component, "init", "--quiet", "--bare", bare);
+      policyGit(component, "init", "--quiet", "--bare", common);
+      await rm(join(common, "HEAD"));
+      for (const [store, objectDirectory] of [
+        [bare, bareAlternate],
+        [common, commonAlternate],
+      ] as const) {
+        await mkdir(join(objectDirectory, "info"), { recursive: true });
+        await mkdir(join(objectDirectory, "pack"));
+        await writeFile(
+          join(store, "objects", "info", "alternates"),
+          `${objectDirectory}\n`,
+        );
+      }
+      await writeFile(join(bare, "SECURITY.md"), "Bare Git policy fixture");
+      await f.security.generatePolicy(f.repository, {
+        path: scope,
+        outputDir: f.outputDir,
+      });
+      const overrides = f
+        .configuration()!
+        .configOverrides!.map((override) => parseToml(override));
+      expect(overrides).toHaveLength(1);
+      expect(overrides[0]).toMatchObject({
+        permissions: {
+          codex_security_policy: {
+            filesystem: { ":minimal": "read", ":workspace_roots": "read" },
+          },
+        },
+      });
+      for (const path of [
+        join(f.repository, ".git"),
+        join(component, ".git"),
+        metadata,
+        bare,
+        common,
+        alternate,
+        bareAlternate,
+        commonAlternate,
+      ]) {
+        expect(overrides[0]).toMatchObject({
+          permissions: {
+            codex_security_policy: { filesystem: { [path]: { ".": "deny" } } },
+          },
+        });
+      }
+      await writeCodexConfig(
+        join(f.runtime.codexHome, "config.toml"),
+        f.configuration()!.config!,
+      );
+      const environment: NodeJS.ProcessEnv = {
+        ...process.env,
+        CODEX_HOME: f.runtime.codexHome,
+      };
+      delete environment["OPENAI_API_KEY"];
+      delete environment["CODEX_API_KEY"];
+      expect(() =>
+        execFileSync(
+          "node",
+          [
+            join(
+              import.meta.dir,
+              "..",
+              "node_modules",
+              "@openai",
+              "codex",
+              "bin",
+              "codex.js",
+            ),
+            ...f
+              .configuration()!
+              .configOverrides!.flatMap((override) => ["--config", override]),
+            "features",
+            "list",
+          ],
+          { cwd: f.outputDir, env: environment, stdio: "pipe" },
+        ),
+      ).not.toThrow();
+      expect(f.threads).toHaveLength(3);
+      expect(f.prompts.join("\n")).not.toContain("Bare Git policy fixture");
+      expect(f.prompts.join("\n")).toContain("Component policy fixture");
+      await f.security.close();
+    },
+  );
+
+  test.each([
+    "component/docs/SECURITY.md",
+    ".github/SECURITY.md",
+    "SECURITY.md",
+  ])(
+    "rejects %s links into separately configured Git metadata",
+    async (name) => {
+      let prepared = false;
+      const f = await setup({
+        onPrepare: () => {
+          prepared = true;
+        },
+      });
+      const component = join(f.repository, "component");
+      const metadata = join(component, "saved-metadata");
+      await mkdir(component);
+      policyGit(component, "init", "--quiet", "--bare", metadata);
+      policyGit(metadata, "config", "core.bare", "false");
+      policyGit(metadata, "config", "core.worktree", component);
+      const policy = join(f.repository, name);
+      await mkdir(dirname(policy), { recursive: true });
+      await symlink(join(metadata, "config"), policy, "file");
+      await expect(
+        f.security.preflightPolicy(f.repository, { path: "component" }),
+      ).rejects.toThrow("Git metadata");
+      expect(prepared).toBe(false);
+      expect(f.threads).toHaveLength(0);
+      await f.security.close();
+    },
+  );
+
+  test.each([
+    "component/docs/SECURITY.md",
+    ".github/SECURITY.md",
+    "SECURITY.md",
+  ])("rejects %s links into common Git metadata without HEAD", async (name) => {
+    const f = await setup();
+    const component = join(f.repository, "component");
+    const common = join(component, "shared-data");
+    const administrative = join(component, "archived-admin");
+    await mkdir(component);
+    policyGit(component, "init", "--quiet", "--bare", common);
+    await mkdir(administrative);
+    await writeFile(
+      join(administrative, "HEAD"),
+      await readFile(join(common, "HEAD")),
+    );
+    await writeFile(join(administrative, "commondir"), `${common}\n`);
+    await rm(join(common, "HEAD"));
+    const policy = join(f.repository, name);
+    await mkdir(dirname(policy), { recursive: true });
+    await symlink(join(common, "config"), policy, "file");
+    await expect(
+      f.security.preflightPolicy(f.repository, { path: "component" }),
+    ).rejects.toThrow("Git metadata");
+    expect(f.threads).toHaveLength(0);
+    await f.security.close();
+  });
+
+  test("rejects a selected root used as common Git metadata", async () => {
+    const f = await setup();
+    policyGit(f.repository, "init", "--quiet", "--bare");
+    const administrative = join(f.repository, "archived-admin");
+    await mkdir(administrative);
+    await writeFile(
+      join(administrative, "HEAD"),
+      await readFile(join(f.repository, "HEAD")),
+    );
+    await writeFile(join(administrative, "commondir"), `${f.repository}\n`);
+    await rm(join(f.repository, "HEAD"));
+    await expect(f.security.preflightPolicy(f.repository)).rejects.toThrow(
+      "Git metadata",
+    );
+    expect(f.threads).toHaveLength(0);
+    await f.security.close();
+  });
+
+  test("keeps root policy output out of nested external Git metadata", async () => {
+    const f = await setup();
+    const component = join(f.repository, "component");
+    const metadata = join(f.root, "external-metadata");
+    await mkdir(component);
+    policyGit(component, "init", "--quiet", "--separate-git-dir", metadata);
+    policyGit(component, "config", "core.worktree", component);
+    await expect(
+      f.security.preflightPolicy(f.repository, {
+        outputDir: join(metadata, "policy-output"),
+      }),
+    ).rejects.toThrow("outside");
+    expect(f.threads).toHaveLength(0);
+    await f.security.close();
+  });
+
+  test("includes inherited and descendant guidance once per policy path", async () => {
+    const f = await setup();
+    const policies = [
+      [".", "ROOT_GUIDANCE"],
+      ["component", "COMPONENT_GUIDANCE"],
+      ["component/child", "CHILD_GUIDANCE"],
+      ["component/child/nested", "NESTED_GUIDANCE"],
+      ["component/sibling", "SIBLING_GUIDANCE"],
+      [".github", "REPORTING_GUIDANCE"],
+    ] as const;
+    for (const [scope, marker] of policies) {
+      const directory = join(f.repository, scope);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "SECURITY.md"), `# ${marker}\n`);
+    }
+    await f.security.generatePolicy(f.repository, {
+      path: "component",
+      outputDir: f.outputDir,
+    });
+    for (const prompt of f.prompts)
+      for (const [, marker] of policies)
+        expect(prompt.split(marker)).toHaveLength(2);
+    await f.security.close();
+  });
+
+  test.each(["SECURITY.md", ".github/SECURITY.md", "docs/SECURITY.md"])(
+    "checks %s links against the component's policy guidance before runtime setup",
+    async (policyPath) => {
+      let prepared = false;
+      const f = await setup({
+        onPrepare: () => {
+          prepared = true;
+        },
+      });
+      await mkdir(join(f.repository, "component"));
+      const source = join(f.repository, "notes.md");
+      await writeFile(source, "# Unrelated project notes\n");
+      const policy = join(f.repository, policyPath);
+      await mkdir(dirname(policy), { recursive: true });
+      await symlink(source, policy, "file");
+      const options = { path: "component", outputDir: f.outputDir };
+      await expect(
+        f.security.preflightPolicy(f.repository, options),
+      ).rejects.toThrow("outside the selected component");
+      await expect(
+        f.security.generatePolicy(f.repository, options),
+      ).rejects.toThrow("outside the selected component");
+      expect(prepared).toBe(false);
+      expect(f.threads).toHaveLength(0);
+      expect(await readdir(f.outputDir)).toEqual([]);
+      await f.security.close();
+    },
+  );
+
+  test("accepts shared inherited and reporting policy guidance for a component", async () => {
+    const f = await setup();
+    policyGit(f.repository, "init", "--quiet");
+    await mkdir(join(f.repository, "component"));
+    await mkdir(join(f.repository, ".github"));
+    await mkdir(join(f.repository, "docs"));
+    const reporting = join(f.repository, ".github", "SECURITY.md");
+    await writeFile(reporting, "# Shared reporting policy\n");
+    await symlink(reporting, join(f.repository, "SECURITY.md"), "file");
+    await symlink(reporting, join(f.repository, "docs", "SECURITY.md"), "file");
+    await f.security.generatePolicy(f.repository, {
+      path: "component",
+      outputDir: f.outputDir,
+    });
+    expect(f.prompts).toHaveLength(3);
+    for (const prompt of f.prompts)
+      expect(prompt).toContain("Shared reporting policy");
     await f.security.close();
   });
 
@@ -952,7 +1211,7 @@ describe("CodexSecurity policy API", () => {
     const readRoots = f.threads[0]!.additionalDirectories;
     expect(readRoots).toContain(f.repository);
     expect(readRoots).toContain(PLUGIN_ROOT);
-    expect(readRoots).toContain(await realpath(dirname(PYTHON)));
+    expect(readRoots).toEqual([f.repository, PLUGIN_ROOT]);
     expect(readRoots).not.toContain(f.runtime.codexHome);
     expect(readRoots).not.toContain(join(f.root, "state"));
     for (const thread of f.threads) {
@@ -1009,12 +1268,13 @@ describe("CodexSecurity policy API", () => {
       const pluginRoot = await policyPlugin(
         f.root,
         [
-          "import pathlib, sys",
-          "root = pathlib.Path(sys.argv[sys.argv.index('--repo') + 1])",
-          "policy = root / 'SECURITY.md'",
-          "previous = policy.read_text()",
-          "policy.write_bytes(b'# Concurrent policy\\n')",
-          "print(previous)",
+          'import { readFileSync, writeFileSync } from "node:fs";',
+          'import { join } from "node:path";',
+          'const root = process.argv[process.argv.indexOf("--repo") + 1];',
+          'const policy = join(root, "SECURITY.md");',
+          'const previous = readFileSync(policy, "utf8");',
+          'writeFileSync(policy, "# Concurrent policy\\n");',
+          "console.log(previous);",
         ].join("\n"),
       );
       for (const name of [
@@ -1055,19 +1315,50 @@ describe("CodexSecurity policy API", () => {
     targetPath = join(f.repository, "SECURITY.md");
     const original = "# Original policy\n";
     await writeFile(targetPath, original);
-    const draft = await f.security.generatePolicy(f.repository, {
-      outputDir: f.outputDir,
-    });
-    expect(draft.previousContent).toBe(original);
+    await expect(
+      f.security.generatePolicy(f.repository, { outputDir: f.outputDir }),
+    ).rejects.toThrow("changed after");
     expect(f.prompts[0]).toContain(original.trim());
     expect(
       await readFile(join(f.outputDir, "previous-SECURITY.md"), "utf8"),
     ).toBe(original);
-    await expect(securityPolicyDiff(draft, PYTHON)).rejects.toThrow(
-      "changed after",
-    );
+    expect(await readdir(f.outputDir)).not.toContain("policy-draft.json");
     await f.security.close();
   });
+
+  test.each([".", "component"])(
+    "rejects governing policy changes during generation for %s and preserves documents",
+    async (scope) => {
+      let policyPath = "";
+      const f = await setup({
+        stream: async function* (stage) {
+          if (stage === "policy")
+            await writeFile(policyPath, "# Concurrent policy\n");
+          yield* events(stage);
+        },
+      });
+      await mkdir(join(f.repository, "component"));
+      policyPath = join(f.repository, "SECURITY.md");
+      await writeFile(policyPath, "# Original policy\n");
+      await expect(
+        f.security.generatePolicy(f.repository, {
+          path: scope,
+          outputDir: f.outputDir,
+        }),
+      ).rejects.toThrow("changed after");
+      expect(f.threads).toHaveLength(3);
+      expect((await readdir(f.outputDir)).sort()).toEqual([
+        "SECURITY.md",
+        "THREAT_MODEL.md",
+        "previous-SECURITY.md",
+        "project-spec.md",
+      ]);
+      expect(await readFile(join(f.outputDir, "SECURITY.md"), "utf8")).toBe(
+        POLICY,
+      );
+      await f.security.close();
+    },
+  );
 
   test("rejects an incomplete policy plugin before starting model work", async () => {
     const f = await setup();
@@ -1075,7 +1366,7 @@ describe("CodexSecurity policy API", () => {
     for (const path of [
       "references/threat-model.md",
       "skills/define-security-policy/SKILL.md",
-      "scripts/resolve_security_md.py",
+      "mcp/helpers.mjs",
     ]) {
       const destination = join(pluginRoot, path);
       await mkdir(dirname(destination), { recursive: true });
@@ -1093,39 +1384,62 @@ describe("CodexSecurity policy API", () => {
     await f.security.close();
   });
 
-  test("removes external tools and wider sandbox settings from selected profiles", async () => {
+  test("resolves quoted profiles before applying policy settings", async () => {
     const f = await setup({
       config: {
         codexOverrides: {
-          profile: "selected",
-          features: { apps: true, goals: false },
+          profile: "team.prod",
+          features: { apps: true, goals: false, shell_snapshot: true },
+          allow_login_shell: true,
+          shell_environment_policy: {
+            inherit: "all",
+            ignore_default_excludes: true,
+            set: { SYNTHETIC_SETTING: "root-setting" },
+            include_only: ["SYNTHETIC_*"],
+          },
           mcp_servers: { synthetic: { command: "synthetic-tool" } },
           sandbox_workspace_write: {
             network_access: true,
             writable_roots: ["/synthetic"],
           },
           profiles: {
-            selected: {
+            unused: { "features.apps": true },
+            "team.prod": {
               model: "gpt-5.6-terra",
               model_reasoning_effort: "high",
               features: { apps: true, goals: true },
               mcp_servers: { synthetic: { command: "synthetic-profile-tool" } },
               web_search: "live",
+              shell_environment_policy: {
+                set: { SYNTHETIC_PROFILE_SETTING: "profile-setting" },
+                experimental_use_profile: true,
+              },
               sandbox_workspace_write: { network_access: true },
             },
           },
         },
       },
     });
+    await f.security.preflightPolicy(f.repository);
     await f.security.generatePolicy(f.repository, { outputDir: f.outputDir });
     expect(f.configuration()?.config).toMatchObject({
       model: "gpt-5.6-terra",
       model_reasoning_effort: "high",
       default_permissions: "codex_security_policy",
-      features: { plugins: false, apps: false, goals: true },
+      features: {
+        plugins: false,
+        apps: false,
+        goals: true,
+        shell_snapshot: false,
+      },
+      allow_login_shell: false,
       mcp_servers: {},
       web_search: "disabled",
       sandbox_workspace_write: { network_access: false },
+    });
+    expect(f.configuration()?.config?.["shell_environment_policy"]).toEqual({
+      inherit: "core",
+      ignore_default_excludes: false,
     });
     expect(f.configuration()?.config).not.toHaveProperty("profile");
     expect(f.configuration()?.config).not.toHaveProperty("profiles");
@@ -1143,8 +1457,10 @@ describe("CodexSecurity policy API", () => {
       { "features.plugins": true },
       { "mcp_servers.synthetic.command": "synthetic-tool" },
       { features: { '"apps"': true } },
-      { profiles: { selected: { "features.apps": true } } },
-      { profiles: { "selected.features": { apps: true } } },
+      {
+        profile: "selected",
+        profiles: { selected: { "features.apps": true } },
+      },
     ]) {
       let prepared = false;
       const f = await setup({
