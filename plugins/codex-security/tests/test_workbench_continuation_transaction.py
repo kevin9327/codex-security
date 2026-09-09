@@ -122,7 +122,8 @@ raise AssertionError("The injected interruption did not fire")
     committed = interruption == "root-head"
     with sqlite3.connect(state / "workbench.sqlite3") as connection:
         row = connection.execute(
-            "SELECT continuation_cost_json, continuation_checkpoint_path, inference_started "
+            "SELECT continuation_cost_json, continuation_checkpoint_path, inference_started, "
+            "continuation_sources_json "
             "FROM scans WHERE id = ?",
             (child_id,),
         ).fetchone()
@@ -138,8 +139,12 @@ raise AssertionError("The injected interruption did not fire")
             assert json.loads(row[0]) == cost
             assert (child / row[1]).is_file()
             assert row[2] == 0
+            derived_sources = json.loads(row[3])
+            assert derived_sources
+            assert all((child / path).is_file() for path in derived_sources)
+            assert "preservedSources" not in json.loads((child / row[1]).read_text())
         else:
-            assert row == (None, None, None)
+            assert row == (None, None, None, None)
     assert not (child / "checkpoint-head.json").exists()
     assert list(child.glob("artifacts/deep_discovery/workers/*/output/checkpoint-head.json"))
     recovered = run_workbench(

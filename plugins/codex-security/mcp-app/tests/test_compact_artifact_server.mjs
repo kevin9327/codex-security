@@ -39,6 +39,7 @@ try {
   await testCompactDiffScanCompletion(runtimeBundle, "source");
   await testDiscoveryWorkerToolList(runtimeBundle);
   await testWorkerCheckpointDatabase(runtimeBundle, "source", recordCodexSecurityWorkerScanDraft);
+  await testStandardContinuationDraft(runtimeBundle, "source");
   await testReducerWorkerToolList(runtimeBundle);
 
   const shippedRuntime = path.join(bundledPluginRoot, "mcp", "server.mjs");
@@ -48,6 +49,7 @@ try {
   await testCompactDiffScanCompletion(shippedRuntime, "shipped");
   await testDiscoveryWorkerToolList(shippedRuntime);
   await testWorkerCheckpointDatabase(shippedRuntime, "shipped", recordCodexSecurityWorkerScanDraft);
+  await testStandardContinuationDraft(shippedRuntime, "shipped");
   await testReducerWorkerToolList(shippedRuntime);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
@@ -1490,6 +1492,68 @@ with sqlite3.connect(sys.argv[1]) as connection:
     await client.close();
   }
   assert.deepEqual(JSON.parse(await readFile(path.join(childOutput, "result.json"), "utf8")).findings, []);
+}
+
+async function testStandardContinuationDraft(bundle, runtimeLabel) {
+  const currentPluginRoot = runtimeLabel === "shipped" ? bundledPluginRoot : pluginRoot;
+  const fixtureRoot = path.join(temporaryRoot, `standard-continuation-${runtimeLabel}`);
+  const repoRoot = path.join(fixtureRoot, "repository");
+  const stateRoot = path.join(fixtureRoot, "state");
+  const parentRoot = path.join(fixtureRoot, "parent");
+  const childRoot = path.join(fixtureRoot, "child");
+  for (const directory of [repoRoot, stateRoot, parentRoot, childRoot]) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+  }
+  for (const filename of ["clean.ts", "pending.ts"]) {
+    await writeFile(path.join(repoRoot, filename), "export const safe = true;\n");
+  }
+  const python = process.env.CODEX_SECURITY_PYTHON_COMMAND ?? "python3";
+  const environment = { ...process.env, CODEX_SECURITY_STATE_DIR: stateRoot };
+  const workbench = (...arguments_) => JSON.parse(execFileSync(python, [
+    path.join(currentPluginRoot, "scripts", "workbench_db.py"), ...arguments_
+  ], { env: environment, encoding: "utf8" }));
+  const recipe = JSON.stringify({
+    repository: repoRoot, target: { kind: "repository", paths: [] }, mode: "standard", config: {}
+  });
+  const { scanId: parentId } = workbench("register-cli-scan", "--repository", repoRoot,
+    "--scan-dir", parentRoot, "--recipe-json", recipe);
+  const coverage = {
+    completeness: "partial", surfaces: [], explicitExclusions: [], deferred: [], reviewedFiles: ["clean.ts"]
+  };
+  const contents = JSON.stringify({ scanId: parentId, complete: false, findings: [], coverage }) + "\n";
+  const checkpoint = path.join(parentRoot, "checkpoints", `${createHash("sha256").update(contents).digest("hex")}.json`);
+  await mkdir(path.dirname(checkpoint));
+  await writeFile(checkpoint, contents);
+  workbench("record-scan-checkpoint", "--scan-id", parentId, "--checkpoint-path", checkpoint);
+  const { scanId: childId } = workbench("register-cli-scan", "--repository", repoRoot,
+    "--scan-dir", childRoot, "--parent-scan-id", parentId, "--recipe-json", recipe);
+  workbench("continue-scan-checkpoint", "--scan-id", childId, "--parent-scan-id", parentId);
+  const head = JSON.parse(await readFile(path.join(childRoot, "checkpoint-head.json"), "utf8"));
+  const baselinePath = path.join(childRoot, "checkpoints", head.checkpoint);
+  const baselineBytes = await readFile(baselinePath, "utf8");
+  const client = await startClient(bundle, {
+    CODEX_SECURITY_STATE_DIR: stateRoot,
+    CODEX_SECURITY_PLUGIN_ROOT: currentPluginRoot,
+    CODEX_SECURITY_PYTHON_COMMAND: python
+  });
+  try {
+    for (const complete of [false, true]) {
+      requireSuccessfulTool(await client.callTool({
+        name: "record_codex_security_scan_draft",
+        arguments: {
+          scanId: childId, complete, findings: [],
+          coverage: { ...coverage, completeness: complete ? "complete" : "partial", reviewedFiles: ["pending.ts"] }
+        }
+      }), `${runtimeLabel}: submit ${complete ? "final" : "incremental"} Standard continuation draft`);
+    }
+  } finally {
+    await client.close();
+  }
+  assert.equal(await readFile(baselinePath, "utf8"), baselineBytes);
+  assert.equal(Object.hasOwn(JSON.parse(baselineBytes), "preservedSources"), false);
+  const resumedCoverage = JSON.parse(await readFile(path.join(childRoot, "coverage.json"), "utf8"));
+  assert.deepEqual(new Set(resumedCoverage.reviewedFiles), new Set(["clean.ts", "pending.ts"]));
+  assert.equal(workbench("complete-scan", "--scan-id", childId).scan.progress.status, "complete");
 }
 
 async function testReducerWorkerToolList(bundle) {

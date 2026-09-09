@@ -230,7 +230,7 @@ def checkpoint_state(connection: sqlite3.Connection, scan_id: str) -> dict[str, 
         "SELECT * FROM scan_checkpoints WHERE sequence IN (SELECT MAX(sequence) "
         "FROM scan_checkpoints WHERE scan_id = ? GROUP BY source_path) OR "
         "(scan_id = ? AND acceptance_id = "
-        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ? AND mode = 'deep')) "
+        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ?)) "
         "ORDER BY source_path, sequence",
         (scan_id, scan_id, scan_id),
     ).fetchall()
@@ -281,7 +281,7 @@ def checkpoint_summary(connection: sqlite3.Connection, scan_id: str) -> dict[str
         "FROM scan_checkpoints WHERE sequence IN (SELECT MAX(sequence) FROM scan_checkpoints "
         "WHERE scan_id = ? GROUP BY source_path) OR "
         "(scan_id = ? AND acceptance_id = "
-        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ? AND mode = 'deep')) "
+        "(SELECT continuation_checkpoint_acceptance_id FROM scans WHERE id = ?)) "
         "ORDER BY source_path, sequence",
         (scan_id, scan_id, scan_id),
     ).fetchall()
@@ -868,15 +868,7 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
                     (parent["id"],),
                 )
             }
-            baseline = connection.execute(
-                "SELECT snapshot_json FROM scan_checkpoints WHERE scan_id = ? AND acceptance_id = ?",
-                (parent["id"], parent["continuation_checkpoint_acceptance_id"]),
-            ).fetchone()
-            derived_sources = (
-                json.loads(baseline["snapshot_json"]).get("preservedSources", {})
-                if baseline
-                else {}
-            )
+            derived_sources = json.loads(parent["continuation_sources_json"] or "{}")
             retained_sources = set()
             for relative, worker in _saved_result_sources(parent_root, parent_workers):
                 try:
@@ -1008,9 +1000,9 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
             relative = f"checkpoints/{hashlib.sha256(contents).hexdigest()}.json"
             write_scan_local_bytes(root, relative, contents)
             seed_sources[relative] = _digest(snapshot)
-            if source.get("acceptanceId") is not None and (
-                parent["mode"] != "deep"
-                or source["acceptanceId"] != parent["continuation_checkpoint_acceptance_id"]
+            if (
+                source.get("acceptanceId") is not None
+                and source["acceptanceId"] != parent["continuation_checkpoint_acceptance_id"]
             ):
                 current_checkpoints.append(relative)
             elif source.get("acceptanceId") is None:
@@ -1110,9 +1102,6 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         snapshot = {
             "scanId": child["id"],
             "complete": completion_ready,
-            # Bind host-derived input snapshots to this acceptance so a later
-            # continuation can distinguish them from never-accepted model output.
-            "preservedSources": seed_sources,
             **{
                 key: manifest["scan"][key]
                 for key in ("scope", "threatModel")
@@ -1129,13 +1118,15 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         )
         connection.execute(
             "UPDATE scans SET continuation_cost_json = ?, continuation_checkpoint_path = ?, "
-            "continuation_checkpoint_acceptance_id = ?, inference_started = "
+            "continuation_checkpoint_acceptance_id = ?, continuation_sources_json = ?, "
+            "inference_started = "
             "CASE WHEN ? AND inference_started IS NULL THEN 0 ELSE inference_started END "
             "WHERE id = ?",
             (
                 db.parse_scan_cost(args.cost_json),
                 path.relative_to(root).as_posix() if child["mode"] == "deep" else None,
-                receipt["acceptanceId"],
+                receipt["acceptanceId"] if child["mode"] == "deep" else None,
+                json.dumps(seed_sources),
                 first_seed,
                 child["id"],
             ),
