@@ -440,3 +440,28 @@ test("cost reconciliation preserves the caller transaction when BEGIN fails and 
   });
   expect(failure.rows[0]!["cost_json"]).toBeNull();
 });
+
+test.skipIf(process.platform !== "darwin")(
+  "usage accepts macOS system rollout aliases",
+  () => {
+    for (const temporaryRoot of [
+      tmpdir().replace(/^\/private(?=\/var\/)/u, ""),
+      "/tmp",
+    ]) {
+      const directory = mkdtempSync(join(temporaryRoot, "scan-usage-alias-"));
+      try {
+        const input = request();
+        input.environment["CODEX_HOME"] = join(directory, "codex");
+        const path = rollout(input, "root", [meta("root"), tokens(10, 3)]);
+        expect(realpathSync(path)).toBe("/private" + path);
+        expect(value(run(input))).toMatchObject({
+          coverage: "complete",
+          threadCount: 1n,
+          totalTokens: 13n,
+        });
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  },
+);
