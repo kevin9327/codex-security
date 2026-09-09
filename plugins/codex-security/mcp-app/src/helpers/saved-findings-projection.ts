@@ -247,6 +247,10 @@ export function buildCsvProjection(
         : location.startLine,
     ]);
   }
+  return encodeCsvRows(rows);
+}
+
+export function encodeCsvRows(rows: readonly (readonly unknown[])[]): Buffer {
   return encodeUtf8(
     rows
       .map(
@@ -258,7 +262,9 @@ export function buildCsvProjection(
                   ? ""
                   : typeof value === "string"
                     ? value
-                    : pythonRepr(value);
+                    : Buffer.isBuffer(value)
+                      ? `b${pythonRepr(value.toString("latin1")).replace(/[\x80-\xff]/gu, (character) => `\\x${character.charCodeAt(0).toString(16)}`)}`
+                      : pythonRepr(value);
               return /[,"\r\n]/u.test(cell)
                 ? `"${cell.replaceAll('"', '""')}"`
                 : cell;

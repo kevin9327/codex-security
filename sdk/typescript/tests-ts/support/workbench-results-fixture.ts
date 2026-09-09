@@ -16,6 +16,7 @@ import {
   backfillLegacyFindingDetails,
   legacyFindingMatches,
 } from "../../../../plugins/codex-security/mcp-app/src/workbench-legacy-findings";
+import * as workbenchExports from "../../../../plugins/codex-security/mcp-app/src/workbench-export";
 import { scanTargetIdentity } from "../../../../plugins/codex-security/mcp-app/src/workbench-target";
 import { finalizeScan } from "../../../../plugins/codex-security/mcp-app/src/helpers/scan-finalization";
 import {
@@ -74,6 +75,9 @@ export interface Action {
     | "savedEncoded"
     | "backfill"
     | "legacy-match"
+    | "export"
+    | "exportCsv"
+    | "exportRows"
     | "finalize"
     | "sql"
     | "query"
@@ -110,6 +114,8 @@ export interface Action {
   label?: string;
   kind?: string | null;
   beforeBeginSql?: string;
+  format?: string;
+  failExportCallback?: "scan" | "workspace";
 }
 export interface Request {
   targetIdentityPath?: string;
@@ -322,6 +328,44 @@ function execute(request: Request): Response {
       try {
         let result: unknown = null;
         switch (action.operation) {
+          case "exportRows":
+            result = workbenchExports.findingExportRows(connection, id);
+            break;
+          case "exportCsv":
+            result = workbenchExports.writeCsvExport(connection, scan());
+            break;
+          case "export":
+            result = workbenchExports.exportFindings(
+              {
+                scanResult: (current, row) => {
+                  events.push([
+                    "export-scan",
+                    row.get("id"),
+                    row.get("seal_manifest_digest"),
+                    current.inTransaction,
+                  ]);
+                  if (action.failExportCallback === "scan")
+                    throw new Error("scan projection failed");
+                  return {
+                    scanId: row.get("id"),
+                    sealManifestDigest: row.get("seal_manifest_digest"),
+                  };
+                },
+                workspaceState: (current, workspaceId) => {
+                  events.push([
+                    "export-workspace",
+                    workspaceId,
+                    current.inTransaction,
+                  ]);
+                  if (action.failExportCallback === "workspace")
+                    throw new Error("workspace projection failed");
+                  return { workspaceId };
+                },
+              },
+              connection,
+              { scanId: id, format: action.format ?? "json" },
+            );
+            break;
           case "savedEncoded":
             result = {
               text: savedResults
