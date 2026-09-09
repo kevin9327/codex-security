@@ -16,40 +16,17 @@ import {
 } from "./workbench-schema-repairs";
 import {
   JsonFloat,
+  jsonGet as get,
+  jsonItem as item,
+  jsonTypeName as typeName,
   object,
   objectEntries,
   objectFromEntries,
   parseJson,
   parseJsonBytes,
-  pythonRepr,
   stringifyJson,
 } from "./helpers/python-json";
 
-// Retain the original JSON mapping operations: missing fields must not become SQL NULL.
-function typeName(value: unknown): string {
-  if (value === null) return "NoneType";
-  if (Array.isArray(value)) return "list";
-  if (value instanceof JsonFloat || typeof value === "number") return "float";
-  if (typeof value === "bigint") return "int";
-  if (typeof value === "boolean") return "bool";
-  return typeof value === "string" ? "str" : "dict";
-}
-function get(value: unknown, key: string, fallback: unknown = null): unknown {
-  if (!object(value))
-    throw new TypeError(`'${typeName(value)}' object has no attribute 'get'`);
-  return Object.hasOwn(value, key) ? value[key] : fallback;
-}
-function item(value: unknown, key: string): unknown {
-  if (object(value)) {
-    if (!Object.hasOwn(value, key)) throw new Error(pythonRepr(key));
-    return value[key];
-  }
-  if (Array.isArray(value))
-    throw new TypeError("list indices must be integers or slices, not str");
-  if (typeof value === "string")
-    throw new TypeError("string indices must be integers, not 'str'");
-  throw new TypeError(`'${typeName(value)}' object is not subscriptable`);
-}
 function contains(value: unknown, key: string): boolean {
   if (object(value)) return Object.hasOwn(value, key);
   if (Array.isArray(value)) return value.includes(key);

@@ -4,6 +4,7 @@ import {
   type Parameters,
 } from "../../../../plugins/codex-security/native/sqlite.mjs";
 import { sqliteBinding } from "../../../../plugins/codex-security/mcp-app/src/native";
+import { indexFindings } from "../../../../plugins/codex-security/mcp-app/src/workbench-finding-index";
 import { applyMigrations } from "../../../../plugins/codex-security/mcp-app/src/workbench-db";
 import {
   findPotentialDuplicates,
@@ -28,6 +29,14 @@ import {
 
 export type Operation =
   | {
+      type: "index";
+      scanId: string;
+      document: { findings?: unknown };
+      timestamp: string;
+    }
+  | { type: "execute"; sql: string; parameters?: Parameters }
+  | { type: "query"; sql: string; parameters?: Parameters }
+  | {
       type: "store";
       entries: ImportedEntry[];
       repository?: string;
@@ -47,6 +56,7 @@ export type Operation =
   | { type: "snapshot" };
 export interface Request {
   initialize?: boolean;
+  captureQueries?: boolean;
   operations?: Operation[];
   numeric?: (number | bigint | JsonFloat)[][];
   dot?: { left: number[]; right: number[] }[];
@@ -136,6 +146,25 @@ function main() {
       try {
         let value: unknown;
         switch (operation.type) {
+          case "index":
+            indexFindings(
+              connection,
+              operation.scanId,
+              operation.document,
+              operation.timestamp,
+            );
+            value = null;
+            break;
+          case "execute":
+            connection.prepare(operation.sql).run(operation.parameters);
+            value = null;
+            break;
+          case "query":
+            value = connection
+              .prepare(operation.sql)
+              .all(operation.parameters)
+              .map((row) => row.toObject());
+            break;
           case "store":
             value = storeFindings(
               connection,
@@ -194,7 +223,7 @@ function main() {
         return {
           value,
           inTransaction: connection.inTransaction,
-          queries: [...queries],
+          queries: request.captureQueries === false ? [] : [...queries],
         };
       } catch (error) {
         return {
@@ -202,7 +231,7 @@ function main() {
           kind: (error as Error).constructor.name,
           code: (error as { sqliteErrorCode?: number }).sqliteErrorCode ?? null,
           inTransaction: connection.inTransaction,
-          queries: [...queries],
+          queries: request.captureQueries === false ? [] : [...queries],
         };
       }
     });

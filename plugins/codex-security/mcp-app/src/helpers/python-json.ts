@@ -58,6 +58,37 @@ export function assignJson(target: Row, source: Row): void {
   keyOrder.set(target, [...keys]);
 }
 
+// Retain the original JSON mapping operations: missing fields must not become SQL NULL.
+export function jsonTypeName(value: unknown): string {
+  if (value === null) return "NoneType";
+  if (Array.isArray(value)) return "list";
+  if (value instanceof JsonFloat || typeof value === "number") return "float";
+  if (typeof value === "bigint") return "int";
+  if (typeof value === "boolean") return "bool";
+  return typeof value === "string" ? "str" : "dict";
+}
+export function jsonGet(
+  value: unknown,
+  key: string,
+  fallback: unknown = null,
+): unknown {
+  if (!object(value))
+    throw new TypeError(
+      `'${jsonTypeName(value)}' object has no attribute 'get'`,
+    );
+  return Object.hasOwn(value, key) ? value[key] : fallback;
+}
+export function jsonItem(value: unknown, key: string): unknown {
+  if (object(value)) {
+    if (!Object.hasOwn(value, key)) throw new Error(pythonRepr(key));
+    return value[key];
+  }
+  if (Array.isArray(value))
+    throw new TypeError("list indices must be integers or slices, not str");
+  if (typeof value === "string")
+    throw new TypeError("string indices must be integers, not 'str'");
+  throw new TypeError(`'${jsonTypeName(value)}' object is not subscriptable`);
+}
 // json.dumps(..., ensure_ascii=True, indent=2), with compact persistence support.
 export function stringifyJson(
   value: unknown,

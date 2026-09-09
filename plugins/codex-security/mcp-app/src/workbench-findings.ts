@@ -6,7 +6,10 @@ import {
   similarity,
 } from "./finding-similarity";
 import {
+  JsonFloat,
   JsonSyntaxError,
+  jsonGet,
+  jsonItem,
   object,
   objectEntries,
   parseJson,
@@ -29,7 +32,7 @@ const conflict = { error: "finding_conflict" };
 const constraint = (error: unknown) =>
   (error as { sqliteErrorCode?: number }).sqliteErrorCode === 19;
 
-// This operation does not own a transaction: scan indexing retains its Python caller.
+// The caller owns the transaction.
 export function upsertFinding(
   connection: Connection,
   finding: ImportedFinding,
@@ -46,26 +49,34 @@ export function upsertFinding(
       details_json=excluded.details_json, updated_at=excluded.updated_at
   `,
     )
-    .run([
-      finding.findingId,
-      finding.fingerprints.primary,
-      finding.ruleId,
-      finding.identity.anchor,
-      finding.identity.instance ?? null,
-      stringifyJson(finding, {
-        compact: true,
-        allowNan: false,
-        sortKeys: true,
-      }),
-      timestamp,
-      timestamp,
-    ]);
+    .run(
+      [
+        jsonItem(finding, "findingId"),
+        jsonItem(jsonItem(finding, "fingerprints"), "primary"),
+        jsonItem(finding, "ruleId"),
+        jsonItem(jsonItem(finding, "identity"), "anchor"),
+        jsonGet(jsonItem(finding, "identity"), "instance"),
+        stringifyJson(finding, {
+          compact: true,
+          allowNan: false,
+          sortKeys: true,
+        }),
+        timestamp,
+        timestamp,
+      ].map((value) =>
+        value instanceof JsonFloat ? Number(value.source) : value,
+      ) as Parameter[],
+    );
   if (repositoryId !== null)
     connection
       .prepare(
         "INSERT OR IGNORE INTO finding_repositories (repository_id, finding_id) VALUES (?, ?)",
       )
-      .run([repositoryId, finding.findingId]);
+      .run(
+        [repositoryId, jsonItem(finding, "findingId")].map((value) =>
+          value instanceof JsonFloat ? Number(value.source) : value,
+        ) as Parameter[],
+      );
 }
 
 export function storeFindings(
