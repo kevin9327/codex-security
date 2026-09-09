@@ -1,3 +1,5 @@
+import otherCategory from "@unicode/unicode-15.0.0/General_Category/Other/regex.js";
+import separatorCategory from "@unicode/unicode-15.0.0/General_Category/Separator/regex.js";
 import { decodeUtf8 } from "./utf8";
 
 // Preserve Python's integer/float distinction and arbitrary-size JSON integers.
@@ -280,7 +282,10 @@ export function pythonRepr(value: unknown): string {
         if (character === "\n") return "\\n";
         if (character === "\r") return "\\r";
         if (character === "\t") return "\\t";
-        if (character !== " " && /[\p{C}\p{Z}]/u.test(character)) {
+        if (
+          character !== " " &&
+          (otherCategory.test(character) || separatorCategory.test(character))
+        ) {
           const point = character.codePointAt(0)!;
           return point <= 0xff
             ? `\\x${point.toString(16).padStart(2, "0")}`
