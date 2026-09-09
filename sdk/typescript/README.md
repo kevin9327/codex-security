@@ -13,8 +13,7 @@ npx @openai/codex-security --version
 ```
 
 Use Node.js 22.13.0+ (22.x), 24.x, or 26.x on macOS, Linux, or Windows.
-Scans, scan history, and saved findings also need Python 3.10+
-(plus `tomli` on Python 3.10).
+Scans, scan history, and saved findings use the bundled Node.js helpers.
 
 ## Run a scan from TypeScript
 
@@ -133,7 +132,7 @@ Constructor options:
 | Option           | Description                                                             |
 | ---------------- | ----------------------------------------------------------------------- |
 | `pluginPath`     | Plugin directory or ZIP; defaults to the bundled plugin.                |
-| `pythonPath`     | Python interpreter; overrides `PYTHON`.                                 |
+| `pythonPath`     | Deprecated and ignored; helpers use Node.js.                            |
 | `codexOverrides` | Supported settings to deep-merge into the isolated Codex configuration. |
 
 Options for `security.run(repository, options)` and
@@ -162,7 +161,7 @@ and `maximum`. The maximum is a configured cap, not a percentage denominator.
 `ScanOptions` lists all callbacks.
 
 `preflight` and CLI `--dry-run` check local inputs without starting Codex or
-using the network. They don't authenticate, verify model access, resolve Python,
+using the network. They don't authenticate, verify model access,
 inspect the plugin, or run scan-lifecycle callbacks. Dry runs print effective settings.
 
 ## Authentication
@@ -559,7 +558,7 @@ restrictions.
 | `CODEX_SECURITY_STATE_DIR`                                                  | Private scan-history, workbench, and default artifact directory.                     |
 | `CODEX_HOME`                                                                | Ambient Codex home for file-based sign-in and default state; defaults to `~/.codex`. |
 | `CODEX_CLI_PATH`                                                            | Codex executable for authentication, plugin setup, scans, and workers.               |
-| `PYTHON`                                                                    | Python interpreter when `--python` or SDK `pythonPath` is unset.                     |
+| `PYTHON`                                                                    | Deprecated; helpers no longer use this variable.                                     |
 | `GH_HOST`                                                                   | GitHub Enterprise host for interactive `bulk-scan` discovery.                        |
 | `CODEX_SECURITY_NO_UPDATE_NOTICE`, `NO_UPDATE_NOTIFIER`                     | Either variable disables interactive update notices.                                 |
 | `CODEX_SECURITY_NPM_REGISTRY`, `npm_config_registry`, `NPM_CONFIG_REGISTRY` | Update-check registry, in precedence order.                                          |
@@ -570,11 +569,12 @@ Custom Codex executables need thread source attribution for `exec` and
 `app-server` (Codex 0.149.1+). On Windows, use a native `.exe` or `.com`;
 command shims such as `codex.cmd` fall back to the bundled executable.
 
-Python lookup order: `--python` (on `scan` or `bulk-scan`) or SDK
-`pythonPath`, then `PYTHON`, the managed Codex runtime, and `python3` or `python`
-on `PATH` (`py` also works on Windows). `export` uses the bundled Node.js helper;
-its `--python` option remains accepted for compatibility. `CODEX_SECURITY_STATE_DIR` overrides
-`CODEX_HOME` for state storage. Keep state and results outside the repository.
+All bundled helpers use Node.js. The `--python` options and SDK `pythonPath`
+remain accepted for compatibility but are ignored. They and the legacy
+`resolvePluginPython`, `PluginPythonOptions`, and `pluginExecutionEnvironment`
+exports are deprecated and will be removed in the next breaking release.
+`CODEX_SECURITY_STATE_DIR` overrides `CODEX_HOME` for state storage. Keep state
+and results outside the repository.
 
 ### Progress and cost
 
@@ -1767,7 +1767,7 @@ migrated database.
 
 ### Running without Docker
 
-With Node.js and Python 3 installed:
+With Node.js installed:
 
 ```bash
 npm install -g @openai/codex-security
@@ -1796,7 +1796,7 @@ node bin/codex-security.mjs serve --port 3000
 `pnpm run start:server` and `node dist/server/index.js` still work.
 
 Local defaults are `HOST=127.0.0.1` and `PORT=3000`. The existing
-`CODEX_SECURITY_STATE_DIR` and `PYTHON` settings select storage and Python;
+`CODEX_SECURITY_STATE_DIR` setting selects storage;
 without a state override, the service uses the same default state directory as
 the CLI. These settings also work on Windows.
 

@@ -5,7 +5,6 @@ import {
   mkdir,
   readFile,
   readdir,
-  realpath,
   rm,
   stat,
   symlink,
@@ -1216,7 +1215,7 @@ describe("CodexSecurity orchestration", () => {
     await mkdir(codexHome);
     await mkdir(scanDir, { mode: 0o700 });
     let codexOptions: CodexOptions | null = null;
-    let pythonEnvironment: Record<string, string | undefined> | undefined;
+    let helperEnvironment: Record<string, string | undefined> | undefined;
     let selectedAuthentication: ScanAuthentication | undefined;
     const client = new TestClient(
       {},
@@ -1233,9 +1232,9 @@ describe("CodexSecurity orchestration", () => {
             codex_api_key: "synthetic-forwarded-codex-key",
           },
         }),
-        resolvePluginPython: async (options) => {
-          pythonEnvironment = options?.environment;
-          return "/managed/python";
+        runWorkbench: async (options, args, input) => {
+          helperEnvironment = options.environment;
+          return mockWorkbench(args, input);
         },
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
@@ -1259,7 +1258,7 @@ describe("CodexSecurity orchestration", () => {
       verified: false,
     });
     for (const environment of [
-      pythonEnvironment,
+      helperEnvironment,
       (codexOptions as CodexOptions | null)?.env,
     ]) {
       expect(environment).toBeDefined();
@@ -2256,7 +2255,7 @@ describe("CodexSecurity orchestration", () => {
     }
   });
 
-  test("uses deterministic Codex doubles and forwards Python only to plugin execution", async () => {
+  test("runs a scan with deterministic Codex doubles when Python is unavailable", async () => {
     const root = await temporaryDirectory();
     const repository = join(root, "repository");
     const codexHome = join(root, "codex-home");
@@ -2280,7 +2279,10 @@ describe("CodexSecurity orchestration", () => {
       "Recovered finding: normalized its semantic anchor.";
 
     const client = new TestClient(
-      { codexOverrides: { model: "replay-model" } },
+      {
+        pythonPath: "/unavailable/python",
+        codexOverrides: { model: "replay-model" },
+      },
       {
         environment: { PATH: "/usr/bin", OPENAI_API_KEY: "" },
         prepareRuntime: async () => ({
@@ -2302,7 +2304,9 @@ describe("CodexSecurity orchestration", () => {
           },
           credentialsAvailable: true,
         }),
-        resolvePluginPython: async () => "/managed/python",
+        resolvePluginPython: async () => {
+          throw new Error("Python must not be resolved");
+        },
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -2392,7 +2396,6 @@ describe("CodexSecurity orchestration", () => {
     expect(Date.parse(startedAt)).toBeLessThanOrEqual(Date.now());
     expect((codexOptions as CodexOptions | null)?.env).toMatchObject({
       CODEX_HOME: codexHome,
-      PYTHON: "/managed/python",
       CODEX_SECURITY_STARTED_AT: startedAt,
       CODEX_SECURITY_REPOSITORY: repository,
       CODEX_SECURITY_SCAN_DIR: scanDir,
@@ -2438,9 +2441,7 @@ describe("CodexSecurity orchestration", () => {
     expect(prompt).toContain(
       `Repository root: ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")}`,
     );
-    expect(prompt).toContain(
-      `Use ${process.platform === "win32" ? "& " : ""}${shellEnvironmentReference("PYTHON")} as <python_command>`,
-    );
+    expect(prompt).not.toContain("<python_command>");
     expect(prompt).toContain(
       `${SHELL_ENVIRONMENT_PREFIX}CODEX_SECURITY_TARGET_DISPLAY_NAME`,
     );
@@ -4929,8 +4930,6 @@ describe("CodexSecurity orchestration", () => {
     await mkdir(repository);
     await mkdir(codexHome);
     await mkdir(scanDir, { mode: 0o700 });
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
     const environment = {
       PATH: process.env["PATH"] ?? "",
       CODEX_SECURITY_STATE_DIR: stateDirectory,
@@ -4944,7 +4943,6 @@ describe("CodexSecurity orchestration", () => {
           ...preparedRuntime(codexHome),
           environment,
         }),
-        resolvePluginPython: async () => python!,
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -4985,7 +4983,7 @@ describe("CodexSecurity orchestration", () => {
       "original scan failure",
     ]);
     const history = await runWorkbench(
-      { python: python!, pluginRoot: PLUGIN_ROOT, environment },
+      { pluginRoot: PLUGIN_ROOT, environment },
       ["list-scans", "--repository", repository],
     );
     expect(history["scans"]).toMatchObject([
@@ -5003,8 +5001,6 @@ describe("CodexSecurity orchestration", () => {
     await mkdir(repository);
     await mkdir(codexHome);
     await mkdir(scanDir, { mode: 0o700 });
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
     const environment = {
       PATH: process.env["PATH"] ?? "",
       CODEX_SECURITY_STATE_DIR: stateDirectory,
@@ -5023,7 +5019,6 @@ describe("CodexSecurity orchestration", () => {
           ...preparedRuntime(codexHome),
           environment,
         }),
-        resolvePluginPython: async () => python!,
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         runWorkbench: async (
@@ -5061,7 +5056,7 @@ describe("CodexSecurity orchestration", () => {
 
     // `scans show` reads the stored message back through get-scan.
     const context = await runWorkbench(
-      { python: python!, pluginRoot: PLUGIN_ROOT, environment },
+      { pluginRoot: PLUGIN_ROOT, environment },
       ["get-scan", "--scan-id", scanId],
     );
     expect(context["scan"]).toMatchObject({
@@ -5489,7 +5484,6 @@ describe("CodexSecurity orchestration", () => {
     const codexHome = join(root, "codex-home");
     const scanDir = join(root, "scan %PATH_LITERAL% !PATH_LITERAL!");
     const capturedTargetPathsFile = join(root, "captured-%PATH_LITERAL%.json");
-    const python = `/managed/python${injected}`;
     const paths =
       process.platform === "win32"
         ? ["src, v2.ts"]
@@ -5534,7 +5528,6 @@ describe("CodexSecurity orchestration", () => {
             ],
             set: {
               CUSTOM_REQUIRED: "top-level",
-              PYTHON: "/wrong/python",
               CODEX_HOME: "/credentials/must-not-reach-shell",
               GITHUB_TOKEN: "top-level-token-must-not-reach-shell",
               AWS_SECRET_ACCESS_KEY: "top-level-secret-must-not-reach-shell",
@@ -5581,7 +5574,6 @@ describe("CodexSecurity orchestration", () => {
             },
           };
         },
-        resolvePluginPython: async () => python,
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => {
@@ -5616,7 +5608,6 @@ describe("CodexSecurity orchestration", () => {
     }
     const environment = (codexOptions as CodexOptions | null)?.env;
     expect(environment).toMatchObject({
-      PYTHON: python,
       CODEX_HOME: codexHome,
       CODEX_SECURITY_STARTED_AT: expect.any(String),
       CODEX_SECURITY_REPOSITORY: repository,
@@ -5655,10 +5646,7 @@ describe("CodexSecurity orchestration", () => {
     expect(prompt).toContain(
       `Use this exact scan directory for all scan output: ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR")}`,
     );
-    const pythonCommand = `${process.platform === "win32" ? "& " : ""}${shellEnvironmentReference("PYTHON")}`;
-    expect(prompt).toContain(
-      `Use ${pythonCommand} as <python_command> for plugin Python helper scripts (.py files)`,
-    );
+
     const policyReference = await readFile(
       join(PLUGIN_ROOT, "references", "security-guidance.md"),
       "utf8",
@@ -5691,7 +5679,6 @@ describe("CodexSecurity orchestration", () => {
       scanDir,
       codexHome,
       targetPathsFile,
-      python,
       ...paths,
     ])
       expect(prompt).not.toContain(value);
@@ -5702,7 +5689,7 @@ describe("CodexSecurity orchestration", () => {
         "/bin/sh",
         [
           "-c",
-          'test -d "$CODEX_SECURITY_REPOSITORY" && test -d "$CODEX_SECURITY_SCAN_DIR" && test -d "$CODEX_SECURITY_PLUGIN_ROOT" && test ! -e PROMPT_RCE_MARKER && printf \'%s\\0%s\\0%s\\0\' "$CODEX_SECURITY_REPOSITORY" "$CODEX_SECURITY_SCAN_DIR" "$PYTHON" && cat "$CODEX_SECURITY_TARGET_PATHS_FILE"',
+          'test -d "$CODEX_SECURITY_REPOSITORY" && test -d "$CODEX_SECURITY_SCAN_DIR" && test -d "$CODEX_SECURITY_PLUGIN_ROOT" && test ! -e PROMPT_RCE_MARKER && printf \'%s\\0%s\\0\' "$CODEX_SECURITY_REPOSITORY" "$CODEX_SECURITY_SCAN_DIR" && cat "$CODEX_SECURITY_TARGET_PATHS_FILE"',
         ],
         {
           cwd: root,
@@ -5715,9 +5702,7 @@ describe("CodexSecurity orchestration", () => {
           encoding: "utf8",
         },
       );
-      expect(values).toBe(
-        `${repository}\0${scanDir}\0${python}\0${serializedPaths}\n`,
-      );
+      expect(values).toBe(`${repository}\0${scanDir}\0${serializedPaths}\n`);
     }
     const scopedSourceInput = join(scanDir, "scoped-source-input.jsonl");
     const runScopedHelper = (command: string): void => {
@@ -6379,8 +6364,6 @@ process.exit(2);
     const fakeCommand = nodeCodex(fakeCodex);
     let codexOptions: CodexOptions | null = null;
     let selectedAuthentication: unknown;
-    let pythonEnvironment: Record<string, string | undefined> | undefined;
-    let pythonProtectedRoot: string | undefined;
     const client = new TestClient(
       {},
       {
@@ -6408,11 +6391,7 @@ process.exit(2);
           credentialsAvailable: false,
         }),
         resolveCodexCommand: () => fakeCommand.command,
-        resolvePluginPython: async (options) => {
-          pythonEnvironment = options?.environment;
-          pythonProtectedRoot = options?.protectedRoot;
-          return "/managed/python";
-        },
+
         prepareOutputDir: async () => scanDir,
         repositoryRevision: async () => "deadbeef",
         createCodex: (options: CodexOptions) => {
@@ -6453,12 +6432,6 @@ process.exit(2);
       ),
     ).toBe(false);
     expect(existsSync(nativeLoginMarker)).toBe(false);
-    expect(pythonEnvironment).toMatchObject({
-      openai_api_key: "stale-key",
-      OPENAI_API_KEY: "ambient-key",
-      Codex_Api_Key: "secondary-key",
-    });
-    expect(pythonProtectedRoot).toBe(await realpath(repository));
     await client.close();
   });
 

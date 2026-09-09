@@ -2429,7 +2429,7 @@ describe("CLI", () => {
       "Codex Security plugin directory or ZIP (default: bundled plugin).",
     );
     expect(help.text()).toContain(
-      "Python interpreter (default: PYTHON or automatic discovery).",
+      "Deprecated and ignored; bundled helpers use Node.js.",
     );
     expect(help.text()).toContain(
       "codex-security bulk-scan repositories.csv " +

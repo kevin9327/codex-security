@@ -21,7 +21,7 @@ Use these shared path conventions for Codex Security scan workflows unless the u
 
 The plugin resolves the platform temporary directory automatically. For a manual workflow, use the active process temporary directory (for example, `%TEMP%` on Windows or `$TMPDIR` when configured on Unix-like hosts) instead of hardcoding `/tmp`.
 
-Resolve `<python_command>` to the configured Python interpreter (`"$PYTHON"` in POSIX shells or `& "$env:PYTHON"` in PowerShell), otherwise use `python` on Windows and `python3` on Unix-like hosts.
+Run plugin helpers through `<plugin_dir>/scripts/launch_codex_security_mcp --helper <command>`. On Windows, use `launch_codex_security_mcp.cmd`; in PowerShell, invoke a quoted launcher path with `&`.
 
 ## Threat Model (Phase 1) Paths
 

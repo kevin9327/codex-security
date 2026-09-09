@@ -42,7 +42,7 @@ Only `completed` supports a completed-scan conclusion. For every stopped outcome
 To validate and republish retained checkpoints for a failed, non-canceled workbench scan, run:
 
 ```text
-<python_command> <plugin_dir>/scripts/workbench_db.py recover-scan-results --scan-id <scan_id>
+<plugin_dir>/scripts/launch_codex_security_mcp --helper recover-scan-results --scan-id <scan_id>
 ```
 
 Recovery can add only checkpoints that pass the stopped-scan source-integrity checks. It is not available for running, completed, or canceled scans. After cancellation, the owning continuation may retry publication only from the source set frozen at cancellation through `preserve-scan-results`; it cannot admit later checkpoints.

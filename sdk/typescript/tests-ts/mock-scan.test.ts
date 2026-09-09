@@ -41,11 +41,10 @@ async function fixture() {
     SystemRoot: process.env["SystemRoot"],
     CODEX_HOME: join(root, "codex-home"),
     CODEX_SECURITY_STATE_DIR: join(root, "state"),
+    PYTHON: join(root, "missing-python"),
   };
-  const python = Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
   const client = new TestClient(
-    { pythonPath: python! },
+    { pythonPath: environment.PYTHON },
     {
       environment,
       runWorkbench,
@@ -57,11 +56,11 @@ async function fixture() {
       },
     },
   );
-  return { root, repository, client, environment, python: python! };
+  return { root, repository, client, environment };
 }
 
-test("mock scans seal real artifacts and index shared and unique findings without Codex", async () => {
-  const { repository, client, environment, python } = await fixture();
+test("mock scans seal real artifacts and index shared and unique findings without Codex or Python", async () => {
+  const { repository, client, environment } = await fixture();
   const callbacks: string[] = [];
   try {
     const first = await client.run(repository, {
@@ -128,12 +127,12 @@ test("mock scans seal real artifacts and index shared and unique findings withou
       "export const example = 1;\n",
     );
     const history = await runWorkbench(
-      { python, pluginRoot: PLUGIN_ROOT, environment },
+      { pluginRoot: PLUGIN_ROOT, environment },
       ["list-scans", "--repository", repository],
     );
     expect(history["scans"]).toHaveLength(2);
     const recipe = await runWorkbench(
-      { python, pluginRoot: PLUGIN_ROOT, environment },
+      { pluginRoot: PLUGIN_ROOT, environment },
       ["get-scan-recipe", "--scan-id", first.manifest.scan.id],
     );
     let rerunMock: boolean | undefined;
@@ -279,7 +278,7 @@ test("mock scans bind clean Git, committed diff, and working-tree snapshots", as
 });
 
 test("aborting mock generation leaves a terminal scan record", async () => {
-  const { client, repository, environment, python } = await fixture();
+  const { client, repository, environment } = await fixture();
   const controller = new AbortController();
   try {
     await expect(
@@ -290,7 +289,7 @@ test("aborting mock generation leaves a terminal scan record", async () => {
       }),
     ).rejects.toThrow(ScanInterruptedError);
     const history = await runWorkbench(
-      { python, pluginRoot: PLUGIN_ROOT, environment },
+      { pluginRoot: PLUGIN_ROOT, environment },
       ["list-scans", "--repository", repository],
     );
     expect(history["scans"]).toMatchObject([

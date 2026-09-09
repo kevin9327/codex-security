@@ -43,11 +43,7 @@ import {
   logout as codexLogout,
   type AccountStatus,
 } from "./auth.js";
-import {
-  jsonForPrompt,
-  pluginPythonCommand,
-  shellEnvironmentReference,
-} from "./codex-prompt.js";
+import { jsonForPrompt, shellEnvironmentReference } from "./codex-prompt.js";
 import {
   DEFAULT_CODEX_CONFIG,
   EXTERNAL_CODEX_PROVIDERS,
@@ -139,7 +135,6 @@ import {
   importAmbientAuth,
   prepareCodexSecurityCredentialHome,
   preserveCodexSecurityPluginRegistration,
-  pluginExecutionEnvironment,
   pluginMetadata,
   planOutputArchive,
   prepareScanArtifactRestorer,
@@ -217,7 +212,6 @@ interface PreparedSession {
   scanEnvironment: ProcessEnvironment;
   authentication: ScanAuthentication;
   approvalPolicy: "never" | "on-request";
-  python: string;
   releaseCredentialHome: (() => Promise<void>) | null;
 }
 
@@ -856,7 +850,6 @@ export class CodexSecurity {
         modelProvider,
         authentication,
         approvalPolicy,
-        python,
       } = session;
       releaseCredentialHome = session.releaseCredentialHome;
       const deepScanConfigPath =
@@ -1136,7 +1129,6 @@ export class CodexSecurity {
       if (options.validationPrompt !== undefined)
         recipe["validationMode"] = "custom";
       const workbenchOptions: WorkbenchCommandOptions = {
-        python,
         pluginRoot: runtime.plugin.pluginRoot,
         environment: {
           ...selectedScanEnvironment(
@@ -1350,7 +1342,6 @@ export class CodexSecurity {
             )
           : null;
       const runtimePaths = {
-        PYTHON: python,
         CODEX_SECURITY_STARTED_AT: new Date().toISOString(),
         CODEX_SECURITY_REPOSITORY: repo,
         CODEX_SECURITY_SCAN_DIR: scanDir,
@@ -2103,28 +2094,21 @@ export class CodexSecurity {
     runtimePaths: Record<string, string>,
     auth: ScanAuthMode = "auto",
   ): { codex: CodexClientLike; environment: ProcessEnvironment } {
-    const {
-      runtime,
-      python,
-      modelProvider,
-      externalProvider,
-      apiKey,
-      sessionConfig,
-    } = session;
+    const { runtime, modelProvider, externalProvider, apiKey, sessionConfig } =
+      session;
     const commandAuth = hasCommandAuth(sessionConfig);
-    const environment: ProcessEnvironment = {
-      ...pluginExecutionEnvironment(
-        python,
-        withoutCodexHome(
-          selectedScanEnvironment(
-            commandAuth
-              ? withoutOpenAiApiKeys(runtime.environment)
-              : runtime.environment,
-            auth,
-            modelProvider,
-          ),
-        ),
+    const selectedEnvironment = withoutCodexHome(
+      selectedScanEnvironment(
+        commandAuth
+          ? withoutOpenAiApiKeys(runtime.environment)
+          : runtime.environment,
+        auth,
+        modelProvider,
       ),
+    );
+    const environment: ProcessEnvironment = {
+      ...selectedEnvironment,
+      CODEX_CLI_PATH: resolveCodexCommand(selectedEnvironment).command,
       ...(externalProvider === null
         ? {}
         : { [externalProvider.env_key]: apiKey! }),
@@ -2360,14 +2344,6 @@ export class CodexSecurity {
         options.onObserverError,
         authentication,
       );
-      const python = await (
-        this.#dependencies.resolvePluginPython ?? resolvePluginPython
-      )({
-        configuredPath: this.config.pythonPath,
-        environment: scanEnvironment,
-        protectedRoot,
-        signal,
-      });
       checkOpen();
       return {
         runtime,
@@ -2382,7 +2358,6 @@ export class CodexSecurity {
         scanEnvironment,
         authentication,
         approvalPolicy,
-        python,
         releaseCredentialHome,
       };
     } catch (error) {
@@ -2511,14 +2486,6 @@ export class CodexSecurity {
           "The selected plugin version does not match the expected plugin version.",
         );
       }
-      const python = await (
-        this.#dependencies.resolvePluginPython ?? resolvePluginPython
-      )({
-        configuredPath: this.config.pythonPath,
-        environment: this.#dependencies.environment,
-        protectedRoot: local.protectedRoot,
-        signal,
-      });
       if (options.knowledgeBasePaths?.length) {
         const knowledgeBase = await prepareKnowledgeBase(
           options.knowledgeBasePaths,
@@ -2564,7 +2531,6 @@ export class CodexSecurity {
         ...this.config.codexOverrides,
       });
       const workbenchOptions: WorkbenchCommandOptions = {
-        python,
         pluginRoot,
         environment: {
           ...this.#dependencies.environment,
@@ -3434,7 +3400,6 @@ function scanPrompt(
   enforceCostLimit = false,
   discoveryPrompt?: string,
 ): string {
-  const python = pluginPythonCommand();
   const customValidation = discoveryPrompt !== undefined;
   return [
     discoveryPrompt ??
@@ -3459,7 +3424,6 @@ function scanPrompt(
             "This exhaustive scan authorizes the delegated-worker phases required by the selected skill; use available subagent tools and continue with parent-agent fallback if capacity changes.",
           ]),
     "This SDK host does not render MCP Apps; use the terminal/chat workflow.",
-    `Use ${python} as <python_command> for plugin Python helper scripts (.py files); replace any literal python or python3 helper invocation with this exact interpreter.`,
     `Repository root: ${shellEnvironmentReference("CODEX_SECURITY_REPOSITORY")}`,
     `Use this exact scan directory for all scan output: ${shellEnvironmentReference("CODEX_SECURITY_SCAN_DIR")}`,
     `Use exactly ${JSON.stringify(scanId)} as the scan ID in the manifest, findings, and coverage.`,

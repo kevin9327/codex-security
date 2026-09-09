@@ -248,7 +248,7 @@ const CODEX_OVERRIDE_DESCRIPTION =
 const PLUGIN_PATH_DESCRIPTION =
   "Codex Security plugin directory or ZIP (default: bundled plugin).";
 const PYTHON_PATH_DESCRIPTION =
-  "Python interpreter (default: PYTHON or automatic discovery).";
+  "Deprecated and ignored; bundled helpers use Node.js.";
 const EXPORT_DEFAULT_OUTPUTS = {
   csv: "findings.csv",
   json: "findings.json",
@@ -3905,7 +3905,7 @@ export async function main(
             ),
           python: optionValue("--python")
             .optional()
-            .describe("Python interpreter for the bundled plugin exporter."),
+            .describe(PYTHON_PATH_DESCRIPTION),
         })
         .refine(
           (options) =>

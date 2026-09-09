@@ -113,6 +113,7 @@ interface CodexCommandResult {
 
 export type ProcessEnvironment = Record<string, string | undefined>;
 
+/** @deprecated Scan execution no longer resolves Python. */
 export interface PluginPythonOptions {
   configuredPath?: string;
   environment?: ProcessEnvironment;
@@ -123,7 +124,8 @@ export interface PluginPythonOptions {
 }
 
 export interface WorkbenchCommandOptions {
-  python: string;
+  /** @deprecated Helpers use Node.js; this option is ignored. */
+  python?: string;
   pluginRoot: string;
   environment: ProcessEnvironment;
   signal?: AbortSignal;
@@ -1505,7 +1507,7 @@ const workbenchComparisonSupport = new Map<
 >();
 
 export async function runWorkbench(
-  options: Omit<WorkbenchCommandOptions, "python"> & { python?: string },
+  options: WorkbenchCommandOptions,
   args: readonly string[],
   input?: string,
 ): Promise<JsonObject> {
@@ -2514,6 +2516,7 @@ export async function pluginMetadata(
   return { name: PLUGIN_NAME, version };
 }
 
+/** @deprecated Helpers use Node.js; scans no longer call this resolver. */
 export async function resolvePluginPython(
   options: PluginPythonOptions = {},
 ): Promise<string> {
@@ -2584,6 +2587,7 @@ export async function resolvePluginPython(
   );
 }
 
+/** @deprecated Helpers use Node.js; scans no longer use this environment. */
 export function pluginExecutionEnvironment(
   python: string,
   environment: ProcessEnvironment = process.env,
