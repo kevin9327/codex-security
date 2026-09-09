@@ -32,7 +32,7 @@ function requireSamePath(left: string, right: string, label: string): void {
     );
 }
 
-function pathExists(path: string): boolean {
+export function pathExists(path: string): boolean {
   // Path.exists suppresses encoding and embedded-NUL failures.
   if (path.includes("\0")) return false;
   if (process.platform !== "win32") {

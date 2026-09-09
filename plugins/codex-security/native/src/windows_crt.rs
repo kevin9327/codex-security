@@ -1,3 +1,5 @@
+use crate::windows::wide_path;
+use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 
 type InvalidParameterHandler =
@@ -7,6 +9,7 @@ extern "C" {
     fn _wopen(path: *const u16, flags: i32, ...) -> i32;
     fn _close(fd: i32) -> i32;
     fn _write(fd: i32, buffer: *const std::ffi::c_void, length: u32) -> i32;
+    fn _read(fd: i32, buffer: *mut std::ffi::c_void, length: u32) -> i32;
     fn _isatty(fd: i32) -> i32;
     fn _errno() -> *mut i32;
     fn __doserrno() -> *mut u32;
@@ -119,5 +122,65 @@ impl Descriptor {
 impl Drop for Descriptor {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[napi(object)]
+pub struct CrtReadCount {
+    pub errno: i32,
+    pub value: i32,
+}
+
+#[napi]
+pub struct WindowsReadFile {
+    descriptor: Descriptor,
+}
+
+#[napi(object, object_from_js = false, use_nullable = true)]
+pub struct ReadFileOpenResult {
+    pub errno: i32,
+    pub file: Option<WindowsReadFile>,
+}
+
+#[napi]
+pub fn open_windows_read_file(path: Buffer) -> napi::Result<ReadFileOpenResult> {
+    let path = wide_path(path)?;
+    const O_BINARY: i32 = 0x8000;
+    const O_NOINHERIT: i32 = 0x0080;
+    Ok(match Descriptor::open(&path, O_BINARY | O_NOINHERIT, 0) {
+        Ok(descriptor) => ReadFileOpenResult {
+            errno: 0,
+            file: Some(WindowsReadFile { descriptor }),
+        },
+        Err(errno) => ReadFileOpenResult { errno, file: None },
+    })
+}
+
+#[napi]
+impl WindowsReadFile {
+    #[napi]
+    pub fn read(&self, mut buffer: Buffer) -> CrtReadCount {
+        let _guard = SuppressInvalidParameters::new();
+        let count = buffer.len().min(i32::MAX as usize) as u32;
+        loop {
+            unsafe {
+                *_errno() = 0;
+                *__doserrno() = 0;
+            }
+            let value = unsafe { _read(self.descriptor.raw(), buffer.as_mut_ptr().cast(), count) };
+            let mut errno = if value < 0 { errno() } else { 0 };
+            // _Py_read reports a nonblocking empty pipe as EAGAIN.
+            if errno == 22 && unsafe { *__doserrno() } == 232 {
+                errno = 11;
+            }
+            if errno != 4 {
+                return CrtReadCount { errno, value };
+            }
+        }
+    }
+
+    #[napi]
+    pub fn close(&mut self) -> i32 {
+        self.descriptor.close()
     }
 }

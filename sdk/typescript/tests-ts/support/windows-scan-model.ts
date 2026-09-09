@@ -278,6 +278,7 @@ export class WindowsScanModel {
     openWindowsFile: (path, access, share, disposition, flags) =>
       this.open(plain(path), access, share, disposition, flags),
     createWindowsHardLink: unavailable,
+    openWindowsReadFile: unavailable,
     replaceWindowsPath: unavailable,
     unlinkWindowsPath: unavailable,
     createWindowsDirectory: (path) => {

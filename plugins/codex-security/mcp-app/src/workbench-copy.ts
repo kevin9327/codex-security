@@ -175,15 +175,17 @@ function mkdirTree(path: string): void {
 
 interface CopySource {
   path: string;
-  kind: "path" | "entry";
+  kind: "path" | "entry" | "string";
   link?: boolean;
   cachedStat?: ReturnType<typeof stat>;
   cachedCopyStat?: CopyStatMetadata;
 }
 const sourceRepr = (source: CopySource) =>
-  source.kind === "entry"
-    ? `<DirEntry ${pythonRepr(basename(source.path))}>`
-    : `${windows ? "WindowsPath" : "PosixPath"}(${pythonRepr(windows ? source.path.replaceAll("\\", "/") : source.path)})`;
+  source.kind === "string"
+    ? pythonRepr(source.path)
+    : source.kind === "entry"
+      ? `<DirEntry ${pythonRepr(basename(source.path))}>`
+      : `${windows ? "WindowsPath" : "PosixPath"}(${pythonRepr(windows ? source.path.replaceAll("\\", "/") : source.path)})`;
 const sourceLink = (source: CopySource) =>
   source.kind === "entry" ? source.link! : isLink(source.path);
 
@@ -378,6 +380,25 @@ function copyBytes(source: string, destination: string): void {
     }
   } finally {
     closeSync(input);
+  }
+}
+
+export function copyFileWithMetadata(
+  source: string,
+  destination: string,
+  sourceIsPath = false,
+  destinationIsPath = false,
+): void {
+  try {
+    copy2(
+      { path: source, kind: sourceIsPath ? "path" : "string" },
+      destination,
+      true,
+      destinationIsPath,
+    );
+  } catch (error) {
+    if (!osError(error)) throw error;
+    throw copyError(error);
   }
 }
 

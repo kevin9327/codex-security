@@ -176,6 +176,65 @@ function copyMetadataProof(root: string) {
   }
 }
 
+function readFileProof(root: string) {
+  const path = join(root, "read-file-\ud800"),
+    replacement = join(root, "read-file-\ufffd");
+  const files = windowsFileSystem(native);
+  const payload = Buffer.alloc(1024 * 1024 + 7, 255);
+  payload.set([0, 10, 13, 26]);
+  files.writeFile(pathBytes(path), payload);
+  writeFileSync(replacement, "replacement sentinel");
+  const opened = native.openWindowsReadFile(pathBytes(path));
+  assert.equal(opened.errno, 0);
+  assert(opened.file);
+  const file = opened.file;
+  let probe: WindowsHandle | undefined;
+  try {
+    assert.deepEqual(file.read(Buffer.alloc(0)), { errno: 0, value: 0 });
+    const first = Buffer.alloc(1024 * 1024);
+    assert.deepEqual(file.read(first), { errno: 0, value: first.length });
+    assert.deepEqual(first, payload.subarray(0, first.length));
+    const last = Buffer.alloc(20, 42);
+    assert.deepEqual(file.read(last.subarray(3)), { errno: 0, value: 7 });
+    assert.deepEqual(last.subarray(0, 3), Buffer.alloc(3, 42));
+    assert.deepEqual(last.subarray(3, 10), payload.subarray(first.length));
+    assert.deepEqual(last.subarray(10), Buffer.alloc(10, 42));
+    assert.deepEqual(file.read(last), { errno: 0, value: 0 });
+    assert.equal(native.unlinkWindowsPath(pathBytes(path)), 32);
+    probe = open(path, readWrite, shareAll);
+    success(probe.lock(true));
+    const competing = native.openWindowsReadFile(pathBytes(path));
+    assert.equal(competing.errno, 0);
+    assert(competing.file);
+    try {
+      assert.deepEqual(competing.file.read(first), { errno: 13, value: -1 });
+    } finally {
+      assert.equal(competing.file.close(), 0);
+    }
+    success(probe.unlock());
+    success(probe.close());
+    probe = undefined;
+    assert.equal(file.close(), 0);
+    assert.equal(file.close(), 0);
+    assert.deepEqual(file.read(last), { errno: 9, value: -1 });
+    assert.deepEqual(native.openWindowsReadFile(pathBytes(root)), {
+      errno: 13,
+      file: null,
+    });
+    assert.deepEqual(
+      native.openWindowsReadFile(pathBytes(join(root, "absent-read-file"))),
+      { errno: 2, file: null },
+    );
+    assert.equal(readFileSync(replacement, "utf8"), "replacement sentinel");
+    return { binaryChunks: true, rawPaths: true, crtErrorsAndSharing: true };
+  } finally {
+    file.close();
+    probe?.close();
+    remove(path);
+    remove(replacement);
+  }
+}
+
 function publicationPathProof(root: string) {
   const files = windowsFileSystem(native);
   const source = join(root, "publication-source-\ud800"),
@@ -1305,6 +1364,7 @@ if (process.argv[2] === "worker") {
           copyMetadata: copyMetadataProof(root),
           privateDirectories: privateDirectoryProof(root),
           publicationPaths: publicationPathProof(root),
+          readFiles: readFileProof(root),
           copyPrimitives: copyPrimitivesProof(root),
           completionFiles: await completionFileProof(root),
           exclusiveFiles: await exclusiveFileProof(root),

@@ -21,6 +21,12 @@ export interface WindowsExclusiveFile {
   close(): number;
 }
 
+/** Owns a binary, non-inheritable CRT descriptor opened for reading. */
+export interface WindowsReadFile {
+  read(buffer: Buffer): { errno: number; value: number };
+  close(): number;
+}
+
 /** Owns a synchronous Windows file. close() is idempotent; GC also closes it. */
 export interface WindowsHandle {
   close(): number;
@@ -46,6 +52,10 @@ export interface WindowsBinding {
   errnoMessage(error: number): Buffer;
   windowsErrorMessage(error: number): Buffer;
   windowsReadFileCrt(path: Buffer): { errno: number; value: Buffer };
+  openWindowsReadFile(path: Buffer): {
+    errno: number;
+    file: WindowsReadFile | null;
+  };
   windowsArguments(): Buffer[];
   windowsEnvironment(name: Buffer): Buffer | null;
   windowsInvariantLowercase(value: Buffer): WindowsResult<Buffer>;
