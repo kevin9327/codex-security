@@ -1636,6 +1636,9 @@ export class CodexSecurity {
             `The original Codex session for scan ${scanId} is unavailable. Restore its session logs in the original Codex Security state directory before resuming.`,
           );
         }
+        if (typeof registration["sealedProducerVersion"] === "string") {
+          expectation.pluginVersion = registration["sealedProducerVersion"];
+        }
       }
       const targetId = registration["targetId"];
       const contract = registration["contract"];

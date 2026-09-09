@@ -504,7 +504,9 @@ def expected_coverage_mode(scan: sqlite3.Row) -> str:
     return "deep_repository" if scan["mode"] == "deep" else "repository"
 
 
-def workbench_completion_binding(scan: sqlite3.Row, completed_at: str) -> dict[str, Any]:
+def workbench_completion_binding(
+    scan: sqlite3.Row, completed_at: str, manifest: dict[str, Any] | None = None
+) -> dict[str, Any]:
     contract = scan_contract(scan)
     target_contract = contract["target"]
     plugin_manifest = read_json_object(
@@ -533,7 +535,7 @@ def workbench_completion_binding(scan: sqlite3.Row, completed_at: str) -> dict[s
         "excludePaths": contract["scope"]["requiredExcludePaths"],
     }
 
-    return {
+    binding: dict[str, Any] = {
         "scanId": scan["id"],
         "startedAt": scan["started_at"],
         "completedAt": completed_at,
@@ -543,6 +545,7 @@ def workbench_completion_binding(scan: sqlite3.Row, completed_at: str) -> dict[s
         "scope": scope,
         "coverageMode": expected_coverage_mode(scan),
     }
+    return scan_history.preserve_sealed_completion(binding, manifest)
 
 
 def verify_manifest_binding(scan: sqlite3.Row, manifest: dict[str, Any]) -> None:
@@ -1485,8 +1488,8 @@ def complete_scan_locked(
     add_warning()
     scan_dir = require_canonical_scan_directory(Path(scan["scan_dir"]))
     completion_timestamp = now()
-    completion_binding = workbench_completion_binding(scan, completion_timestamp)
     current_manifest_path = artifact_path(scan_dir, ARTIFACTS["manifest"], required=False)
+    current_manifest = None
     if current_manifest_path is not None:
         current_manifest = read_json_object(current_manifest_path)
         if (
@@ -1504,8 +1507,8 @@ def complete_scan_locked(
             or current_manifest["scan"].get("artifacts") is not None
         )
     )
+    completion_binding = workbench_completion_binding(scan, completion_timestamp, current_manifest)
     if scan["recipe_json"] is not None:
-        draft_artifacts: dict[str, Path] = {}
         missing_drafts = []
         for file_name in (
             ARTIFACTS["manifest"],
@@ -1517,20 +1520,13 @@ def complete_scan_locked(
             except FileNotFoundError:
                 missing_drafts.append(file_name)
                 continue
-            draft_path = artifact_path(scan_dir, file_name, required=True)
-            if draft_path is not None:
-                draft_artifacts[file_name] = draft_path
+            artifact_path(scan_dir, file_name, required=True)
         if missing_drafts:
             raise SystemExit(
                 "Scan agent did not create required draft artifacts: "
                 f"{', '.join(missing_drafts)}. Check that the scan agent can run shell "
                 "commands and write to the scan directory before retrying."
             )
-        manifest = read_json_object(draft_artifacts[ARTIFACTS["manifest"]])
-        manifest_scan = manifest.get("scan")
-        if isinstance(manifest_scan, dict) and manifest_scan.get("sealedAt") is not None:
-            completion_binding["startedAt"] = manifest_scan.get("startedAt")
-            completion_binding["completedAt"] = manifest_scan.get("completedAt")
     wrote = False
     try:
         prepared = _prepare_scan_finalization(
@@ -1559,7 +1555,11 @@ def complete_scan_locked(
         wrote = True
         manifest, findings, _ = _write_prepared_scan_finalization(prepared)
     except ContractError as exc:
-        if wrote or (scan["mode"] == "deep" and not isinstance(exc, RecoverableContractError)):
+        if wrote or (
+            scan["mode"] == "deep"
+            and not already_sealed
+            and not isinstance(exc, RecoverableContractError)
+        ):
             args = argparse.Namespace(claim_token=claim_token, cost_json=cost_json)
             args.message, args.scan_id = str(exc), scan_id
             fail_scan_locked(connection, args)
@@ -3515,6 +3515,9 @@ def main() -> None:
                     parse_scan_recipe=parse_scan_recipe,
                     scan_contract=scan_contract,
                     require_scan_directory=require_canonical_scan_directory,
+                    artifact_path=artifact_path,
+                    read_json_object=read_json_object,
+                    workbench_completion_binding=workbench_completion_binding,
                 )
             except SystemExit as exc:
                 if not args.allow_unavailable:

@@ -594,6 +594,122 @@ test.each([
   },
 );
 
+test.each([
+  "single",
+  "bulk",
+  "unsupported-schema",
+  "wrong-producer",
+  "changed-findings",
+])(
+  "resume preserves sealed artifacts across a plugin upgrade (%s)",
+  async (scenario) => {
+    const f = await interruptedScan("deep", scenario === "bulk");
+    await finishDiscovery(f);
+    const oldPlugin = join(f.root, "old-plugin");
+    for (const path of ["scripts", "schemas", ".codex-plugin"]) {
+      await cp(join(PLUGIN_ROOT, path), join(oldPlugin, path), {
+        recursive: true,
+      });
+    }
+    const pluginManifest = join(oldPlugin, ".codex-plugin", "plugin.json");
+    const plugin = JSON.parse(await readFile(pluginManifest, "utf8"));
+    plugin.version = f.recipe.pluginVersion;
+    await writeFile(pluginManifest, JSON.stringify(plugin));
+    await runWorkbench(
+      { python: f.python, pluginRoot: oldPlugin, environment: f.environment },
+      ["prepare-scan-completion", "--scan-id", f.scanId],
+    );
+    const manifestPath = join(f.scanDir, "scan-manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    expect(manifest.scan.producer.version).toBe(f.recipe.pluginVersion);
+    if (scenario === "unsupported-schema") manifest.schemaVersion = "999.0";
+    if (scenario === "wrong-producer")
+      manifest.scan.producer.name = "different-producer";
+    if (scenario === "unsupported-schema" || scenario === "wrong-producer") {
+      await writeFile(manifestPath, JSON.stringify(manifest));
+    }
+    if (scenario === "changed-findings") {
+      await appendFile(join(f.scanDir, "findings.json"), "\n");
+    }
+    const artifactNames = [
+      "scan-manifest.json",
+      "findings.json",
+      "coverage.json",
+      "report.md",
+    ];
+    const artifacts = await Promise.all(
+      artifactNames.map((name) => readFile(join(f.scanDir, name))),
+    );
+    const before = await f.command(["get-scan", "--scan-id", f.scanId]);
+    const rejected = !["single", "bulk"].includes(scenario);
+    let turns = 0;
+    const stdout = capture();
+    const stderr = capture();
+    const code = await main(
+      scenario === "bulk"
+        ? ["bulk-scan", f.input, "--output-dir", f.root, "--recover", "--json"]
+        : ["scans", "resume", f.scanId, "--json"],
+      stdout.stream,
+      stderr.stream,
+      {
+        ...dependencies({
+          environment: f.environment,
+          currentDirectory: f.root,
+        }),
+        runWorkbench: f.command,
+        createSecurity: resumeClient(f, () => ({
+          startThread() {
+            throw new Error("Unexpected new session");
+          },
+          resumeThread(threadId) {
+            expect(threadId).toBe(f.threadId);
+            return {
+              id: threadId,
+              async runStreamed() {
+                turns++;
+                return { events: completedEvents(threadId) };
+              },
+            };
+          },
+        })),
+      },
+    );
+    expect(code, stderr.text()).toBe(2);
+    expect(
+      await Promise.all(
+        artifactNames.map((name) => readFile(join(f.scanDir, name))),
+      ),
+    ).toEqual(artifacts);
+    const after = await f.command(["get-scan", "--scan-id", f.scanId]);
+    if (rejected) {
+      expect(stderr.text()).toContain("Cannot resume sealed scan");
+      expect(turns).toBe(0);
+      expect(after).toEqual(before);
+    } else {
+      expect(after["scan"], stderr.text()).toMatchObject({
+        progress: { status: "complete" },
+        continuationThreadId: f.threadId,
+      });
+      if (scenario === "bulk") {
+        expect(JSON.parse(stdout.text())).toMatchObject({
+          incomplete: 1,
+          failed: 0,
+        });
+        const receipts = (await readFile(join(f.root, "results.jsonl"), "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(receipts).toHaveLength(2);
+        expect(receipts[1]).toMatchObject({
+          attempt: 1,
+          outputDir: f.scanDir,
+          status: "completed_with_incomplete_coverage",
+        });
+      }
+    }
+  },
+);
+
 test("CLI saves launch settings before execution without depending on the prompt file", async () => {
   const root = await temporaryDirectory();
   const repository = join(root, "repository");

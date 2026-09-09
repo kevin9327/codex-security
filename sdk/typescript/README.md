@@ -1213,6 +1213,11 @@ If discovery finished before the interruption, resume completes and seals the
 same scan. No archiving or new attempt directory is needed. A failed connection
 leaves the existing scan available for another resume attempt.
 
+Compatible saved scans can resume after a plugin update. Already-sealed results
+keep their original producer version and contents when completion is recorded.
+Unsupported or invalid sealed artifacts are rejected before resuming, preserving
+the saved scan state and files.
+
 For bulk campaigns, use [`bulk-scan --recover`](#recovering-failed-or-interrupted-bulk-scans)
 to recover eligible attempts and update `results.jsonl`. Individual `scans resume`
 does not update campaign receipts.
