@@ -1,9 +1,5 @@
 import { isIP } from "node:net";
 import { sep } from "node:path";
-import lowerMappings from "@unicode/unicode-15.0.0/Simple_Case_Mapping/Lowercase/symbols.js";
-import specialLower from "@unicode/unicode-15.0.0/Special_Casing/Lowercase/symbols.js";
-import cased from "@unicode/unicode-15.0.0/Binary_Property/Cased/regex.js";
-import caseIgnorable from "@unicode/unicode-15.0.0/Binary_Property/Case_Ignorable/regex.js";
 import type { Connection, Parameter } from "../../native/sqlite.mjs";
 import {
   pathText,
@@ -16,6 +12,7 @@ import { object, parseJson } from "./helpers/python-json";
 import { compare } from "./helpers/rank-worklists";
 import { resolvedPath } from "./helpers/resolve-path";
 import { expandHome, parsedPath } from "./helpers/resolve-security-md";
+import { lowercase } from "./helpers/unicode-case";
 import { casefold } from "./workbench-dashboard";
 import { gitOutput } from "./workbench-git";
 
@@ -39,34 +36,6 @@ const trim = (value: string) =>
   );
 const expand = (value: string) =>
   resolvedPath(expandHome(parsedPath(value), environment("HOME")), false);
-
-// Python's lowercase mapping includes contextual final sigma and is Unicode15.
-function lower(value: string): string {
-  const characters = Array.from(value);
-  return characters
-    .map((character, index) => {
-      if (character === "Σ") {
-        let before = index - 1,
-          after = index + 1;
-        while (before >= 0 && caseIgnorable.test(characters[before]!)) before--;
-        while (
-          after < characters.length &&
-          caseIgnorable.test(characters[after]!)
-        )
-          after++;
-        if (
-          before >= 0 &&
-          cased.test(characters[before]!) &&
-          (after === characters.length || !cased.test(characters[after]!))
-        )
-          return "ς";
-      }
-      return (
-        specialLower.get(character) ?? lowerMappings.get(character) ?? character
-      );
-    })
-    .join("");
-}
 
 /** Keep the workbench's existing URL and SCP origin equivalence, without IDNA rewriting. */
 export function repositoryOrigin(target: string): RepositoryOrigin | null {
@@ -143,7 +112,7 @@ export function repositoryOrigin(target: string): RepositoryOrigin | null {
   }
   path = path.replace(/^\/+|\/+$/gu, "");
   if (path.endsWith(".git")) path = path.slice(0, -4);
-  return host && path ? [lower(host), path] : null;
+  return host && path ? [lowercase(host), path] : null;
 }
 
 function windowsPathKey(value: string): string {
@@ -181,7 +150,7 @@ function relatedTargets(connection: Connection, repository: string): string[] {
       const targetPath = resolvedPath(path, false);
       if (
         process.platform === "win32"
-          ? lower(targetPath) === lower(repository)
+          ? lowercase(targetPath) === lowercase(repository)
           : targetPath === repository
       )
         return [id];
@@ -195,7 +164,7 @@ function relatedTargets(connection: Connection, repository: string): string[] {
           right = resolvedPath(common, false);
         if (
           process.platform === "win32"
-            ? lower(left) === lower(right)
+            ? lowercase(left) === lowercase(right)
             : left === right
         )
           return [id];

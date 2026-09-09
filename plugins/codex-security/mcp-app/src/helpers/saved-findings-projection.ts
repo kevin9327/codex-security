@@ -1,4 +1,5 @@
 import { hasText } from "./finding-root-cause";
+import { primaryFindingLocation } from "./finding-evidence";
 import {
   object,
   objectEntries,
@@ -240,10 +241,7 @@ export function buildCsvProjection(
     ],
   ];
   for (const finding of findings.findings) {
-    const location =
-      finding.locations.find(
-        (candidate) => candidate.role === "root_control",
-      ) ?? finding.locations[0]!;
+    const location = primaryFindingLocation(finding);
     rows.push([
       csvCell(finding.occurrenceId),
       csvCell(finding.findingId),
