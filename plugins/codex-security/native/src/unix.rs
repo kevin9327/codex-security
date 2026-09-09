@@ -37,6 +37,13 @@ fn path(value: Buffer) -> napi::Result<CString> {
     CString::new(value.as_ref()).map_err(|_| napi::Error::from_reason("Path contains a NUL byte"))
 }
 
+#[napi]
+pub fn environment(name: Buffer) -> napi::Result<Option<Buffer>> {
+    let name = path(name)?;
+    Ok(std::env::var_os(OsStr::from_bytes(name.to_bytes()))
+        .map(|value| value.as_bytes().to_vec().into()))
+}
+
 #[napi(object)]
 pub struct DirectoryEntry {
     pub name: Buffer,

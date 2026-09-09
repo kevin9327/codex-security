@@ -2,7 +2,7 @@
 
 These bindings supply OS operations that Node does not expose. The `resolve-security-md` helper uses native account lookup on Unix and native path, file, and directory operations on Windows.
 
-The ten Node-API 8 functions are typed in `binding.mts`. Paths remain byte buffers. `statAt` never follows the final symlink; device and inode numbers are decimal strings so JavaScript does not round them. `openAt` and `duplicate` create descriptors with close-on-exec set. Node owns subsequent reads, writes, `fstat`, `fsync`, and close calls. `userHome` looks up raw username bytes through the operating system and returns raw home-directory bytes or a missing result, without Git.
+The Node-API 8 functions are typed in `binding.mts`. Paths remain byte buffers. `statAt` never follows the final symlink; device and inode numbers are decimal strings so JavaScript does not round them. `openAt` and `duplicate` create descriptors with close-on-exec set. Node owns subsequent reads, writes, `fstat`, `fsync`, and close calls. `userHome` looks up raw username bytes through the operating system and returns raw home-directory bytes or a missing result, without Git. `environment` reads a named environment value as raw bytes, returning null when unset and an empty buffer for an empty value.
 
 `directoryEntries` returns raw names in filesystem order. With `withTypes: true`, it uses cached directory and symlink types where available and returns any individual type-query errno beside that entry. Symlinks are not followed. With `withTypes: false`, it never queries entry metadata; the unused type flags are false and entry errnos are zero. A directory-open or iteration failure returns its errno and an empty array. Rust closes the directory on success or failure.
 
