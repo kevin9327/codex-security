@@ -11,6 +11,7 @@ import {
 import { MIGRATIONS } from "../../../../plugins/codex-security/mcp-app/src/workbench-migrations";
 import * as results from "../../../../plugins/codex-security/mcp-app/src/workbench-results";
 import * as findingResults from "../../../../plugins/codex-security/mcp-app/src/workbench-finding-results";
+import * as savedResults from "../../../../plugins/codex-security/mcp-app/src/workbench-saved-result-sources";
 import { scanTargetIdentity } from "../../../../plugins/codex-security/mcp-app/src/workbench-target";
 import {
   findingOccurrenceConditions,
@@ -56,6 +57,16 @@ export interface Action {
     | "remediation"
     | "availability"
     | "details"
+    | "savedChildren"
+    | "savedPaths"
+    | "savedReducer"
+    | "savedRead"
+    | "savedParent"
+    | "savedDigests"
+    | "savedChanged"
+    | "savedRecovery"
+    | "savedNeeded"
+    | "savedEncoded"
     | "sql"
     | "query"
     | "commit"
@@ -84,6 +95,12 @@ export interface Action {
   value?: unknown;
   valueBytes?: string;
   related?: Record<string, unknown>[];
+  valueJson?: string;
+  directory?: string;
+  relative?: string;
+  workers?: Record<string, Parameter>[];
+  label?: string;
+  kind?: string | null;
 }
 export interface Request {
   targetIdentityPath?: string;
@@ -289,6 +306,69 @@ function execute(request: Request): Response {
       try {
         let result: unknown = null;
         switch (action.operation) {
+          case "savedEncoded":
+            result = {
+              text: savedResults
+                .encodedSavedResult(
+                  action.valueJson === undefined
+                    ? action.value
+                    : parseJson(action.valueJson),
+                )
+                .toString("utf8"),
+              digest: savedResults.savedResultDigest(
+                action.valueJson === undefined
+                  ? action.value
+                  : parseJson(action.valueJson),
+              ),
+            };
+            break;
+          case "savedChildren":
+            result = savedResults.savedResultChildren(
+              action.directory!,
+              action.relative!,
+            );
+            break;
+          case "savedPaths":
+          case "savedReducer": {
+            const workers = (action.workers ?? []).map(
+              (worker) =>
+                new Row(
+                  Object.keys(worker),
+                  Object.values(worker) as Row["values"],
+                ),
+            );
+            result =
+              action.operation === "savedPaths"
+                ? [...savedResults.savedResultPaths(action.directory!, workers)]
+                : savedResults.latestSuccessfulReducer(workers);
+            break;
+          }
+          case "savedRead":
+            result = savedResults.readSavedResult(
+              action.directory!,
+              action.relative!,
+              id,
+              action.kind,
+            );
+            break;
+          case "savedParent":
+            result = savedResults.readSavedParentResult(action.directory!, id);
+            break;
+          case "savedDigests":
+            result = savedResults.sourceDigests(
+              action.value,
+              action.label ?? "Test",
+            );
+            break;
+          case "savedChanged":
+            result = savedResults.savedResultsChanged(connection, scan());
+            break;
+          case "savedRecovery":
+            result = savedResults.recoverySourceDigests(connection, scan());
+            break;
+          case "savedNeeded":
+            result = savedResults.scanResultsRecoveryNeeded(connection, scan());
+            break;
           case "details":
             result = findingResults.readFindingDetails(
               action.valueBytes === undefined
