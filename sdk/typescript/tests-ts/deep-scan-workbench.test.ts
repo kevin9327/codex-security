@@ -8,7 +8,18 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  afterEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildSync } from "esbuild";
+import type { Request, OwnershipProbe } from "./support/legacy-deep-fixture";
 import { runWorkbench } from "../src/runtime.js";
 import { loadBundledRuntime, PLUGIN_ROOT } from "./plugin-root.js";
 
@@ -24,67 +35,36 @@ afterEach(async () => {
   );
 });
 
-const deepScanOwnershipProbe = [
-  "import argparse, json, sqlite3, sys",
-  "sys.path.insert(0, sys.argv[1])",
-  "import deep_scan_workbench as deep_scan",
-  "case = json.loads(sys.argv[2])",
-  "connection = sqlite3.connect(':memory:')",
-  "connection.row_factory = sqlite3.Row",
-  "connection.executescript('''",
-  "CREATE TABLE workspaces (id TEXT PRIMARY KEY, thread_id TEXT, updated_at TEXT);",
-  "CREATE TABLE scans (id TEXT PRIMARY KEY, workspace_id TEXT, mode TEXT, status TEXT, recipe_json TEXT, handoff_status TEXT, handoff_claim_token TEXT, deep_scan_owner_thread_id TEXT, updated_at TEXT);",
-  "CREATE TABLE deep_scan_runs (scan_id TEXT PRIMARY KEY);",
-  "''')",
-  "scan_id = '11111111-1111-4111-8111-111111111111'",
-  "connection.execute(\"INSERT INTO workspaces VALUES ('workspace', NULL, 'before')\")",
-  "connection.execute(\"INSERT INTO scans VALUES (?, 'workspace', 'deep', 'running', '{}', 'delivered', ?, NULL, 'before')\", (scan_id, case['storedToken']))",
-  "connection.execute('INSERT INTO deep_scan_runs VALUES (?)', (scan_id,))",
-  "connection.commit()",
-  "if case.get('mutation') == 'rotate':",
-  "    connection.executescript(\"CREATE TRIGGER rotate_claim BEFORE UPDATE OF thread_id ON workspaces BEGIN UPDATE scans SET handoff_claim_token = '33333333-3333-4333-8333-333333333333' WHERE workspace_id = NEW.id; END\")",
-  "elif case.get('mutation') == 'withdraw':",
-  "    connection.executescript(\"CREATE TRIGGER withdraw_handoff BEFORE UPDATE OF thread_id ON workspaces BEGIN UPDATE scans SET handoff_status = 'pending' WHERE workspace_id = NEW.id; END\")",
-  "deep_scan.require_scan = lambda database, value: database.execute('SELECT * FROM scans WHERE id = ?', (value,)).fetchone()",
-  "deep_scan.require_workspace = lambda database, value: database.execute('SELECT * FROM workspaces WHERE id = ?', (value,)).fetchone()",
-  "deep_scan.now = lambda: 'after'",
-  "deep_scan.deep_scan_result = lambda database, value, *, start_disposition=None: {'startDisposition': start_disposition}",
-  "try:",
-  "    result = deep_scan.begin_deep_scan_for_scan(connection, scan_id, 'requesting-thread', argparse.Namespace(claim_token=case['suppliedToken'], model=None, reasoning_effort=None))",
-  "except SystemExit as error:",
-  "    accepted, message, result = False, str(error), None",
-  "else:",
-  "    accepted, message = True, None",
-  "scan = connection.execute('SELECT * FROM scans WHERE id = ?', (scan_id,)).fetchone()",
-  "workspace = connection.execute(\"SELECT * FROM workspaces WHERE id = 'workspace'\").fetchone()",
-  "print(json.dumps({'accepted': accepted, 'error': message, 'result': result, 'scanOwner': scan['deep_scan_owner_thread_id'], 'workspaceOwner': workspace['thread_id'], 'scanUpdatedAt': scan['updated_at'], 'workspaceUpdatedAt': workspace['updated_at'], 'storedToken': scan['handoff_claim_token'], 'handoffStatus': scan['handoff_status']}))",
-].join("\n");
-
-interface OwnershipProbe {
-  storedToken: string | null;
-  suppliedToken: string | null;
-  mutation?: "rotate" | "withdraw";
-}
-
-function runOwnershipProbe(probe: OwnershipProbe): Record<string, unknown> {
-  const python = Bun.which("python3") ?? Bun.which("python") ?? Bun.which("py");
-  expect(python).not.toBeNull();
-  if (python === null) {
-    throw new Error("A Python interpreter is required for deep-scan tests.");
-  }
-
-  const result = Bun.spawnSync(
-    [
-      python,
-      "-I",
-      "-B",
-      "-c",
-      deepScanOwnershipProbe,
-      join(PLUGIN_ROOT, "scripts"),
-      JSON.stringify(probe),
+const bundleRoot = mkdtempSync(join(tmpdir(), "deep-workbench-fixture-"));
+const fixture = join(bundleRoot, "fixture.cjs"),
+  node = Bun.which("node")!;
+const helper = join(PLUGIN_ROOT, "mcp/helpers.mjs");
+beforeAll(() =>
+  buildSync({
+    entryPoints: [
+      fileURLToPath(
+        new URL("./support/legacy-deep-fixture.ts", import.meta.url),
+      ),
     ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+    outfile: fixture,
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node20",
+    define: { "import.meta.url": JSON.stringify(pathToFileURL(helper).href) },
+  }),
+);
+afterAll(() => rmSync(bundleRoot, { recursive: true, force: true }));
+function runFixture(request: Request) {
+  return Bun.spawnSync([node, fixture], {
+    stdin: Buffer.from(JSON.stringify(request)),
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, PYTHON: "/unavailable/python" },
+  });
+}
+function runOwnershipProbe(probe: OwnershipProbe): Record<string, unknown> {
+  const result = runFixture({ operation: "ownership", probe });
   expect(new TextDecoder().decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);
   return JSON.parse(new TextDecoder().decode(result.stdout)) as Record<
@@ -101,32 +81,7 @@ test("copies a Deep Scan publication when the filesystem rejects hardlinks", asy
   const source = join(root, "source.jsonl");
   const destination = join(root, "destination.jsonl");
   await writeFile(source, '{"finding":"synthetic"}\n');
-  const python =
-    process.env["PYTHON"] ?? Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
-
-  const result = Bun.spawnSync(
-    [
-      python!,
-      "-I",
-      "-B",
-      "-c",
-      [
-        "import errno, sys",
-        "from pathlib import Path",
-        "sys.path.insert(0, sys.argv[1])",
-        "import deep_scan_workbench as deep_scan",
-        "def reject_hardlink(source, destination):",
-        "    raise OSError(errno.ENOTSUP, 'hardlinks are unavailable')",
-        "deep_scan.os.link = reject_hardlink",
-        "deep_scan.create_publication_copy(Path(sys.argv[2]), Path(sys.argv[3]))",
-      ].join("\n"),
-      join(PLUGIN_ROOT, "scripts"),
-      source,
-      destination,
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  const result = runFixture({ operation: "copy", source, destination });
 
   expect(new TextDecoder().decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);
@@ -138,47 +93,7 @@ test("recovers an interrupted copied Deep Scan publication", async () => {
     await mkdtemp(join(tmpdir(), "codex-security-deep-copy-recovery-")),
   );
   temporaryDirectories.push(root);
-  const python =
-    process.env["PYTHON"] ?? Bun.which("python3") ?? Bun.which("python");
-  expect(python).not.toBeNull();
-
-  const result = Bun.spawnSync(
-    [
-      python!,
-      "-I",
-      "-B",
-      "-c",
-      [
-        "import json, shutil, sqlite3, sys",
-        "from pathlib import Path",
-        "sys.path.insert(0, sys.argv[1])",
-        "import deep_scan_workbench as deep_scan",
-        "root = Path(sys.argv[2])",
-        "scan_dir = root / 'scan'",
-        "ledger = scan_dir / 'artifacts' / '02_discovery' / 'candidate_ledger.jsonl'",
-        "snapshot = root / 'worker' / 'canonical' / ledger.name",
-        "backup = ledger.with_name(f'.{ledger.name}.fixture.backup')",
-        "ledger.parent.mkdir(parents=True)",
-        "snapshot.parent.mkdir(parents=True)",
-        "ledger.write_text('old ledger\\n', encoding='utf-8')",
-        "shutil.copy2(ledger, backup)",
-        "snapshot.write_text('new ledger\\n', encoding='utf-8')",
-        "shutil.copy2(snapshot, ledger)",
-        "connection = sqlite3.connect(':memory:')",
-        "connection.row_factory = sqlite3.Row",
-        "connection.execute('CREATE TABLE scans (id TEXT PRIMARY KEY, scan_dir TEXT)')",
-        "connection.execute('CREATE TABLE deep_scan_workers (scan_id TEXT, kind TEXT, status TEXT, artifact_dir TEXT, updated_at TEXT)')",
-        "connection.execute('INSERT INTO scans VALUES (?, ?)', ('scan', str(scan_dir)))",
-        "connection.execute('INSERT INTO deep_scan_workers VALUES (?, ?, ?, ?, ?)', ('scan', 'dedup', 'running', str(snapshot.parent.parent), 'now'))",
-        "deep_scan.require_scan = lambda database, value: database.execute('SELECT * FROM scans WHERE id = ?', (value,)).fetchone()",
-        "deep_scan.recover_candidate_ledger_publication(connection, 'scan')",
-        "print(json.dumps({'ledger': ledger.read_text(encoding='utf-8'), 'backup': backup.exists()}))",
-      ].join("\n"),
-      join(PLUGIN_ROOT, "scripts"),
-      root,
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  const result = runFixture({ operation: "recover", root });
 
   expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
   expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
@@ -203,15 +118,14 @@ test.each([
     await mkdir(repository);
     await mkdir(scanDir, { mode: 0o700 });
     await writeFile(join(repository, "source.py"), "# synthetic source\n");
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
+
     const command = (args: string[], input?: string) =>
       runWorkbench(
         {
-          python: python!,
           pluginRoot: PLUGIN_ROOT,
           environment: {
             ...process.env,
+            PYTHON: "/unavailable/python",
             CODEX_SECURITY_STATE_DIR: join(root, "state"),
             CODEX_HOME: join(root, "codex-home"),
           },
@@ -303,16 +217,13 @@ describe("deep scan workbench ownership", () => {
     const stateDir = join(root, "state");
     await mkdir(repository);
     await writeFile(join(repository, "source.py"), "# source fixture\n");
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
+
     const userContext = "deep security focus".repeat(4_000);
 
     const result = Bun.spawnSync(
       [
-        python!,
-        "-I",
-        "-B",
-        join(PLUGIN_ROOT, "scripts", "workbench_db.py"),
+        node,
+        helper,
         "begin-deep-scan",
         "--thread-id",
         "deep-context-stdin-owner",
@@ -327,7 +238,11 @@ describe("deep scan workbench ownership", () => {
         "4",
       ],
       {
-        env: { ...process.env, CODEX_SECURITY_STATE_DIR: stateDir },
+        env: {
+          ...process.env,
+          PYTHON: "/unavailable/python",
+          CODEX_SECURITY_STATE_DIR: stateDir,
+        },
         stdin: Buffer.from(userContext),
         stdout: "pipe",
         stderr: "pipe",
@@ -351,23 +266,17 @@ describe("deep scan workbench ownership", () => {
     const stateDir = join(root, "state");
     await mkdir(repository);
     await mkdir(scanDir, { mode: 0o700 });
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
+
     const command = (args: string[]) =>
-      Bun.spawnSync(
-        [
-          python!,
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "workbench_db.py"),
-          ...args,
-        ],
-        {
-          env: { ...process.env, CODEX_SECURITY_STATE_DIR: stateDir },
-          stdout: "pipe",
-          stderr: "pipe",
+      Bun.spawnSync([node, helper, ...args], {
+        env: {
+          ...process.env,
+          PYTHON: "/unavailable/python",
+          CODEX_SECURITY_STATE_DIR: stateDir,
         },
-      );
+        stdout: "pipe",
+        stderr: "pipe",
+      });
     const registered = command([
       "register-cli-scan",
       "--repository",
@@ -429,8 +338,8 @@ describe("deep scan workbench ownership", () => {
         {
           env: {
             ...process.env,
-            CODEX_HOME: codexHome,
             PYTHON: "/unavailable/python",
+            CODEX_HOME: codexHome,
           },
           stdout: "pipe",
           stderr: "pipe",
@@ -470,9 +379,9 @@ describe("deep scan workbench ownership", () => {
       {
         env: {
           ...process.env,
+          PYTHON: "/unavailable/python",
           CODEX_HOME: codexHome,
           CODEX_SECURITY_DEEP_SCAN_CONFIG_PATH: isolatedConfig,
-          PYTHON: "/unavailable/python",
         },
         stdout: "pipe",
         stderr: "pipe",
@@ -510,8 +419,8 @@ describe("deep scan workbench ownership", () => {
         {
           env: {
             ...process.env,
-            CODEX_HOME: codexHome,
             PYTHON: "/unavailable/python",
+            CODEX_HOME: codexHome,
           },
           stdout: "pipe",
           stderr: "pipe",
@@ -527,46 +436,10 @@ describe("deep scan workbench ownership", () => {
   test.each([false, true] as const)(
     "backfills and repairs discovery deadline migration when already recorded: %p",
     (migrationRecorded) => {
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
-      const script = [
-        "import json, runpy, sqlite3, sys",
-        "from unittest import mock",
-        "namespace = runpy.run_path(sys.argv[1], run_name='codex_security_workbench_db')",
-        "apply_migrations = namespace['apply_migrations']",
-        "connection = sqlite3.connect(':memory:')",
-        "connection.row_factory = sqlite3.Row",
-        "historical = tuple(item for item in namespace['MIGRATIONS'] if item[0] < 28)",
-        "with mock.patch.dict(apply_migrations.__globals__, {'MIGRATIONS': historical}):",
-        "    apply_migrations(connection)",
-        "timestamp = '2026-07-01T00:00:00Z'",
-        "connection.execute('INSERT INTO workspaces (id, created_at, updated_at) VALUES (?, ?, ?)', ('legacy-workspace', timestamp, timestamp))",
-        "connection.execute(\"INSERT INTO scans (id, workspace_id, target_path, target_revision, scope, mode, scan_dir, status, phase, started_at, created_at, updated_at) VALUES (?, ?, '/legacy/target', 'legacy-revision', '.', 'deep', '/legacy/scan', 'running', 'discovery', ?, ?, ?)\", ('legacy-scan', 'legacy-workspace', timestamp, timestamp, timestamp))",
-        "connection.execute(\"INSERT INTO deep_scan_runs (scan_id, schema_version, workflow_version, status, phase, workers, subagents, stop_after_no_new, max_discovery_runs, created_at, updated_at) VALUES (?, 1, 'legacy-workflow', 'running', 'discovery', 1, 0, 3, 10, ?, ?)\", ('legacy-scan', timestamp, timestamp))",
-        "if sys.argv[2] == 'true':",
-        "    connection.execute('INSERT INTO schema_migrations (version, name, applied_at) VALUES (28, ?, ?)', ('persist deep scan discovery time limit', timestamp))",
-        "connection.commit()",
-        "apply_migrations(connection)",
-        "default = connection.execute('SELECT max_time_hours FROM deep_scan_runs').fetchone()[0]",
-        "connection.execute('UPDATE deep_scan_runs SET max_time_hours = 2.5')",
-        "connection.commit()",
-        "apply_migrations(connection)",
-        "configured = connection.execute('SELECT max_time_hours FROM deep_scan_runs').fetchone()[0]",
-        "migration = connection.execute('SELECT name FROM schema_migrations WHERE version = 28').fetchone()[0]",
-        "print(json.dumps({'default': default, 'configured': configured, 'migration': migration}))",
-      ].join("\n");
-      const result = Bun.spawnSync(
-        [
-          python!,
-          "-I",
-          "-B",
-          "-c",
-          script,
-          join(PLUGIN_ROOT, "scripts", "workbench_db.py"),
-          String(migrationRecorded),
-        ],
-        { stdout: "pipe", stderr: "pipe" },
-      );
+      const result = runFixture({
+        operation: "migration",
+        recorded: migrationRecorded,
+      });
       expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
       expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
         default: 96,
@@ -601,24 +474,17 @@ describe("deep scan workbench ownership", () => {
         join(repository, "shared", "support.py"),
         "# supporting context\n",
       );
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
 
       const command = (args: string[]): Record<string, unknown> => {
-        const result = Bun.spawnSync(
-          [
-            python!,
-            "-I",
-            "-B",
-            join(PLUGIN_ROOT, "scripts", "workbench_db.py"),
-            ...args,
-          ],
-          {
-            env: { ...process.env, CODEX_SECURITY_STATE_DIR: stateDir },
-            stdout: "pipe",
-            stderr: "pipe",
+        const result = Bun.spawnSync([node, helper, ...args], {
+          env: {
+            ...process.env,
+            PYTHON: "/unavailable/python",
+            CODEX_SECURITY_STATE_DIR: stateDir,
           },
-        );
+          stdout: "pipe",
+          stderr: "pipe",
+        });
         expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(
           0,
         );
@@ -733,19 +599,13 @@ describe("deep scan workbench ownership", () => {
       );
       const terminalManifest = join(scanDir, "coordinator-manifest.json");
       await writeFile(terminalManifest, "{}\n");
-      const terminal = Bun.spawnSync(
-        [
-          python!,
-          "-I",
-          "-B",
-          "-c",
-          "import sqlite3,sys; connection=sqlite3.connect(sys.argv[1]); connection.execute(\"UPDATE deep_scan_runs SET status='succeeded', phase='terminal', terminal_reason='saturated', manifest_path=? WHERE scan_id=?\",sys.argv[2:]); connection.commit()",
-          join(stateDir, "workbench.sqlite3"),
-          terminalManifest,
-          scanId,
-        ],
-        { stdout: "pipe", stderr: "pipe" },
-      );
+      const terminal = runFixture({
+        operation: "sql",
+        database: join(stateDir, "workbench.sqlite3"),
+        statement:
+          "UPDATE deep_scan_runs SET status='succeeded', phase='terminal', terminal_reason='saturated', manifest_path=? WHERE scan_id=?",
+        parameters: [terminalManifest, scanId],
+      });
       expect(terminal.exitCode, new TextDecoder().decode(terminal.stderr)).toBe(
         0,
       );
@@ -973,26 +833,15 @@ describe("deep scan workbench ownership", () => {
   ] as const)(
     "only describes an exhausted scan cost limit for %s",
     (_description, reason, exhausted) => {
-      const python = Bun.which("python3") ?? Bun.which("python");
-      expect(python).not.toBeNull();
-      const script = [
-        "import json, pathlib, runpy, sys",
-        "plugin = pathlib.Path(sys.argv[1])",
-        "examples = plugin / 'examples' / 'completed-scan'",
-        "documents = [json.loads((examples / name).read_text()) for name in ('scan-manifest.json', 'findings.json', 'coverage.json')]",
-        "manifest, findings, coverage = documents",
-        "findings['findings'] = []",
-        "coverage['completeness'] = 'partial'",
-        "coverage['deferred'] = [{'id': 'candidate-example', 'reason': sys.argv[2]}]",
-        "projection = runpy.run_path(str(plugin / 'scripts' / 'report_projection.py'))",
-        "print(projection['build_report_markdown'](manifest, findings, coverage))",
-      ].join("\n");
-      const result = Bun.spawnSync(
-        [python!, "-I", "-B", "-c", script, PLUGIN_ROOT, reason],
-        { stdout: "pipe", stderr: "pipe" },
-      );
+      const result = runFixture({
+        operation: "report",
+        pluginRoot: PLUGIN_ROOT,
+        reason,
+      });
       expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
-      const report = new TextDecoder().decode(result.stdout);
+      const report = JSON.parse(
+        new TextDecoder().decode(result.stdout),
+      ) as string;
       expect(
         report.includes(
           "No findings were validated before the scan reached its cost limit.",
@@ -1081,27 +930,17 @@ describe("deep scan workbench ownership", () => {
     await mkdir(repository);
     await writeFile(join(repository, "source.py"), "# source fixture\n");
 
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
     const command = (args: string[], allowFailure = false) => {
-      const result = Bun.spawnSync(
-        [
-          python!,
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "workbench_db.py"),
-          ...args,
-        ],
-        {
-          env: {
-            ...process.env,
-            CODEX_SECURITY_STATE_DIR: stateDir,
-            CODEX_HOME: codexHome,
-          },
-          stdout: "pipe",
-          stderr: "pipe",
+      const result = Bun.spawnSync([node, helper, ...args], {
+        env: {
+          ...process.env,
+          PYTHON: "/unavailable/python",
+          CODEX_SECURITY_STATE_DIR: stateDir,
+          CODEX_HOME: codexHome,
         },
-      );
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       const stdout = new TextDecoder().decode(result.stdout);
       const stderr = new TextDecoder().decode(result.stderr);
       if (allowFailure) return { status: result.exitCode, stderr };
@@ -1128,19 +967,12 @@ describe("deep scan workbench ownership", () => {
     expect(initial["coordinatorGeneration"]).toBe(1);
 
     const updateDatabase = (statement: string, ...values: string[]) => {
-      const result = Bun.spawnSync(
-        [
-          python!,
-          "-I",
-          "-B",
-          "-c",
-          "import sqlite3,sys; connection=sqlite3.connect(sys.argv[1]); connection.execute(sys.argv[2],sys.argv[3:]); connection.commit()",
-          join(stateDir, "workbench.sqlite3"),
-          statement,
-          ...values,
-        ],
-        { stdout: "pipe", stderr: "pipe" },
-      );
+      const result = runFixture({
+        operation: "sql",
+        database: join(stateDir, "workbench.sqlite3"),
+        statement,
+        parameters: values,
+      });
       expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
     };
     updateDatabase(
@@ -1289,27 +1121,17 @@ describe("deep scan workbench ownership", () => {
       ),
     ]);
 
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
     const command = (args: string[]): Record<string, unknown> => {
-      const result = Bun.spawnSync(
-        [
-          python!,
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "workbench_db.py"),
-          ...args,
-        ],
-        {
-          env: {
-            ...process.env,
-            CODEX_SECURITY_STATE_DIR: stateDir,
-            CODEX_HOME: codexHome,
-          },
-          stdout: "pipe",
-          stderr: "pipe",
+      const result = Bun.spawnSync([node, helper, ...args], {
+        env: {
+          ...process.env,
+          PYTHON: "/unavailable/python",
+          CODEX_SECURITY_STATE_DIR: stateDir,
+          CODEX_HOME: codexHome,
         },
-      );
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
       return JSON.parse(new TextDecoder().decode(result.stdout)) as Record<
         string,
@@ -1362,23 +1184,12 @@ describe("deep scan workbench ownership", () => {
       writeFile(inventoryPath, "source.py\n"),
       writeFile(manifestPath, "{}\n"),
     ]);
-    const expired = Bun.spawnSync(
-      [
-        python!,
-        "-I",
-        "-B",
-        "-c",
-        [
-          "import sqlite3, sys",
-          "connection = sqlite3.connect(sys.argv[1])",
-          "connection.execute('UPDATE deep_scan_runs SET created_at = ? WHERE scan_id = ?', ('2000-01-01T00:00:00+00:00', sys.argv[2]))",
-          "connection.commit()",
-        ].join("\n"),
-        join(stateDir, "workbench.sqlite3"),
-        scanId,
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
+    const expired = runFixture({
+      operation: "sql",
+      database: join(stateDir, "workbench.sqlite3"),
+      statement: "UPDATE deep_scan_runs SET created_at = ? WHERE scan_id = ?",
+      parameters: ["2000-01-01T00:00:00+00:00", scanId],
+    });
     expect(expired.exitCode, new TextDecoder().decode(expired.stderr)).toBe(0);
 
     const capped = command([
@@ -1475,27 +1286,17 @@ describe("deep scan workbench ownership", () => {
       "[deep_scan]\nworkers = 3\nmax_discovery_runs = 6\nmax_time_hours = 0.5\n",
     );
 
-    const python = Bun.which("python3") ?? Bun.which("python");
-    expect(python).not.toBeNull();
     const command = (args: string[]): Record<string, unknown> => {
-      const result = Bun.spawnSync(
-        [
-          python!,
-          "-I",
-          "-B",
-          join(PLUGIN_ROOT, "scripts", "workbench_db.py"),
-          ...args,
-        ],
-        {
-          env: {
-            ...process.env,
-            CODEX_SECURITY_STATE_DIR: stateDir,
-            CODEX_HOME: codexHome,
-          },
-          stdout: "pipe",
-          stderr: "pipe",
+      const result = Bun.spawnSync([node, helper, ...args], {
+        env: {
+          ...process.env,
+          PYTHON: "/unavailable/python",
+          CODEX_SECURITY_STATE_DIR: stateDir,
+          CODEX_HOME: codexHome,
         },
-      );
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       expect(result.exitCode, new TextDecoder().decode(result.stderr)).toBe(0);
       return JSON.parse(new TextDecoder().decode(result.stdout)) as Record<
         string,
@@ -1715,10 +1516,8 @@ describe("deep scan workbench ownership", () => {
     await writeFile(manifestPath, "{}\n");
     const premature = Bun.spawnSync(
       [
-        python!,
-        "-I",
-        "-B",
-        join(PLUGIN_ROOT, "scripts", "workbench_db.py"),
+        node,
+        helper,
         "finish-deep-scan",
         "--scan-id",
         scanId,
@@ -1730,6 +1529,7 @@ describe("deep scan workbench ownership", () => {
       {
         env: {
           ...process.env,
+          PYTHON: "/unavailable/python",
           CODEX_SECURITY_STATE_DIR: stateDir,
           CODEX_HOME: codexHome,
         },
@@ -1743,23 +1543,12 @@ describe("deep scan workbench ownership", () => {
     );
     expect(await readFile(ledgerPath, "utf8")).toBe(existingFinding);
 
-    const expire = Bun.spawnSync(
-      [
-        python!,
-        "-I",
-        "-B",
-        "-c",
-        [
-          "import sqlite3, sys",
-          "connection = sqlite3.connect(sys.argv[1])",
-          "connection.execute('UPDATE deep_scan_runs SET created_at = ? WHERE scan_id = ?', ('2000-01-01T00:00:00+00:00', sys.argv[2]))",
-          "connection.commit()",
-        ].join("\n"),
-        join(stateDir, "workbench.sqlite3"),
-        scanId,
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
+    const expire = runFixture({
+      operation: "sql",
+      database: join(stateDir, "workbench.sqlite3"),
+      statement: "UPDATE deep_scan_runs SET created_at = ? WHERE scan_id = ?",
+      parameters: ["2000-01-01T00:00:00+00:00", scanId],
+    });
     expect(expire.exitCode, new TextDecoder().decode(expire.stderr)).toBe(0);
 
     const completed = state(
