@@ -69,12 +69,14 @@ jobs:
           $nativeNode = (Get-Command node).Source
           $env:PATH = ""
           & $nativeNode --expose-gc proof-windows.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $proofFailed = $LASTEXITCODE -ne 0
           & $nativeNode proof-sqlite.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { $proofFailed = $true }
           & $nativeNode proof-policy-windows.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { $proofFailed = $true }
           & $nativeNode proof-regex.mjs
+          if ($LASTEXITCODE -ne 0) { $proofFailed = $true }
+          if ($proofFailed) { exit 1 }
       - name: Set up Node.js 20
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
         with:
@@ -89,12 +91,14 @@ jobs:
           $nativeNode = (Get-Command node).Source
           $env:PATH = ""
           & $nativeNode --expose-gc proof-windows.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $proofFailed = $LASTEXITCODE -ne 0
           & $nativeNode proof-sqlite.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { $proofFailed = $true }
           & $nativeNode proof-policy-windows.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { $proofFailed = $true }
           & $nativeNode proof-regex.mjs
+          if ($LASTEXITCODE -ne 0) { $proofFailed = $true }
+          if ($proofFailed) { exit 1 }
       - name: Upload verified native artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
