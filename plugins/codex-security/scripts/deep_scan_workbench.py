@@ -26,7 +26,11 @@ from finalize_scan_contract import (
     write_scan_local_bytes,
 )
 from workbench.handoff import require_current_continuation
-from workbench_scan_checkpoints import ensure_review_files, reconcile_checkpoints
+from workbench_scan_checkpoints import (
+    checkpoint_artifact_sources,
+    ensure_review_files,
+    reconcile_checkpoints,
+)
 from workbench_target import (
     directory_content_digest,
     directory_snapshot_regular_file_count,
@@ -715,13 +719,14 @@ def restore_checkpoint_workers(
             manifest["scan"].get("preservedSources", {}), "Published scan"
         )
 
-    def copy_file(path: Path) -> Path:
+    def copy_file(path: Path, destination: Path | None = None) -> Path:
         relative = path.relative_to(parent_root).as_posix()
         descriptor = open_scan_local_file_descriptor(parent_root, relative, "Saved Deep artifact")
         with os.fdopen(descriptor, "rb") as source:
             contents = source.read()
-        write_scan_local_bytes(child_root, relative, contents)
-        return child_root / relative
+        destination = destination or child_root / relative
+        write_scan_local_bytes(child_root, destination.relative_to(child_root).as_posix(), contents)
+        return destination
 
     restored_workers = []
     restored_checkpoints = []
@@ -758,21 +763,37 @@ def restore_checkpoint_workers(
             result = json.loads(checkpoints[artifact_relative]["snapshot_json"])
             result["complete"] = False
             result_path = artifact_dir / "result.json"
-        for directory, directories, filenames in os.walk(artifact_dir, followlinks=False):
-            # Parent checkpoint digests and head markers refer to the old scan ID.
-            directories[:] = [name for name in directories if name != "checkpoints"]
-            for name in directories:
-                deep_scan_path(
-                    parent, str(Path(directory) / name), "Saved Deep artifacts", kind="directory"
-                )
-            for name in filenames:
-                path = Path(directory) / name
-                if (
-                    path != result_path
-                    and name != "checkpoint-head.json"
-                    and not transient_worker_artifact(path.relative_to(artifact_dir))
-                ):
-                    copy_file(path)
+        evidence_dirs = [artifact_dir]
+        if not completed:
+            checkpoint = checkpoints[artifact_relative]
+            evidence_dirs = checkpoint_artifact_sources(
+                parent_root,
+                artifact_relative,
+                checkpoint["checkpoint_path"],
+                checkpoint["content_sha256"],
+                checkpoint["acceptance_id"],
+            )
+        # Current accepted evidence takes precedence over older retry copies.
+        for evidence_dir in reversed(evidence_dirs):
+            for directory, directories, filenames in os.walk(evidence_dir, followlinks=False):
+                # Parent checkpoint digests and head markers refer to the old scan ID.
+                directories[:] = [name for name in directories if name != "checkpoints"]
+                for name in directories:
+                    deep_scan_path(
+                        parent,
+                        str(Path(directory) / name),
+                        "Saved Deep artifacts",
+                        kind="directory",
+                    )
+                for name in filenames:
+                    path = Path(directory) / name
+                    relative = path.relative_to(evidence_dir)
+                    if (
+                        relative.as_posix() != "result.json"
+                        and name != "checkpoint-head.json"
+                        and not transient_worker_artifact(relative)
+                    ):
+                        copy_file(path, child_root / artifact_relative / relative)
         copied_prompt = copy_file(prompt_path)
         result = rebind_checkpoint_result(
             result,

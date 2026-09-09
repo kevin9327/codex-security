@@ -797,6 +797,20 @@ export class CodexSecurity {
     let previousCost: ScanCost | null = null;
     let completeFromCheckpoint = false;
     let completionSourceThreadId: string | undefined;
+    const requireContinuationBudget = () => {
+      if (
+        !completeFromCheckpoint &&
+        options.maxCostUsd !== undefined &&
+        (previousCost === null ||
+          previousCost.estimatedUsd >= options.maxCostUsd)
+      ) {
+        throw new CodexSecurityError(
+          previousCost === null
+            ? "The previous scan's cost is unavailable; its saved total cost limit cannot be enforced for a continuation."
+            : "The previous scan already reached its saved total cost limit; start a new scan with a higher --max-cost.",
+        );
+      }
+    };
     const cumulativeCost = (cost: ScanCost | null): ScanCost | null => {
       if (cost === null || previousCost === null) return cost;
       return {
@@ -1023,18 +1037,7 @@ export class CodexSecurity {
               }
             }
           }
-          if (
-            !completeFromCheckpoint &&
-            options.maxCostUsd !== undefined &&
-            (previousCost === null ||
-              previousCost.estimatedUsd >= options.maxCostUsd)
-          ) {
-            throw new CodexSecurityError(
-              previousCost === null
-                ? "The previous scan's cost is unavailable; its saved total cost limit cannot be enforced for a continuation."
-                : "The previous scan already reached its saved total cost limit; start a new scan with a higher --max-cost.",
-            );
-          }
+          requireContinuationBudget();
           options = {
             ...options,
             scanPrompt:
@@ -1477,12 +1480,12 @@ export class CodexSecurity {
           );
         }
         continuationCheckpoint = seeded["checkpoint"] as JsonObject;
+        completeFromCheckpoint =
+          mode === "standard" &&
+          seeded["completionReady"] === true &&
+          completionSourceThreadId !== undefined;
+        requireContinuationBudget();
         if (completeFromCheckpoint) {
-          if (seeded["completionReady"] !== true) {
-            throw new CodexSecurityError(
-              "The saved checkpoint changed before finalization; retry the continuation.",
-            );
-          }
           notifyObserver(
             "onWarning",
             options.onWarning,

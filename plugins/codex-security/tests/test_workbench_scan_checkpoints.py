@@ -600,9 +600,15 @@ def test_child_registration_against_changed_source_cannot_reuse_parent_coverage(
     assert not (child_dir / "findings.json").exists()
 
 
-@pytest.mark.parametrize("receipt_change", [None, "contents", "symlink", "missing"])
+@pytest.mark.parametrize(
+    ("artifact", "receipt_change"),
+    [("receipt", None)]
+    + [("receipt", change) for change in ("contents", "symlink", "missing")]
+    + [("report", "symlink")],
+)
 def test_completed_checkpoint_continuation_keeps_bound_reports_receipts_and_poc_files(
     tmp_path: Path,
+    artifact: str,
     receipt_change: str | None,
 ) -> None:
     state, repository, scan_dir, scan_id = scan_fixture(tmp_path)
@@ -662,7 +668,9 @@ def test_completed_checkpoint_continuation_keeps_bound_reports_receipts_and_poc_
         scan_id,
     )["scanId"]
     if receipt_change is not None:
-        receipt = scan_dir / "artifacts/review/clean.json"
+        receipt = scan_dir / (
+            "artifacts/review/clean.json" if artifact == "receipt" else "findings/saved/saved.md"
+        )
         if receipt_change == "contents":
             receipt.write_text("changed receipt\n")
         elif receipt_change == "missing":

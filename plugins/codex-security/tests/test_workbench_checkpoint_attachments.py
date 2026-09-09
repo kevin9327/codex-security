@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import uuid
 from pathlib import Path
 
 import pytest
 from test_workbench_scan_checkpoints import save, scan_fixture, semantic
-from workbench_test_support import run_workbench, write_checkpoint
+from workbench_test_support import run_workbench, write_checkpoint, write_completed_contract
 
 
 def continue_scan(state: Path, repository: Path, parent_id: str, child: Path) -> str:
@@ -31,8 +32,18 @@ def continue_scan(state: Path, repository: Path, parent_id: str, child: Path) ->
     return child_id
 
 
+@pytest.mark.parametrize(
+    "location",
+    [
+        "current",
+        "archived",
+        "legacy-archived",
+        "current-with-legacy-archive",
+        "current-head-archived-evidence",
+    ],
+)
 def test_worker_receipts_keep_source_ownership_across_repeated_continuation(
-    tmp_path: Path, workbench_api
+    tmp_path: Path, workbench_api, location: str
 ):
     state, repository, parent, parent_id = scan_fixture(tmp_path, "deep")
     local_receipt = "artifacts/review/source.json"
@@ -92,7 +103,38 @@ def test_worker_receipts_keep_source_ownership_across_repeated_continuation(
                 "provenance": {"workerId": worker_id},
             }
         ]
-        save(state, parent_id, write_checkpoint(parent / source / "checkpoints", payload))
+        output = parent / source
+        save(state, parent_id, write_checkpoint(output / "checkpoints", payload))
+        if location != "current":
+            # Two real acceptances can reuse identical snapshot bytes while the
+            # referenced receipt is replaced. Recover the accepted attempt's evidence.
+            older = output.parent / "attempts/attempt-01"
+            older.parent.mkdir()
+            output.rename(older)
+            (older / local_receipt).write_bytes(b"Earlier receipt contents\n")
+            output.mkdir()
+            receipt = output / local_receipt
+            receipt.parent.mkdir(parents=True)
+            receipt.write_bytes(original_workers[worker_id][1])
+            save(state, parent_id, write_checkpoint(output / "checkpoints", payload))
+            if location == "current-with-legacy-archive":
+                head = older / "checkpoint-head.json"
+                saved_head = json.loads(head.read_text())
+                saved_head.pop("acceptanceId")
+                head.write_text(json.dumps(saved_head))
+                continue
+            archived = output.parent / "attempts/attempt-02"
+            output.rename(archived)
+            output.mkdir()
+            # A directory's ordering does not grant an older acceptance authority.
+            shutil.copytree(older, output.parent / "attempts/attempt-03")
+            if location == "legacy-archived":
+                (archived / "checkpoint-head.json").unlink()
+            elif location == "current-head-archived-evidence":
+                # Coordinator isolation can restore the accepted head before
+                # the replacement writes any current evidence files.
+                shutil.copytree(archived / "checkpoints", output / "checkpoints")
+                shutil.copy2(archived / "checkpoint-head.json", output / "checkpoint-head.json")
 
     owners = original_workers
     for attempt in range(2):
@@ -118,6 +160,12 @@ def test_worker_receipts_keep_source_ownership_across_repeated_continuation(
         for source in checkpoint["sources"]:
             if source["source"] != ".":
                 assert source["coverage"]["surfaces"][0]["receiptRefs"] == [local_receipt]
+                assert source["coverage"]["surfaces"][0]["disposition"] == "rejected"
+        with sqlite3.connect(state / "workbench.sqlite3") as connection:
+            assert connection.execute(
+                "SELECT status, completion_sequence FROM deep_scan_workers WHERE scan_id = ?",
+                (child_id,),
+            ).fetchall() == [("queued", None), ("queued", None)]
         parent_id = child_id
 
     # A resumed worker can add receipts before the coordinator's final merge.
@@ -211,3 +259,45 @@ def test_missing_raw_checkpoint_receipt_remains_resumable_and_partial(
             ).fetchone()[0]
         )
     assert any("receipt" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize("finalized", [False, True])
+def test_missing_unsealed_writeup_keeps_the_finding_resumable(tmp_path: Path, finalized: bool):
+    state, repository, parent, parent_id = scan_fixture(tmp_path)
+    contract = tmp_path / "contract"
+    contract.mkdir()
+    write_completed_contract(contract, parent_id, repository, relative_path="clean.ts")
+    payload = semantic(parent_id, ["clean.ts", "pending.ts"])
+    payload["complete"] = True
+    payload["coverage"] = json.loads((contract / "coverage.json").read_text())
+    payload["coverage"]["reviewedFiles"] = ["clean.ts", "pending.ts"]
+    payload["findings"] = json.loads((contract / "findings.json").read_text())["findings"]
+    payload["findings"][0]["writeup"] = {"reportPath": "findings/pending/pending.md"}
+    original_finding = payload["findings"][0]
+    checkpoint = write_checkpoint(parent / "checkpoints", payload)
+    original = checkpoint.read_bytes()
+    save(state, parent_id, checkpoint)
+    if finalized:
+        run_workbench(
+            state, "fail-scan", "--scan-id", parent_id, "--message", "Writeup interrupted"
+        )
+    child = tmp_path / "child"
+    child_id = continue_scan(state, repository, parent_id, child)
+    findings = json.loads((child / "findings.json").read_text())["findings"]
+    assert len(findings) == 1
+    assert findings[0]["summary"] == original_finding["summary"]
+    assert "writeup" not in findings[0]
+    saved = run_workbench(state, "get-cli-scan-resume", "--scan-id", child_id)["checkpoint"]
+    assert "writeup" not in saved["sources"][0]["findings"][0]
+    with sqlite3.connect(state / "workbench.sqlite3") as connection:
+        warnings = json.loads(
+            connection.execute(
+                "SELECT completion_warnings_json FROM scans WHERE id = ?", (child_id,)
+            ).fetchone()[0]
+        )
+    assert any("Skipped malformed writeup" in warning for warning in warnings)
+    run_workbench(state, "prepare-scan-completion", "--scan-id", child_id)
+    completed = run_workbench(state, "complete-scan", "--scan-id", child_id)["scan"]
+    assert completed["progress"]["status"] == "complete"
+    assert len(json.loads((child / "findings.json").read_text())["findings"]) == 1
+    assert checkpoint.read_bytes() == original

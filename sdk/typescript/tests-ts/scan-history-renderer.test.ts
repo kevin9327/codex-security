@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { describe, expect, test } from "bun:test";
+import type { JsonObject } from "../src/config.js";
 import { renderScanHistory } from "../src/scan-history-renderer.js";
 
 describe("scan history renderer", () => {
@@ -267,17 +268,32 @@ describe("scan history renderer", () => {
     expect(failed).toContain("ERROR  Repository checkout became unavailable.");
   });
 
-  test.each([true, false])(
-    "shows CLI recovery only for a saved CLI recipe (%s)",
-    (cliScan) => {
+  const resumeCases: Array<{
+    mode: string;
+    recipe: JsonObject | undefined;
+    resumable: boolean;
+  }> = [
+    { mode: "standard", recipe: { mode: "standard" }, resumable: true },
+    { mode: "deep", recipe: { mode: "deep" }, resumable: true },
+    { mode: "standard", recipe: undefined, resumable: false },
+    { mode: "diff", recipe: { mode: "diff" }, resumable: false },
+    {
+      mode: "standard",
+      recipe: { mode: "standard", validationMode: "custom" },
+      resumable: false,
+    },
+  ];
+  test.each(resumeCases)(
+    "shows CLI recovery only for a resumable saved recipe (%j)",
+    ({ mode, recipe, resumable }) => {
       const output = renderScanHistory(
         {
           scanId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           targetPath: "/demo/repository",
           scanDir: "/demo/output",
           continuationThreadId: "native-session",
-          mode: "standard",
-          ...(cliScan ? { recipe: { mode: "standard" } } : {}),
+          mode,
+          ...(recipe === undefined ? {} : { recipe }),
           progress: { status: "failed", phase: "validation" },
           findings: [],
           artifacts: {},
@@ -302,7 +318,7 @@ describe("scan history renderer", () => {
       );
       expect(output).toContain("1 source files reviewed; 1 remaining.");
       expect(output).toContain("checkpoints/saved.json");
-      if (cliScan) {
+      if (resumable) {
         expect(output).toContain(
           "Resume: codex-security scans resume aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         );

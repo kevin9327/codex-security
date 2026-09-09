@@ -569,7 +569,7 @@ test.each([true, false])(
   },
 );
 
-async function saveCompleteCheckpoint(f: Fixture) {
+async function saveCompleteCheckpoint(f: Fixture, missingReceipt = false) {
   const current = (
     await f.command(["get-cli-scan-resume", "--scan-id", f.scanId])
   )["checkpoint"] as {
@@ -584,9 +584,97 @@ async function saveCompleteCheckpoint(f: Fixture) {
       completeness: "complete",
       deferred: [],
       reviewedFiles: ["pending.ts", "reviewed.ts"],
+      ...(missingReceipt
+        ? {
+            surfaces: [
+              {
+                id: "missing-receipt",
+                candidateId: "candidate-1",
+                label: "Interrupted receipt write",
+                disposition: "rejected",
+                receiptRefs: ["artifacts/review/never-written.json"],
+              },
+            ],
+          }
+        : {}),
     },
   });
 }
+
+test.each(["available", "exhausted", "unknown"] as const)(
+  "receipt recovery continues in one command only when the saved budget permits (%s)",
+  async (budget) => {
+    const f = await savedScan({
+      running: true,
+      maxCostUsd: budget === "exhausted" ? 10 : 100,
+    });
+    await saveCompleteCheckpoint(f, true);
+    await f.command([
+      "fail-scan",
+      "--scan-id",
+      f.scanId,
+      "--message",
+      "Synthetic interruption before receipt write",
+      ...(budget === "unknown"
+        ? []
+        : ["--cost-json", JSON.stringify(previousCost)]),
+    ]);
+    if (budget === "unknown") await rm(f.sessionPath);
+    let modelCalls = 0;
+    const outcome = await resume(f, (options) => ({
+      startThread(threadOptions) {
+        modelCalls++;
+        const scanDir = threadOptions.workingDirectory!;
+        const scanId = options.env!["CODEX_SECURITY_SCAN_ID"]!;
+        const threadId = randomUUID();
+        return {
+          id: threadId,
+          async runStreamed() {
+            const coverage = JSON.parse(
+              await readFile(join(scanDir, "coverage.json"), "utf8"),
+            );
+            expect(coverage.completeness).toBe("partial");
+            expect(coverage.surfaces[0].disposition).toBe("needs_follow_up");
+            const receipt = "artifacts/review/never-written.json";
+            await mkdir(join(scanDir, "artifacts", "review"), {
+              recursive: true,
+            });
+            await writeFile(
+              join(scanDir, receipt),
+              "Completed validation evidence\n",
+            );
+            coverage.surfaces[0].disposition = "rejected";
+            coverage.surfaces[0].receiptRefs = [receipt];
+            await writeFile(
+              join(scanDir, "coverage.json"),
+              JSON.stringify(coverage),
+            );
+            await finishChild(f, scanDir, scanId);
+            return { events: completedEvents(threadId) };
+          },
+        };
+      },
+      resumeThread() {
+        throw new Error("A stopped parent uses a linked attempt");
+      },
+    }));
+    if (budget === "available") {
+      expect(outcome.code, outcome.stderr).toBe(0);
+      expect(modelCalls).toBe(1);
+      expect(JSON.parse(outcome.stdout).cost.estimatedUsd).toBeGreaterThan(
+        12.5,
+      );
+    } else {
+      expect(outcome.code).not.toBe(0);
+      expect(modelCalls).toBe(0);
+      expect(outcome.stderr).toContain(
+        budget === "unknown"
+          ? "saved total cost limit cannot be enforced"
+          : "reached its saved total cost limit",
+      );
+    }
+  },
+);
 
 test("a complete Standard checkpoint retries final export without another model call or cost", async () => {
   const f = await savedScan({ running: true, maxCostUsd: 10 });

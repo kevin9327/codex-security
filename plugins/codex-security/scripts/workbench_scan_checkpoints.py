@@ -17,6 +17,7 @@ from finalize_scan_contract import (
     ContractError,
     _read_scan_local_json,
     _recover_unsealed_coverage,
+    _recover_unsealed_findings,
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
 )
@@ -412,9 +413,57 @@ def rebase_checkpoint_receipts(
     return result
 
 
+def checkpoint_artifact_sources(
+    root: Path,
+    source: str,
+    checkpoint_path: str,
+    digest: str,
+    acceptance_id: str | None,
+) -> list[Path]:
+    """Find current and archived outputs bound to this accepted checkpoint."""
+    output = root / source
+    if source == ".":
+        return [output]
+    name = Path(checkpoint_path).name
+    archived = sorted(
+        (
+            path
+            for path in (output.parent / "attempts").glob(f"attempt-*/checkpoints/{name}")
+            if re.fullmatch(r"attempt-\d+", path.parent.parent.name)
+        ),
+        key=lambda path: int(path.parent.parent.name.removeprefix("attempt-")),
+        reverse=True,
+    )
+    sources = []
+    for checkpoint in [output / "checkpoints" / name, *archived]:
+        directory = checkpoint.parent.parent
+        head = directory / "checkpoint-head.json"
+        if head.exists() or head.is_symlink():
+            saved = _read_scan_local_json(
+                root, head.relative_to(root).as_posix(), "Archived checkpoint head"
+            )
+            if saved.get("checkpoint") != name or (
+                saved.get("acceptanceId") is not None and saved["acceptanceId"] != acceptance_id
+            ):
+                continue
+        try:
+            descriptor = open_scan_local_file_descriptor(
+                root, checkpoint.relative_to(root).as_posix(), "Saved checkpoint"
+            )
+        except ContractError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
+                continue
+            raise
+        with os.fdopen(descriptor, "rb") as handle:
+            if hashlib.sha256(handle.read()).hexdigest() != digest:
+                raise ContractError("The saved checkpoint changed after acceptance.")
+        sources.append(directory)
+    return sources or [output]
+
+
 def copy_checkpoint_artifacts(
     db: Any, parent: sqlite3.Row, child_root: Path, checkpoint: dict[str, Any]
-) -> tuple[dict[str, str] | None, bool]:
+) -> tuple[dict[str, str] | None, bool, bool]:
     """Keep referenced evidence and derived hardening files with their saved result."""
     parent_root = db.require_canonical_scan_directory(Path(parent["scan_dir"]))
     parent_manifest = (
@@ -430,6 +479,7 @@ def copy_checkpoint_artifacts(
     files: set[str] = set()
     receipt_files: set[str] = set()
     reports: set[str] = set()
+    sources = {}
 
     def references(value: Any) -> None:
         if isinstance(value, list):
@@ -454,6 +504,14 @@ def copy_checkpoint_artifacts(
 
     for source in checkpoint["sources"]:
         references(rebase_checkpoint_receipts(source, source["source"]))
+        if source["source"] != ".":
+            sources[source["source"]] = checkpoint_artifact_sources(
+                parent_root,
+                source["source"],
+                source["checkpointPath"],
+                source["digest"],
+                source["acceptanceId"],
+            )
     portfolio = "hardening/hardening.md"
     has_portfolio = bool(parent_manifest and parent_manifest["scan"].get("hardening")) or (
         (parent_root / portfolio).exists() or (parent_root / portfolio).is_symlink()
@@ -477,29 +535,54 @@ def copy_checkpoint_artifacts(
                 (Path(directory) / name).relative_to(parent_root).as_posix() for name in filenames
             )
     missing_receipts = False
+    missing_reports = False
     for relative in sorted(files):
-        try:
-            descriptor = open_scan_local_file_descriptor(
-                parent_root, relative, "Saved checkpoint artifact"
-            )
-        except ContractError as exc:
-            if (
-                relative in receipt_files
-                and relative not in sealed_artifacts
-                and isinstance(exc.__cause__, FileNotFoundError)
-            ):
-                missing_receipts = True
-                continue
-            raise
+        locations = [relative]
+        for source, directories in sources.items():
+            if relative.startswith(source + "/"):
+                locations = [
+                    (directory / relative.removeprefix(source + "/"))
+                    .relative_to(parent_root)
+                    .as_posix()
+                    for directory in directories
+                ]
+                break
+        for index, source_relative in enumerate(locations):
+            try:
+                descriptor = open_scan_local_file_descriptor(
+                    parent_root, source_relative, "Saved checkpoint artifact"
+                )
+                break
+            except ContractError as exc:
+                if (
+                    relative not in sealed_artifacts
+                    and source_relative not in sealed_artifacts
+                    and isinstance(exc.__cause__, FileNotFoundError)
+                ):
+                    if index + 1 < len(locations):
+                        continue
+                    if relative in receipt_files or relative in reports:
+                        missing_receipts |= relative in receipt_files
+                        missing_reports |= relative in reports
+                        descriptor = None
+                        break
+                raise
+        if descriptor is None:
+            continue
         with os.fdopen(descriptor, "rb") as source:
             contents = source.read()
-        if (
-            relative in sealed_artifacts
-            and hashlib.sha256(contents).hexdigest() != sealed_artifacts[relative]
-        ):
-            raise ContractError(f"{relative}: sealed artifact changed after completion")
+        for sealed_path in {relative, source_relative}:
+            if (
+                sealed_path in sealed_artifacts
+                and hashlib.sha256(contents).hexdigest() != sealed_artifacts[sealed_path]
+            ):
+                raise ContractError(f"{sealed_path}: sealed artifact changed after completion")
         write_scan_local_bytes(child_root, relative, contents)
-    return ({"portfolioPath": portfolio} if has_portfolio else None), missing_receipts
+    return (
+        {"portfolioPath": portfolio} if has_portfolio else None,
+        missing_receipts,
+        missing_reports,
+    )
 
 
 def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> dict[str, Any]:
@@ -549,7 +632,9 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         completion_ready = checkpoint_completion_ready(checkpoint, parent["mode"])
         worker_ids = db.deep_scan.restore_checkpoint_workers(connection, parent, child, db.now())
         root = db.require_canonical_scan_directory(Path(child["scan_dir"]))
-        hardening, missing_receipts = copy_checkpoint_artifacts(db, parent, root, checkpoint)
+        hardening, missing_receipts, missing_reports = copy_checkpoint_artifacts(
+            db, parent, root, checkpoint
+        )
         sequence = {
             row["acceptance_id"]: row["sequence"]
             for row in connection.execute(
@@ -606,6 +691,16 @@ def continue_checkpoint(db: Any, connection: sqlite3.Connection, args: Any) -> d
         if merged is None:
             raise SystemExit("The saved semantic checkpoint could not seed the continuation.")
         manifest, findings, coverage = merged
+        if missing_reports:
+            recovered = {"scanId": child["id"], **findings}
+            _recover_unsealed_findings(
+                {"scan": {"id": child["id"], "target": manifest["scan"]["target"]}},
+                recovered,
+                Path(__file__).resolve().parent.parent / "schemas",
+                root,
+                warnings,
+            )
+            findings["findings"] = recovered["findings"]
         if missing_receipts:
             _recover_unsealed_coverage(
                 coverage, Path(__file__).resolve().parent.parent / "schemas", root, warnings, []
