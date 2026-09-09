@@ -127,54 +127,95 @@ function windowsPathKey(value: string): string {
     });
   return pathText(result.value);
 }
-function relatedTargets(connection: Connection, repository: string): string[] {
-  const requested = connection
-    .prepare(
-      "SELECT COALESCE((SELECT id FROM security_targets WHERE current_path = ?), '') AS target_id",
-    )
-    .get([repository])!
-    .get("target_id");
-  const common = gitOutput(repository, [
+export interface RepositoryTarget {
+  target_id: string | null;
+  target_path: string;
+}
+export interface RepositoryIdentity {
+  common: string | null;
+  origin: RepositoryOrigin | null;
+}
+export function repositoryIdentity(path: string): RepositoryIdentity {
+  return {
+    common: gitOutput(path, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ]),
+    origin: repositoryOrigin(path),
+  };
+}
+export function sameRepository(
+  before: RepositoryTarget,
+  after: RepositoryTarget,
+  afterIdentity?: RepositoryIdentity,
+): boolean {
+  if (before.target_id !== null && before.target_id === after.target_id)
+    return true;
+  const beforePath = resolvedPath(before.target_path, false),
+    afterPath = resolvedPath(after.target_path, false);
+  if (
+    process.platform === "win32"
+      ? lowercase(beforePath) === lowercase(afterPath)
+      : beforePath === afterPath
+  )
+    return true;
+  const beforeCommon = gitOutput(before.target_path, [
     "rev-parse",
     "--path-format=absolute",
     "--git-common-dir",
   ]);
-  const origin = repositoryOrigin(repository);
+  const afterCommon =
+    afterIdentity === undefined
+      ? gitOutput(after.target_path, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-common-dir",
+        ])
+      : afterIdentity.common;
+  if (beforeCommon !== null && afterCommon !== null) {
+    const left = resolvedPath(beforeCommon, false),
+      right = resolvedPath(afterCommon, false);
+    if (
+      process.platform === "win32"
+        ? lowercase(left) === lowercase(right)
+        : left === right
+    )
+      return true;
+  }
+  const beforeOrigin = repositoryOrigin(before.target_path);
+  if (beforeOrigin === null) return false;
+  const afterOrigin =
+    afterIdentity === undefined
+      ? repositoryOrigin(after.target_path)
+      : afterIdentity.origin;
+  return (
+    afterOrigin !== null &&
+    beforeOrigin[0] === afterOrigin[0] &&
+    beforeOrigin[1] === afterOrigin[1]
+  );
+}
+function relatedTargets(connection: Connection, repository: string): string[] {
+  const requested = {
+    target_id: connection
+      .prepare(
+        "SELECT COALESCE((SELECT id FROM security_targets WHERE current_path = ?), '') AS target_id",
+      )
+      .get([repository])!
+      .get("target_id") as string,
+    target_path: repository,
+  };
+  const identity = repositoryIdentity(repository);
   return connection
     .prepare("SELECT id, current_path FROM security_targets")
     .all()
     .flatMap((target) => {
-      const id = target.get("id") as string;
-      if (id === requested) return [id];
-      const path = target.get("current_path") as string;
-      const targetPath = resolvedPath(path, false);
-      if (
-        process.platform === "win32"
-          ? lowercase(targetPath) === lowercase(repository)
-          : targetPath === repository
-      )
-        return [id];
-      const targetCommon = gitOutput(path, [
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-      ]);
-      if (targetCommon !== null && common !== null) {
-        const left = resolvedPath(targetCommon, false),
-          right = resolvedPath(common, false);
-        if (
-          process.platform === "win32"
-            ? lowercase(left) === lowercase(right)
-            : left === right
-        )
-          return [id];
-      }
-      const targetOrigin = repositoryOrigin(path);
-      return targetOrigin !== null &&
-        origin !== null &&
-        targetOrigin[0] === origin[0] &&
-        targetOrigin[1] === origin[1]
-        ? [id]
+      const before = {
+        target_id: target.get("id") as string,
+        target_path: target.get("current_path") as string,
+      };
+      return sameRepository(before, requested, identity)
+        ? [before.target_id]
         : [];
     });
 }
