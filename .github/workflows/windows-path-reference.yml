@@ -1,0 +1,77 @@
+name: windows-path-reference
+
+on:
+  push:
+    branches: [dev/kyleb/python-migration-windows-path-reference]
+
+permissions:
+  contents: read
+
+jobs:
+  original-path-behavior:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the original Python implementation
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: cd1de678a29b2d1066954aecee05327c3a74b3a3
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Record original Windows artifact-path behavior
+        shell: python
+        run: |
+          import json
+          import os
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path("plugins/codex-security/scripts").resolve()))
+          import workbench_db as original
+
+          def observe(call):
+              try:
+                  value = call()
+                  return {"result": str(value) if isinstance(value, Path) else value}
+              except (Exception, SystemExit) as error:
+                  return {
+                      "error": str(error),
+                      "type": type(error).__name__,
+                      "errno": getattr(error, "errno", None),
+                      "winerror": getattr(error, "winerror", None),
+                      "systemExit": isinstance(error, SystemExit),
+                  }
+
+          with tempfile.TemporaryDirectory(prefix="path-reference-") as temporary:
+              parent = Path(temporary).resolve()
+              scan = parent / "scan"
+              scan.mkdir(mode=0o700)
+              (scan / "file").write_text("sample", encoding="utf-8")
+              (parent / "fixture.cjs").write_text("sample", encoding="utf-8")
+              cases = {
+                  "regular": "file",
+                  "missing": "missing",
+                  "directory": ".",
+                  "nul_leaf": "bad\0path",
+                  "nul_missing_parent": "missing/bad\0path",
+                  "file_parent": "file/child",
+                  "nul_file_parent": "file/child/bad\0path",
+                  "nul_outside_file_parent": str(parent / "fixture.cjs") + "/child/bad\0path",
+              }
+              outcomes = {}
+              for name, relative in cases.items():
+                  candidate = scan / relative
+                  outcomes[name] = {
+                      "resolve": observe(lambda: candidate.resolve(strict=True)),
+                      "available": observe(lambda: original.available_artifact_path(scan, candidate)),
+                      "optional": observe(lambda: original.artifact_path(scan, relative, required=False)),
+                      "required": observe(lambda: original.artifact_path(scan, relative, required=True)),
+                  }
+              outcomes["canonical_nul"] = observe(
+                  lambda: original.require_canonical_scan_directory(Path(str(scan) + "\0"))
+              )
+              print(json.dumps({"python": sys.version, "platform": os.name, "cases": outcomes}, indent=2))
