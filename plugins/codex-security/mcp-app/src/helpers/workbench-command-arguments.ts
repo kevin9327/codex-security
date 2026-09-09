@@ -3,6 +3,8 @@ import { ArgumentError, argumentsFor, print } from "./rank-worklists";
 import { decodePythonUtf8 } from "./utf8";
 
 export interface WorkbenchCommandSpecification {
+  description?: string;
+  optionHelp?: Record<string, string>;
   required: string[];
   options: Record<string, readonly string[] | undefined>;
   flags?: string[];
@@ -81,7 +83,7 @@ export function parseWorkbenchCommandArguments(
     );
     if (values["help"]) {
       print(
-        `${usage}\n\noptions:\n  -h, --help  show this help message and exit\n  ${[...spec.required, ...optional].map(argument).join("\n  ")}`,
+        `${usage}${spec.description ? `\n\n${spec.description}` : ""}\n\noptions:\n  -h, --help  show this help message and exit\n  ${[...spec.required, ...optional].map((name) => argument(name) + (spec.optionHelp?.[name] ? `  ${spec.optionHelp[name]}` : "")).join("\n  ")}`,
       );
       return 0;
     }

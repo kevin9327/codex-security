@@ -361,6 +361,16 @@ test("MCP setup, handoff, context and progress work without Python", async () =>
         phaseProgress: { total: 1, completed: 0, unit: "checks" },
       },
     });
+    const canceled = successful(
+      await server.call("cancel_codex_security_scan_from_app", { scanId }),
+    )!["workspace"] as Record<string, unknown>;
+    expect(canceled["results"]).toMatchObject({
+      progress: { status: "canceled" },
+    });
+    failed(
+      await server.call("recover_codex_security_scan_results", { scanId }),
+      /Canceled scans cannot recover/,
+    );
     expect(statSync(join(state, "workbench.sqlite3")).isFile()).toBe(true);
     expect(server.events()).toEqual([]);
   } finally {
