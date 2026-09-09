@@ -7338,11 +7338,13 @@ async function executeScan(
   const printRecoveryHint = async (): Promise<void> => {
     if (scanDir === null) return;
     try {
-      const history = await dependencies.runWorkbench([
-        "list-scans",
-        "--scan-root",
-        scanDir,
-      ]);
+      // A locked workbench must not keep a failed or canceled scan alive.
+      const recoverySignal = AbortSignal.timeout(2_000);
+      const history = await dependencies.runWorkbench(
+        ["list-scans", "--scan-root", scanDir],
+        undefined,
+        recoverySignal,
+      );
       const scans = history["scans"];
       if (!Array.isArray(scans)) return;
       const saved = scans.find(
@@ -7358,12 +7360,11 @@ async function executeScan(
       errorOutput.write(
         `Inspect saved progress: codex-security scans show ${quoteCliPath(scanId)}\n`,
       );
-      const context = await dependencies.runWorkbench([
-        "get-cli-scan-resume",
-        "--scan-id",
-        scanId,
-        "--allow-unavailable",
-      ]);
+      const context = await dependencies.runWorkbench(
+        ["get-cli-scan-resume", "--scan-id", scanId, "--allow-unavailable"],
+        undefined,
+        recoverySignal,
+      );
       const recipe = context["recipe"];
       if (
         recipe !== undefined &&
