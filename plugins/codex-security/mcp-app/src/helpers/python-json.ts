@@ -1,3 +1,5 @@
+import { decodeUtf8 } from "./utf8";
+
 // Preserve Python's integer/float distinction and arbitrary-size JSON integers.
 export class JsonFloat {
   constructor(readonly source: string) {}
@@ -21,6 +23,73 @@ export function objectEntries(value: Row): [string, unknown][] {
 }
 
 export class JsonSyntaxError extends Error {}
+
+// json.loads(bytes) detects UTF-8/16/32 and decodes with surrogatepass.
+export function parseJsonBytes(bytes: Buffer): unknown {
+  let width = 1;
+  let little = true;
+  let offset = 0;
+  const prefix = bytes.subarray(0, 4).toString("hex");
+  if (prefix === "fffe0000" || prefix === "0000feff") {
+    width = 4;
+    little = prefix === "fffe0000";
+    offset = 4;
+  } else if (prefix.startsWith("fffe") || prefix.startsWith("feff")) {
+    width = 2;
+    little = prefix.startsWith("fffe");
+    offset = 2;
+  } else if (prefix.startsWith("efbbbf")) {
+    offset = 3;
+  } else if (bytes.length >= 4) {
+    if (bytes[0] === 0) {
+      width = bytes[1] === 0 ? 4 : 2;
+      little = false;
+    } else if (bytes[1] === 0) {
+      width = bytes[2] || bytes[3] ? 2 : 4;
+    }
+  } else if (bytes.length === 2 && (bytes[0] === 0 || bytes[1] === 0)) {
+    width = 2;
+    little = bytes[0] !== 0;
+  }
+  let text = "";
+  if (width === 1) {
+    let start = offset;
+    for (let index = offset; index + 2 < bytes.length; index++) {
+      const second = bytes[index + 1]!;
+      const third = bytes[index + 2]!;
+      if (
+        bytes[index] === 0xed &&
+        second >= 0xa0 &&
+        second <= 0xbf &&
+        third >= 0x80 &&
+        third <= 0xbf
+      ) {
+        text += decodeUtf8(bytes.subarray(start, index));
+        text += String.fromCharCode(
+          0xd000 | ((second & 0x3f) << 6) | (third & 0x3f),
+        );
+        index += 2;
+        start = index + 1;
+      }
+    }
+    text += decodeUtf8(bytes.subarray(start));
+  } else {
+    if ((bytes.length - offset) % width !== 0)
+      throw new Error(`Truncated UTF-${width * 8} JSON input`);
+    for (let index = offset; index < bytes.length; index += width) {
+      const point =
+        width === 2
+          ? little
+            ? bytes.readUInt16LE(index)
+            : bytes.readUInt16BE(index)
+          : little
+            ? bytes.readUInt32LE(index)
+            : bytes.readUInt32BE(index);
+      text += String.fromCodePoint(point);
+    }
+  }
+  return parseJson(text);
+}
 
 export function parseJson(source: string, rejectDuplicates = false): unknown {
   const tokens = [
