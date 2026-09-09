@@ -302,8 +302,13 @@ export function windowsFileSystem(native: WindowsBinding) {
     }));
   }
 
-  function mkdir(path: Buffer): void {
-    check(native.createWindowsDirectories(operationPath(path)), path);
+  function mkdir(path: Buffer, recursive = true): void {
+    check(
+      recursive
+        ? native.createWindowsDirectories(operationPath(path))
+        : native.createWindowsDirectory(operationPath(path)),
+      path,
+    );
   }
 
   function openRead(path: Buffer) {
