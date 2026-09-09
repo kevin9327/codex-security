@@ -396,3 +396,43 @@ test("artifact root symlink loops retain the setup owner's diagnostic", () => {
   if (process.platform !== "win32")
     expect(error).toBe(`Symlink loop from '${loop}'`);
 });
+
+test("workspace starts count scope files before acquiring the writer lock", () => {
+  const input = setup();
+  input.actions[0]!.beforeBeginWrite = {
+    path: join(input.target, "arrived-at-lock.txt"),
+    text: "new file\n",
+  };
+  const response = run(input);
+  expect(response.outcomes[0]!.error).toBeUndefined();
+  expect(existsSync(join(input.target, "arrived-at-lock.txt"))).toBe(true);
+  expect(row(response, "scan_progress")["scope_file_count"]).toBe(2n);
+});
+
+test("scan startup disables repository fsmonitor commands", () => {
+  const input = setup(),
+    marker = join(input.scanRoot, "fsmonitor-ran"),
+    script = join(input.scanRoot, "fsmonitor.cjs");
+  mkdirSync(input.scanRoot);
+  writeFileSync(
+    script,
+    "require('node:fs').writeFileSync(process.argv[2], 'ran'); process.stdout.write('\\n');\n",
+  );
+  const quote = (path: string) => "'" + path.replaceAll("'", "'\\''") + "'";
+  git(input.target, "init", "-q");
+  git(input.target, "add", ".");
+  git(input.target, "commit", "-qm", "Synthetic source");
+  git(
+    input.target,
+    "config",
+    "core.fsmonitor",
+    [node, script, marker].map(quote).join(" "),
+  );
+  git(input.target, "ls-files", "--others", "--exclude-standard", "-z");
+  expect(existsSync(marker)).toBe(true);
+  rmSync(marker);
+  const response = run(input);
+  expect(response.outcomes[0]!.error).toBeUndefined();
+  expect(row(response)["status"]).toBe("running");
+  expect(existsSync(marker)).toBe(false);
+});

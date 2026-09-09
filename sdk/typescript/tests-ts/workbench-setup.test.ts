@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -679,4 +680,42 @@ test("scan roots stay outside selected targets and summaries truncate Unicode co
       },
     }),
   ).toBe("abcdefg…1234567");
+});
+
+test("diff setup disables repository text conversion commands", () => {
+  const target = repository(),
+    marker = join(root, "textconv-ran"),
+    script = join(root, "textconv.cjs");
+  writeFileSync(
+    script,
+    "const fs = require('node:fs'); fs.writeFileSync(process.argv[2], 'ran'); process.stdout.write(fs.readFileSync(process.argv.at(-1)));\n",
+  );
+  const quote = (path: string) => "'" + path.replaceAll("'", "'\\''") + "'";
+  git(
+    target,
+    "config",
+    "diff.synthetic.textconv",
+    [node, script, marker].map(quote).join(" "),
+  );
+  write(target, ".gitattributes", "src/file.txt diff=synthetic\n");
+  git(target, "add", ".gitattributes");
+  git(target, "commit", "-qm", "Synthetic attributes");
+  write(target, "src/file.txt", "changed source\n");
+  git(
+    target,
+    "diff",
+    "--binary",
+    "--full-index",
+    "--no-ext-diff",
+    "HEAD",
+    "--",
+  );
+  expect(existsSync(marker)).toBe(true);
+  rmSync(marker);
+  const inspected = value({
+    kind: "inspect",
+    args: { ...setup(target, "diff"), diffTargetKind: "working_tree" },
+  });
+  expect(inspected).toBeDefined();
+  expect(existsSync(marker)).toBe(false);
 });
