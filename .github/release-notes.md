@@ -15,6 +15,7 @@
 - open ready pull requests ([#833](https://github.com/openai/codex-security/pull/833))
 - draft SECURITY.md for owner review ([#536](https://github.com/openai/codex-security/pull/536))
 - resolve Windows Node to an absolute executable ([#788](https://github.com/openai/codex-security/pull/788))
+- shard automatic component planning for large repositories ([#845](https://github.com/openai/codex-security/pull/845))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
