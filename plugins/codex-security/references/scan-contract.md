@@ -10,7 +10,7 @@ A sealed terminal bundle contains these files under `<scan_dir>`:
 - `findings.json`: semantic finding records retained when the scan reached its terminal outcome
 - `coverage.json`: structured coverage summary with detailed receipt references
 
-Canonical UTF-8 document sizes are bounded consistently by the producer and SDK: `scan-manifest.json` is limited to 16 MiB, `findings.json` to 128 MiB, and `coverage.json` to 32 MiB. Finalization rejects oversized inputs or generated documents before sealing or changing scan outputs. Keep detailed evidence in scan-local artifacts and reference it from the canonical summaries.
+Keep detailed evidence in scan-local artifacts and reference it from the canonical summaries.
 
 Optional structured finding details used by rich consumers are documented in `finding-detail-fields.md`. They remain part of each semantic finding record, not a projection parsed from a readable report.
 
