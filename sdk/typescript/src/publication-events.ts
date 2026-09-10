@@ -314,7 +314,12 @@ function linearIssueReferenceFromUrl(
   } catch {
     return undefined;
   }
-  if (url.protocol !== "https:" || url.hostname !== "linear.app") {
+  // Recognize every scheme linearIssueReference parses, so a plain HTTP URL
+  // still resolves to the issue it names instead of an unrecognized claim.
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    url.hostname !== "linear.app"
+  ) {
     return undefined;
   }
   try {

@@ -223,6 +223,23 @@ describe("Linear publication claim resolution", () => {
       },
     ],
     [
+      "plain HTTP URL and human key contradiction",
+      {
+        issueIdentifier: "SYNTH-502",
+        url: `http://linear.app/example/issue/${identifier}`,
+      },
+      {
+        state: "conflicting",
+        claims: [
+          { kind: "identifier", value: "SYNTH-502" },
+          {
+            kind: "url",
+            value: `http://linear.app/example/issue/${identifier}`,
+          },
+        ],
+      },
+    ],
+    [
       "opaque entity relabeled as a human key",
       {
         id: "synthetic-opaque-entity",
