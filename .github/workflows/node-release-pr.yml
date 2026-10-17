@@ -30,15 +30,17 @@ jobs:
       RELEASE_PR_DRY_RUN: "true"
 
     steps:
-      - name: Checkout main, never the release PR
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - &checkout-main-never-the-release-pr
+        name: Checkout main, never the release PR
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+      - &set-up-node-js
+        name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22.13.0"
 
@@ -61,17 +63,9 @@ jobs:
       RELEASE_PR_DRY_RUN: "false"
 
     steps:
-      - name: Checkout main, never the release PR
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: main
-          fetch-depth: 0
-          persist-credentials: false
+      - *checkout-main-never-the-release-pr
 
-      - name: Set up Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
-        with:
-          node-version: "22.13.0"
+      - *set-up-node-js
 
       - name: Create repository-scoped release App token
         id: app-token

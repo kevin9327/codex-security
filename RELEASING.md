@@ -5,7 +5,9 @@ canonical changelog. Under the current process, each new release combines a
 short, reviewed summary with a categorized list of merged pull requests.
 Historical releases may contain generated notes only. The release tag and npm
 package use the same stable version: `npm-vX.Y.Z` and
-`@openai/codex-security@X.Y.Z`.
+`@openai/codex-security@X.Y.Z`. Releases whose source includes the GitHub Action
+also publish `action-vX.Y.Z`, which installs that exact CLI version. The Action's
+manifest and SBOM accompany the npm archive on the same GitHub Release.
 
 ## Pull request titles and categories
 
@@ -28,18 +30,46 @@ feat(sdk)!: remove the legacy result field
 
 The title controls the generated release category:
 
-| Title             | Release category |
-| ----------------- | ---------------- |
-| Any type with `!` | Breaking changes |
-| `feat`            | Features         |
-| `fix`             | Fixes            |
-| `docs`            | Documentation    |
-| `release`, `test` | Excluded         |
-| Any other type    | Other changes    |
+| Title                               | Release category |
+| ----------------------------------- | ---------------- |
+| Any type with `!`                   | Breaking changes |
+| `feat`                              | Features         |
+| `fix`                               | Fixes            |
+| `docs`                              | Documentation    |
+| `chore(release)`, `release`, `test` | Excluded         |
+| Any other type                      | Other changes    |
 
-Use `release` and `test` only for changes that do not affect package users. A
-maintainer can apply `skip-release-notes` to exclude another internal change.
-That manual label takes precedence over the title category.
+Use `chore(release)` for release preparation and `test` for test-only changes.
+The legacy `release` type remains supported. Use these only for changes that
+do not affect package users. A maintainer can apply `skip-release-notes` to
+exclude another internal change. That manual label takes precedence over the
+title category.
+
+## Dependency updates
+
+Dependabot checks npm packages, Python test dependencies, and GitHub Actions
+daily, including weekends. OpenAI dependencies have no release cooldown; other
+releases must be at least seven days old. Security updates do not wait for the
+version-update cooldown.
+Updates still require review and passing CI; nothing is merged automatically.
+
+Keep `@openai/codex` and `@openai/codex-sdk` on the same exact version across the
+TypeScript SDK, MCP app, and triage evals in `evals/triage-finding`. Dependabot
+groups their updates across all three projects, and the SDK tests reject
+mismatched pins or multiple locked SDK versions. The evals override Promptfoo's
+transitive Codex SDK to the direct SDK dependency so it follows the same update.
+
+Each pnpm project applies the same seven-day age policy to newly resolved
+dependencies, including transitive packages, with `openai` and `@openai/*` exempt.
+Committed lockfiles remain installable. The existing Socket release checks remain
+in place.
+
+The production dependency audit is a blocking step in CI package builds and npm
+release validation. `pnpm --dir sdk/typescript run audit:prod` checks the locked
+production graph at the existing high-severity threshold. High or critical
+advisories and audit service failures stop publication. Resolve dependency
+advisories with dependency and lockfile updates; retry service failures once
+the audit service is available.
 
 ## Version policy before 1.0
 
@@ -67,14 +97,25 @@ once a change reaches `main` after the current package version. It recomputes
 the proposal's version from all changes since that package version first
 reached `main`. Squash-merge release PRs, as required by this
 repository's enabled merge method, so the whole proposal lands as one
-release boundary commit. A later breaking change changes the version on the
-same PR. Each update incorporates the latest `main` and appends a commit;
-the updater never force-pushes. A concurrent commit causes it to reread and
+release boundary commit. Generated PR titles and commit subjects use
+`chore(release): X.Y.Z`, matching the proposed package version. Confirm the
+squash commit subject uses the current PR title when merging. A later breaking
+change updates the version and title on the same PR. Each update incorporates
+the latest `main` and appends a commit; the updater never force-pushes.
+A concurrent commit causes it to reread and
 retry. It requests Codex review when the proposal files change. Updates that
 only incorporate `main` keep CI current without repeating the same proposal
 review. New suggestions for human-owned notes still appear in a comment.
 Before merging the proposal, check CI and request a final Codex review
 if the last review targets an older head.
+
+The proposal updates the SDK version and the Action version in
+`github-action/package.json` and `github-action/package-lock.json` together.
+The Action's runtime dependency and lockfile keep their previously published
+CLI version until npm publishes the proposed version. Release packaging then
+updates that pin and lockfile to the verified publication. This lets release
+PRs run CI while the next npm version is still unavailable; `node-ci` also
+tests the Action against the packed CLI candidate before publication.
 
 If a run reports that GitHub has not exposed the updated PR head, manually
 rerun the updater with **dry_run** disabled after the PR catches up. This
@@ -86,9 +127,10 @@ reach `main` before opening the next proposal. An empty release cycle returns
 `action: "unchanged"` without creating a branch or PR. Publication of the
 previous version still has to complete and pass the verification steps below.
 
-The updater leaves another open `release:` PR targeting `main`, including a
-manually prepared release, untouched and does not open a duplicate. Finish
-or close that PR before enabling the new flow. Closing an automated proposal
+The updater leaves another open `chore(release):` or legacy `release:` PR
+targeting `main`, including a manually prepared release, untouched and does not
+open a duplicate. Finish or close that PR before enabling the new flow.
+Closing an automated proposal
 pauses its cycle; reopen it to resume. Retargeting it away from `main` also
 pauses updates; restore its `main` base before resuming. Both ready proposals
 and existing drafts receive updates. Existing drafts can be marked ready
@@ -169,15 +211,18 @@ Generated PRs leave the disclosure attestations unchecked for maintainer review.
 
 ## Prepare a release
 
-1. Choose the next stable version and update `sdk/typescript/package.json`.
-   Keep the lockfile version in sync when it records the package version.
+1. Choose the next stable version and update `sdk/typescript/package.json`,
+   `github-action/package.json`, and both root version fields in
+   `github-action/package-lock.json`. The rolling release PR normally prepares
+   these changes. Keep the Action runtime pin on the previously published CLI;
+   release packaging updates it after npm publication.
 2. Update `.github/release-notes.md`. Its first line must be
    `<!-- release-version: X.Y.Z -->` with the exact package version.
 3. Summarize the changes a user will notice. Call out required migration or
    compatibility work, link relevant public documentation, and leave the
    pull-request inventory to the generated section.
 4. Open a pull request with a strict Conventional Commit title such as
-   `release: bump Codex Security to 0.2.0`.
+   `chore(release): 0.2.0`.
 5. Run the checks required by the changed files and record the results in the
    pull request. Do not merge until required CI, review, and public disclosure
    checks pass on the current commit.
@@ -198,30 +243,89 @@ for that exact commit:
 3. `node-github-release` verifies the public package, provenance, tag, and
    archive before publishing the GitHub release. It prepends the reviewed
    summary to GitHub's categorized notes.
+4. The same workflow runs `published-install-smoke` against the exact published
+   version on Linux, macOS, and Windows. It uses the current release automation
+   so the checks also work for historical backfills.
+5. If the release source contains `action.yml`, the workflow prepares the
+   Action from that exact source commit, pins its runtime to the verified npm
+   version and integrity, and fetches the locked runtime through Socket Firewall
+   with an empty cache before executing it. The lock retains public npm URLs.
+   It builds and tests the distribution in a job with read-only repository
+   permissions. A fresh publisher checks out the same
+   source, downloads only the tested runtime lock by artifact ID, and rebuilds
+   and verifies the bundles without executing the CLI. It creates
+   `action-vX.Y.Z` and uploads the Action release manifest and SBOM to the
+   existing `npm-vX.Y.Z` GitHub Release. A final status job reports publication,
+   installation smoke, and Action results.
+
+The Action tag points to a generated distribution commit whose parent is the
+CLI release commit. That additional commit contains the runnable Action bundle
+and runtime lockfile. Its release manifest records both commits, both tags,
+the aligned version, and the npm integrity. Metadata finalization verifies the
+bundle hashes against the files being published. Consumers can pin the Action's
+distribution commit from that manifest.
+
+Historical releases whose source predates `action.yml` skip Action publication
+and still run the exact-version installation checks. The workflow does not add
+Action code from a later commit to an older CLI release.
+
+After npm accepts a publication, its registry can take several minutes to expose
+the version. GitHub publication waits up to ten minutes for that version to
+become available before verifying its archive and signed provenance. Other
+registry errors fail immediately.
 
 `node-release` generates the npm plugin payload from the canonical source under
 `plugins/codex-security/` during `prepack`. The generated
 `sdk/typescript/_bundled_plugin/` directory is not a committed release input;
 do not prepare a release by editing or committing files there.
 
-Monitor all three workflows. A version bump is not a completed release until
-the npm package and GitHub release both exist and match the tag.
+Monitor all three workflows and the final status in `node-github-release`.
+A release is complete when npm and GitHub publication, exact-version install
+checks, and applicable Action publication have succeeded. The protected npm
+publication gates and immutable `npm-vX.Y.Z` tag remain in place.
+
+Container publication currently has its own workflow and approval. It uses
+`container-vX.Y.Z` or a manual `container-release` run on `main`, with the version
+matching the SDK package. It is not part of the coordinated npm and Action
+completion status. See [Container releases](docker/README.md) for its
+publication and verification steps.
 
 ## Verify
 
 Check the published state before announcing the release:
 
-- The tag points to the merged release commit.
+- `npm-vX.Y.Z` points to the merged release commit.
 - `npm view @openai/codex-security@X.Y.Z` reports the expected version and
   commit, and the provenance check passed in `node-release`.
-- The GitHub release is stable, has the correct title, and contains exactly one
-  verified package archive.
+- The GitHub release is stable, has the correct title, and contains one verified
+  npm package archive plus the Action manifest and SBOM when applicable.
+- The exact-version published installation checks succeeded.
+- For releases with the Action, `action-vX.Y.Z` points to the distribution
+  commit recorded in its manifest, whose parent is the CLI release commit.
+  The manifest and runtime lock identify the same CLI version and npm integrity.
 - The newest version is marked Latest. A historical backfill is not.
 - For releases created under this process, the reviewed highlights, category
   headings, documentation links, and full comparison link are correct.
   Historical releases may have generated notes only.
 - Every merged pull request is included or has an intentional
   `skip-release-notes` label.
+
+The `published-install-smoke` workflow checks each exact version during release
+publication. It also checks npm's current `latest` daily and on pull requests
+changing its smoke checks. Manual dispatch accepts a **version** (default
+`latest`) and an optional **ref** for the source of the smoke checks. It installs
+into a temporary consumer, verifies the requested version, checks the npm CLI
+shim and public SDK, starts the bundled Codex executable with `--version`,
+and initializes the bundled MCP server. Linux covers supported Node majors
+22, 24, and 26; macOS and Windows cover Node 24. These checks use temporary
+configuration directories and do not run scans or call model APIs.
+
+The smoke test verifies the installed package independently of the version on
+`main`, so it can run while the checkout contains unreleased changes. A failure
+reports the installed version or failing startup command in the Actions log;
+inspect that job before treating it as a release regression. To reproduce
+locally, run `node sdk/typescript/scripts/smoke-published-package.mjs X.Y.Z`
+from the repository. Omit the version to check `latest`.
 
 ## Recover or repair a release
 
@@ -232,7 +336,16 @@ keeping the original tag and package identity.
 To retry GitHub publication, run `node-github-release` from `main` with the
 existing `npm-vX.Y.Z` tag. Supply the successful `node-release` run ID when
 automatic lookup is not enough. The workflow verifies the npm artifact and
-provenance again before it creates or updates the release.
+provenance again before it creates or updates the release, repeats the
+exact-version installation checks, and completes applicable Action publication.
+If `action-vX.Y.Z` already exists, recovery checks its package manifests and
+lockfiles against the reviewed source and CLI release identity before installing
+dependencies or running package scripts. It then reuses that distribution commit.
+Do not move that tag or regenerate the release from newer Action source.
+A failure after npm publication can leave
+the npm package or GitHub Release visible while later checks or Action
+publication remain incomplete; use the final workflow status to identify the
+remaining work.
 
 To repair categories on an existing release, correct the merged pull request's
 title or release label first, then rerun `node-github-release` for the tag. For
