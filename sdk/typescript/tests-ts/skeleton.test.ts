@@ -1,4 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { parse } from "smol-toml";
 import {
@@ -9,9 +11,12 @@ import {
   VERSION,
 } from "../src/index.js";
 import { main } from "../src/cli.js";
+import { capture } from "./cli-fixtures.js";
+import { bashCommand, runCommand } from "./support/shell.js";
 
 interface WorkflowStep {
   name?: string;
+  id?: string;
   uses?: string;
   with?: Record<string, unknown>;
   run?: string;
@@ -41,28 +46,12 @@ async function workflow(name: string) {
   };
 }
 
-function capture(): {
-  stream: Pick<NodeJS.WriteStream, "write">;
-  text: () => string;
-} {
-  let value = "";
-  return {
-    stream: {
-      write(chunk: string | Uint8Array): boolean {
-        value += chunk.toString();
-        return true;
-      },
-    },
-    text: () => value,
-  };
-}
-
 describe("TypeScript package skeleton", () => {
   test("pins one Codex version across the CLI, MCP app, and evals", async () => {
     const directories = [
       "sdk/typescript",
       "plugins/codex-security/mcp-app",
-      "plugins/codex-security/skills/triage-finding/evals",
+      "evals/triage-finding",
     ];
     const manifests = await Promise.all(
       directories.map(async (directory) =>
@@ -191,6 +180,7 @@ describe("TypeScript package skeleton", () => {
     expect(jobs["required-test"]?.name).toBe("${{ matrix.os }} / node-22");
     expect(jobs["required-test"]?.needs).toEqual([
       "validate-title",
+      "workflow-quality",
       "static-checks",
       "package",
       "test",
@@ -198,11 +188,13 @@ describe("TypeScript package skeleton", () => {
       "mcp",
       "plugin-host",
       "plugin-source",
+      "container-validate",
     ]);
     expect(jobs["windows"]?.needs).toEqual([
       "validate-title",
       "static-checks",
       "plugin-host",
+      "plugin-source",
       "windows-test",
       "windows-verify",
     ]);
@@ -215,6 +207,85 @@ describe("TypeScript package skeleton", () => {
       expect(jobs[name]?.steps!.some(({ name }) => name === "Set up Bun")).toBe(
         false,
       );
+    }
+  });
+
+  test("reuses npm downloads after lockfile changes without skipping package installation", async () => {
+    const { jobs } = await workflow("node-ci.yml");
+    for (const name of ["compatibility", "windows-verify"]) {
+      const steps = jobs[name]!.steps!;
+      const setup = steps.findIndex(({ id }) => id === "node");
+      const resolver = steps.findIndex(({ id }) => id === "npm-cache");
+      const restore = steps.findIndex(({ uses }) =>
+        uses?.startsWith("actions/cache/restore@"),
+      );
+      const inspection = steps.findIndex(
+        ({ name }) => name === "Inspect installed package",
+      );
+      expect(setup).toBeGreaterThanOrEqual(0);
+      expect(setup).toBeLessThan(resolver);
+      expect(resolver).toBeLessThan(restore);
+      expect(restore).toBeLessThan(inspection);
+      expect(steps[setup]?.with?.["cache"]).toBe("npm");
+      expect(steps[resolver]?.env).toEqual({
+        PRIMARY_CACHE_KEY: "${{ steps.node.outputs.cache-primary-key }}",
+      });
+      for (const index of [resolver, restore]) {
+        expect(steps[index]?.if).toBe("steps.node.outputs.cache-hit != 'true'");
+      }
+      expect(steps[restore]?.with).toEqual({
+        path: "${{ steps.npm-cache.outputs.path }}",
+        key: "${{ steps.node.outputs.cache-primary-key }}",
+        "restore-keys": "${{ steps.npm-cache.outputs.restore-prefix }}",
+      });
+      expect(steps[inspection]).not.toHaveProperty("if");
+    }
+  });
+
+  test("npm cache fallback shares lockfile versions within each platform and architecture", async () => {
+    const { jobs } = await workflow("node-ci.yml");
+    const script = jobs["compatibility"]!.steps!.find(
+      ({ id }) => id === "npm-cache",
+    )!.run!;
+    const directory = await mkdtemp(join(tmpdir(), "npm-cache-workflow-"));
+    try {
+      for (const platform of ["Windows-x64", "Windows-arm64", "Linux-x64"]) {
+        for (const hash of ["a".repeat(64), "b".repeat(64)]) {
+          const cachePath = platform.startsWith("Windows")
+            ? "C:\\npm cache"
+            : "/tmp/npm cache";
+          const output = join(directory, "output.txt");
+          await rm(output, { force: true });
+          const result = await runCommand(
+            bashCommand(),
+            [
+              "-e",
+              "-o",
+              "pipefail",
+              "-c",
+              `npm() { test "$*" = "config get cache" && printf '%s\\n' "$TEST_NPM_CACHE"; }\n${script}`,
+            ],
+            {
+              cwd: directory,
+              env: {
+                ...process.env,
+                PRIMARY_CACHE_KEY: `node-cache-${platform}-npm-${hash}`,
+                GITHUB_OUTPUT: "output.txt",
+                TEST_NPM_CACHE: cachePath,
+              },
+            },
+          );
+          expect(result.status, result.stderr).toBe(0);
+          expect(
+            (await readFile(output, "utf8")).trim().split(/\r?\n/u),
+          ).toEqual([
+            `path=${cachePath}`,
+            `restore-prefix=node-cache-${platform}-npm-`,
+          ]);
+        }
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -233,9 +304,57 @@ describe("TypeScript package skeleton", () => {
     expect(packageJson.scripts["test:ci"]).toContain("pnpm run test ");
     expect(jobs["windows-test"]?.steps).toContainEqual(
       expect.objectContaining({
-        run: "node sdk/typescript/scripts/run-ci-tests.mjs ${{ matrix.shard }}/7",
+        run: "node --experimental-strip-types sdk/typescript/scripts/run-ci-tests.mts ${{ matrix.shard }}/7 --seed=${{ github.run_number }}",
       }),
     );
+  });
+
+  test("covers the Python runtime floor and native platform paths", async () => {
+    const { jobs } = await workflow("node-ci.yml");
+    const job = jobs["plugin-source"]!;
+    expect(job.strategy?.matrix["include"]).toEqual([
+      ...["3.10", "3.12", "3.14"].map((python) => ({
+        os: "ubuntu-latest",
+        python,
+        markers: "",
+      })),
+      {
+        os: "macos-latest",
+        python: "3.12",
+        markers: "cross_platform or native_macos",
+      },
+      {
+        os: "windows-latest",
+        python: "3.12",
+        markers: "cross_platform or native_windows",
+      },
+    ]);
+    const testStep = job.steps!.find(
+      ({ name }) => name === "Test Python source contracts",
+    )!;
+    expect(testStep.env?.["PYTEST_MARKERS"]).toBe("${{ matrix.markers }}");
+    expect(testStep.run).toContain(
+      'python -m pytest plugins/codex-security/tests -m "$PYTEST_MARKERS"',
+    );
+    expect(testStep).not.toHaveProperty("if");
+    expect(testStep).not.toHaveProperty("continue-on-error");
+    const nativeCoverageStep = job.steps!.find(
+      ({ name }) => name === "Require native platform coverage",
+    )!;
+    expect(nativeCoverageStep.if).toBe("runner.os != 'Linux'");
+    expect(nativeCoverageStep.run).toContain(".//testcase/skipped");
+    expect(nativeCoverageStep).not.toHaveProperty("continue-on-error");
+    for (const name of [
+      "Install plugin dependencies",
+      "Set up Node.js for triage evals",
+      "Set up triage eval dependencies and host runtime",
+    ]) {
+      expect(job.steps!.find((step) => step.name === name)?.if).toBe(
+        "matrix.os == 'ubuntu-latest' && matrix.python == '3.12'",
+      );
+    }
+    expect(jobs["required-test"]?.needs).toContain("plugin-source");
+    expect(jobs["windows"]?.needs).toContain("plugin-source");
   });
 
   test("checks one archive and restores its plugin before every test shard", async () => {
@@ -310,8 +429,9 @@ describe("TypeScript package skeleton", () => {
       ["Check formatting", "static-checks"],
       ["Check MCP formatting", "static-checks"],
     ] as const) {
-      expect(steps.filter((step) => step.name === name)).toHaveLength(1);
-      expect(jobs[job]!.steps!.some((step) => step.name === name)).toBe(true);
+      expect(
+        jobs[job]!.steps!.filter((step) => step.name === name),
+      ).toHaveLength(1);
     }
     for (const name of [
       "Upload test reports",
@@ -413,6 +533,13 @@ describe("TypeScript package skeleton", () => {
         args,
       });
     }
+    for (let shard = 1; shard <= 7; shard += 1) {
+      expect(runner.strategy?.matrix["include"]).toContainEqual({
+        os: "windows-latest",
+        mode: `isolated-${shard}`,
+        args: `--isolate --shard=${shard}/7`,
+      });
+    }
     const command = runner.steps!.find(
       (step) => step.name === "Test runner mode",
     )?.run;
@@ -448,9 +575,6 @@ describe("TypeScript package skeleton", () => {
 
     expect(packageJson.scripts.build).not.toMatch(/\b(?:pnpm|npm|bun)\b/u);
     expect(packageJson.scripts.build).toMatch(/^node --run clean &&/u);
-    expect(packageJson.scripts.build).toContain(
-      "node scripts/build-dashboard.mjs",
-    );
     expect(packageJson.scripts["build:plugin"]).toBe(
       "node scripts/build-plugin.mjs",
     );
@@ -466,7 +590,7 @@ describe("TypeScript package skeleton", () => {
     );
   });
 
-  test("keeps production dependency audits non-blocking in CI and releases", async () => {
+  test("blocks CI and releases when the production dependency audit fails", async () => {
     for (const workflowName of ["node-ci.yml", "node-release.yml"]) {
       const { jobs } = await workflow(workflowName);
       const audits = Object.values(jobs)
@@ -474,7 +598,7 @@ describe("TypeScript package skeleton", () => {
         .filter((step) => step.name === "Audit production dependencies");
       expect(audits.length).toBeGreaterThan(0);
       for (const audit of audits) {
-        expect(audit["continue-on-error"]).toBe(true);
+        expect(audit).not.toHaveProperty("continue-on-error");
         expect(audit.run).toMatch(
           /^(?:sfw )?pnpm --dir sdk\/typescript run audit:prod$/u,
         );
@@ -499,20 +623,20 @@ describe("TypeScript package skeleton", () => {
   });
 
   test("provides executable help and version behavior", async () => {
-    const stdout = capture();
-    const stderr = capture();
+    const stdout = capture(null);
+    const stderr = capture(null);
     expect(await main([], stdout.stream, stderr.stream)).toBe(0);
     expect(stdout.text()).toContain("Usage: codex-security <command>");
     expect(stdout.text()).toContain("Integrations:");
     expect(stderr.text()).toBe("");
 
-    const versionOutput = capture();
+    const versionOutput = capture(null);
     expect(await main(["--version"], versionOutput.stream, stderr.stream)).toBe(
       0,
     );
     expect(versionOutput.text()).toBe(`${VERSION}\n`);
 
-    const scanHelpOutput = capture();
+    const scanHelpOutput = capture(null);
     expect(
       await main(["scan", "--help"], scanHelpOutput.stream, stderr.stream),
     ).toBe(0);
